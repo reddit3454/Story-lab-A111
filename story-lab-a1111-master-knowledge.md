@@ -1087,14 +1087,33 @@ Live routes:
 
 Note: `src/services/a1111.js` and `src/services/audit.js` are Phase 3 (image pipeline).
 
-### Phase 3 — Core Services: not started
+### Phase 3 — Story Engine: COMPLETE (2026-06-11)
 
-Files: `src/services/a1111.js`, `src/services/narrator.js`, `src/services/prompt-builder.js`,
-`src/services/clothing.js`, `src/services/memory.js`, `src/services/image-pipeline.js`, etc.
+Files: `src/input-parser.js`, `src/services/narrator.js`, `src/services/memory.js`,
+`src/routes/scenarios.js`, `src/routes/turns.js`, `src/routes/characters.js`,
+`src/routes/locations.js`, `src/routes/memories.js`, `src/routes/world.js`, `src/routes/rules.js`
 
-### Phase 4 — Routes: not started
+Live route groups:
 
-All route files under `src/routes/`.
+- `GET|POST /api/scenarios`, `GET|PUT|DELETE /api/scenarios/:id` — scenario CRUD
+- `GET|POST /api/scenarios/:id/turns`, `DELETE /api/scenarios/:id/turns/:tid` — turns; POST role=user triggers full narrator pipeline
+- `GET|POST|GET|PUT|DELETE /api/scenarios/:id/characters`, `PATCH /api/scenarios/:id/characters/:cid/clothing`
+- `GET|POST|GET|PUT|DELETE /api/scenarios/:id/locations`
+- `GET|POST|DELETE /api/scenarios/:id/memories`
+- `GET|POST|PUT|DELETE /api/scenarios/:id/world` — world entries
+- `GET|POST|PUT|DELETE /api/scenarios/:id/rules`
+
+Key behaviors:
+
+- All nested routers use `mergeParams: true` — `:scenarioId` accessible in all sub-routers
+- `turns POST` with `role=user`: inserts user turn, calls narrator (Ollama), inserts narrator turn with `scene_card_json`, fires auto-memory async if `turnNumber % 20 === 0`, broadcasts `turn_complete` WS event
+- `parseNarratorResponse` splits on `---SCENE---`/`---END---`, returns `{ story_text, scene_card }` with defaults on parse failure — never throws
+- `narrator.buildSystemPrompt` assembles 7 blocks: base prompt, characters (with clothing), rules, world, memories, NSFW gate, scene card instruction
+- `memory.generateMemory` summarizes last 20 turns into 2-3 key facts via Ollama, INSERTs into memories table as type='auto'
+
+### Phase 4 — Image Pipeline: not started
+
+Files: `src/services/a1111.js`, `src/services/prompt-builder.js`, `src/services/image-pipeline.js`
 
 ### Phase 5 — Frontend wiring: not started
 
