@@ -6,6 +6,9 @@ import db from './db.js';
 import { PUBLIC_DIR } from './paths.js';
 import broadcast from './broadcast.js';
 import { log } from './logger.js';
+import healthRouter   from './routes/health.js';
+import configRouter   from './routes/config.js';
+import profilesRouter from './routes/profiles.js';
 
 const PORT = process.env.PORT || 4090;
 
@@ -25,46 +28,15 @@ wss.on('connection', function (ws, req) {
   });
 });
 
-/* ── Health ─────────────────────────────────────────────────────────── */
+/* ── API routes ──────────────────────────────────────────────────────── */
 
-app.get('/api/health', function (req, res) {
-  res.json({ ok: true, ts: Date.now() });
-});
+app.use('/api/health',   healthRouter);
+app.use('/api/config',   configRouter);
+app.use('/api/profiles', profilesRouter);
 
-app.get('/api/health/a1111', function (req, res) {
-  res.json({ ok: false, message: 'not implemented' });
-});
-
-/* ── Global config ───────────────────────────────────────────────────── */
-
-app.get('/api/config', function (req, res) {
-  const rows = db.prepare('SELECT key, value FROM global_config').all();
-  const config = {};
-  for (const r of rows) config[r.key] = r.value;
-  res.json(config);
-});
-
-app.post('/api/config', function (req, res) {
-  const { key, value } = req.body;
-  db.prepare(
-    "INSERT OR REPLACE INTO global_config (key, value, updated_at) VALUES (?, ?, datetime('now'))"
-  ).run(key, String(value ?? ''));
-  res.json({ ok: true });
-});
-
-app.post('/api/config/batch', function (req, res) {
-  const { configs } = req.body;
-  const stmt = db.prepare(
-    "INSERT OR REPLACE INTO global_config (key, value, updated_at) VALUES (?, ?, datetime('now'))"
-  );
-  for (const c of (configs || [])) stmt.run(c.key, String(c.value ?? ''));
-  res.json({ ok: true });
-});
-
-/* ── Stub list routes ────────────────────────────────────────────────── */
+/* ── Remaining stubs (replaced in Phase 4) ──────────────────────────── */
 
 app.get('/api/scenarios', function (req, res) { res.json([]); });
-app.get('/api/profiles',  function (req, res) { res.json([]); });
 
 /* ── SPA fallback ────────────────────────────────────────────────────── */
 
