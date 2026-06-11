@@ -34,6 +34,9 @@ directly to A1111's simple REST API.
 - Dropped: ImageCore, ComfyUI, Batch FaceID, Wan2.2 video, pose library
 - Unified image generation pipeline — ALL image types (scene images, character portraits, full-body images, and any future image type) pass through the same single pipeline and config system. There is no separate pipeline per image type.
 - Saved image generation profiles — users can save named profiles that pre-define prompt fragments, specific LoRAs, and turn-count behavior. Profiles sit below master settings in the resolution chain and cannot override structural master constraints.
+- Narrator-driven scene data — narrator outputs story text AND a structured JSON scene block (`---SCENE---` ... `---END---`) in one response; no separate extractor LLM call needed
+- Template-driven prompt assembly — image prompts assembled deterministically from narrator-supplied scene data + profile prefix/suffix; no LLM enhancer call in the image pipeline
+- Location background images — pre-generated backgrounds enable img2img mode (denoising 0.45), improving environment consistency and reducing prompt complexity
 
 **What's unchanged from the original:**
 - All `public/` frontend (HTML, CSS, JS views) — UI preserved as-is
@@ -248,7 +251,7 @@ role DEFAULT 'npc'            -- 'user' | 'npc'
 id, scenario_id, turn_number
 speaker                       -- 'user' | 'narrator' | character name
 content_text, raw_input
-scene_card_json               -- extracted scene state (JSON)
+scene_card_json               -- scene state JSON parsed from narrator response (narrator writes this inline; no separate extractor call)
 prompt_strategy DEFAULT 'standard'
 user_rating DEFAULT 0
 created_at
@@ -414,8 +417,8 @@ Key/value store. Seed rows:
 id, created_at
 scenario_id, turn_id, scene_image_id (nullable context)
 pipeline_run_id               -- UUID linking all events in one operation
-service                       -- 'narrator'|'extractor'|'enhancer'|'prompt-builder'
-                              -- |'a1111'|'clothing'|'memory'|'image-pipeline'|'system'
+service                       -- 'narrator'|'prompt-builder'|'a1111'
+                              -- |'clothing'|'memory'|'image-pipeline'|'system'
 stage                         -- service-specific stage name
 status                        -- 'start'|'success'|'skipped'|'failed'
 message                       -- human one-liner
@@ -443,15 +446,13 @@ Filter `WHERE pipeline_run_id = 'x'` to see the complete trace for any image.
 
 | Service | Logged inputs | Logged outputs |
 |---|---|---|
-| narrator | model, token estimate, system block count, turn count, memory count | full response, duration |
-| extractor | model, narrative text, characters | scene_card JSON, parse success/fail |
-| enhancer | raw prompt, model | enhanced text, or skip reason |
-| prompt-builder | scene_card, character states, effective config | full parts breakdown JSON |
-| a1111 | complete request payload | seed, model_hash, generation_time_ms |
+| narrator | model, token estimate, system block count, turn count, memory count | full response text + parsed scene_card JSON (or parse failure), duration |
+| prompt-builder | scene_card (from narrator), character states, effective config, background_path | full parts breakdown JSON, img2img vs txt2img mode selected |
+| a1111 | complete request payload (txt2img or img2img) | seed, model_hash, generation_time_ms |
 | clothing | character, current state, scene_card | resolved clothing string, resolution path taken |
 | memory | trigger reason, turn range | summary text, model used, promotion events |
 | model-resolver | scenario nsfw_enabled, overrides | resolved models, fallbacks used |
-| image-pipeline | pipeline_run_id, scenarioId, turnId | final filename, or which stage failed |
+| image-pipeline | pipeline_run_id, scenarioId, turnId, mode | final filename, stages completed, or which stage failed |
 
 ### Using the audit log
 
@@ -497,7 +498,7 @@ A1111 HTTP client. Logs full request + response via audit.
 
 ```js
 txt2img(payload)       // → { filename, seed, model_name, model_hash, generation_time_ms }
-img2img(payload)       // → stubbed — reserved for ITERATE mode v2
+img2img(payload)       // → { filename, seed, model_name, model_hash, generation_time_ms } — used for location background mode (denoising 0.45)
 getModels()            // → [{ title, model_name, hash }]
 getLoras()             // → [{ name, path, alias }]
 getProgress()          // → { active, progress, eta }
@@ -640,22 +641,24 @@ Single entry point for all image generation. Called as fire-and-forget from rout
 
 ```js
 generate({ mode, scenarioId, turnId, characterId, opts })
-// mode: 'scene' | 'portrait' | 'fullbody'
+// mode: 'scene' | 'portrait' | 'fullbody' | 'background'
 // All modes pass through the same pipeline stages.
 // Mode controls which prompt-building path prompt-builder.js uses.
+// 'background' mode generates a location background image stored in H:\MEDIA\Story_Lab\backgrounds\{slug}\.
 // opts: { directPrompt?, rawPrompt?, contextTurns? }
 ```
 
+Scene data (scene_card_json) is read from the turn row — it was written there by the narrator in a single response. There is no extractor call inside the pipeline.
+
 Stages in order (all logged with same pipeline_run_id):
-1. `extract` — extractor.extract()
-2. `clothing_snapshot` — read character_states, snapshot for audit
-3. `build_location` — read location row if set
-4. `enhance` — enhancer.enhance()
-5. `build_prompt` — prompt-builder.buildPrompt()
-6. `a1111_call` — a1111.txt2img()
-7. `file_verify` — confirm file exists on disk
-8. `persist` — INSERT scene_images with all metadata
-9. `broadcast` — send `image_ready` WS event
+
+1. `resolve_config` — config-resolver.resolveEffectiveConfig()
+2. `build_prompt` — prompt-builder.buildPrompt() (reads scene_card_json already on turn row)
+3. `resolve_background` — read location row, select background image if available
+4. `a1111_call` — a1111.img2img() if background found, a1111.txt2img() otherwise
+5. `file_verify` — confirm file exists on disk
+6. `persist` — INSERT scene_images with all metadata
+7. `broadcast` — send `image_ready` WS event
 
 ---
 
@@ -674,7 +677,7 @@ Routes contain no business logic — validate input, call one service method, re
 | `world-entries.js` | CRUD /world-entries |
 | `rules.js` | CRUD /rules |
 | `styles.js` | CRUD /styles, GET/POST /scenarios/:id/active-style |
-| `locations.js` | CRUD /locations |
+| `locations.js` | CRUD /locations, POST /locations/:id/backgrounds (upload background image), DELETE /locations/:id/backgrounds/:file, POST /locations/:id/backgrounds/:file/set-default |
 | `config.js` | GET /config, PUT /config (global_config key/value) |
 | `audit.js` | GET /audit (filterable), GET /audit/:runId (full pipeline trace) |
 | `profiles.js` | GET /profiles, POST /profiles, PUT /profiles/:id, DELETE /profiles/:id, POST /profiles/:id/activate, DELETE /profiles/active |
@@ -732,21 +735,204 @@ There is exactly ONE area in the Settings UI for image generation settings. It i
 
 There is no image config scattered across scenario setup or other views. Scenarios do not have their own image config overrides — they use whichever profile is active (or no profile, falling back to master settings).
 
+### Key Design Decisions
+
+- **No extractor** — scene data comes from the narrator's `---SCENE---` block directly. Eliminates one LLM round-trip per turn.
+- **No enhancer** — prompts are assembled deterministically from scene data + profile fragments. Image quality is controlled by profile configuration, not LLM rewriting.
+- **img2img for backgrounds** — when a location has pre-generated backgrounds, pipeline passes the background as init image at denoising 0.45. Environment is set by the background; the generation only adds characters and action.
+- **Mood lookup table** — `mood` from the scene card maps to static SDXL atmosphere tags via a plain object in `prompt-builder.js`. No probabilistic mapping, fully traceable.
+- **arousal_level tiers** — narrator outputs `arousal_level` 1–10. Tiers 1–3 are always SFW. Tiers 4–7 require `nsfw_enabled = 1`. Tiers 8–10 require both `nsfw_enabled = 1` and `explicit_mode = 1` in `global_config`. Out-of-range values are clamped.
+
+---
+
+## Narrator Response Format
+
+The narrator model outputs story text and structured scene data in a single response. No separate extractor LLM call is made.
+
+### Response structure
+
+The narrator is prompted to append a scene block at the end of every turn response:
+
+```
+[Story prose here...]
+
+---SCENE---
+{
+  "image_prompt": "two women in a library, one sitting at a table reading, one standing by a shelf",
+  "negative_prompt_additions": "blur, dark",
+  "mood": "contemplative",
+  "arousal_level": 1,
+  "nsfw_elements": false,
+  "clothing_changes": []
+}
+---END---
+```
+
+The prose and the `---SCENE---` block are separated by the delimiter. The narrator text stored in `turns.content_text` has the scene block stripped. The JSON is parsed and written to `turns.scene_card_json`.
+
+### Scene card JSON schema
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `image_prompt` | string | Core scene description in SDXL tag-style prose |
+| `negative_prompt_additions` | string | Scene-specific negative terms (appended to master negative) |
+| `mood` | string | Scene mood word — mapped to atmosphere tags by prompt-builder.js |
+| `arousal_level` | 1–10 | Explicit content intensity. Gated by master NSFW settings. |
+| `nsfw_elements` | boolean | True if the scene contains NSFW elements |
+| `clothing_changes` | array | `[{ character, change_description }]` applied to character_states |
+
+### arousal_level tiers
+
+| Level | Content tier | Master NSFW required |
+| --- | --- | --- |
+| 1–3 | SFW — no explicit content | none |
+| 4–5 | Mild — suggestive, partially clothed | nsfw_enabled optional |
+| 6–7 | Moderate — explicit but tasteful | nsfw_enabled = 1 |
+| 8–10 | Explicit | nsfw_enabled = 1 + explicit_mode = 1 |
+
+Prompt-builder.js reads `arousal_level` from scene_card and clamps it against master settings before injecting content-tier tags.
+
+### Fallback behavior
+
+If the narrator response has no `---SCENE---` block, or the JSON fails to parse:
+
+- `turns.scene_card_json` is set to `null`
+- The pipeline uses a minimal scene card derived from the visible narrative text
+- A `warn` audit event is written noting the fallback
+- Generation continues — no hard failure
+
+---
+
+## Prompt Assembly
+
+`prompt-builder.js` assembles all image prompts deterministically. No LLM calls are made inside the assembly step.
+
+### Assembly formula
+
+**img2img mode** (location background available):
+
+```
+{profile.prompt_prefix}, {scene.image_prompt}, {atmosphere_tags}, {character_block}, {clothing_block}, {profile.prompt_suffix}
+```
+
+**txt2img mode** (no background — location image_tags appended):
+
+```
+{profile.prompt_prefix}, {scene.image_prompt}, {location.image_tags}, {atmosphere_tags}, {character_block}, {clothing_block}, {profile.prompt_suffix}
+```
+
+### Mood → atmosphere lookup table
+
+| Mood | Atmosphere tags |
+|---|---|
+| `contemplative` | soft lighting, muted tones, quiet atmosphere |
+| `tense` | dramatic lighting, high contrast, sharp shadows |
+| `romantic` | warm golden light, soft bokeh, intimate framing |
+| `action` | dynamic lighting, motion blur, energetic composition |
+| `melancholy` | cool desaturated tones, overcast, diffuse light |
+| `joyful` | bright warm light, vivid colors, open composition |
+| `mysterious` | low key lighting, deep shadows, fog |
+| `neutral` | natural lighting, balanced exposure |
+
+Unrecognized mood strings fall through to `neutral`. The table lives as a plain object in `prompt-builder.js`.
+
+### Negative prompt assembly
+
+```
+{master_negative}, {profile.negative_additions}, {scene.negative_prompt_additions}
+```
+
+### Parts breakdown (stored in scene_images.prompt_parts_json)
+
+```json
+{
+  "mode": "img2img",
+  "prefix": "...",
+  "scene_image_prompt": "...",
+  "location_tags": "...",
+  "atmosphere_tags": "...",
+  "character_block": "...",
+  "clothing_block": "...",
+  "suffix": "...",
+  "nsfw_tier": 3,
+  "lora_tags": "<lora:...>",
+  "negative": "..."
+}
+```
+
+---
+
+## Location Background Images
+
+Locations can store 1–5 pre-generated background images. When a background is available, the image pipeline switches from txt2img to img2img, passing the background as the init image. This improves environment consistency without needing to describe the location in full detail each time.
+
+### Storage path
+
+```
+H:\MEDIA\Story_Lab\backgrounds\{location_slug}\
+  background_001.png
+  background_002.png
+```
+
+`location_slug` is derived from the location name (lowercase, spaces to underscores).
+
+### Updated locations table
+
+```
+id, name, description, image_tags
+background_images_json        -- JSON array of background filenames present on disk
+default_background            -- filename of the preferred background (null = pick randomly)
+time_of_day                   -- 'morning' | 'afternoon' | 'evening' | 'night' | null
+created_at
+```
+
+### Pipeline behavior
+
+When `resolve_background` stage runs:
+
+1. Read the location row for the current scene
+2. If `background_images_json` has entries, pick `default_background` or a random entry
+3. Load image file from `H:\MEDIA\Story_Lab\backgrounds\{slug}\{file}`
+4. Convert to base64
+5. Pass to `a1111.img2img()` with `denoising_strength: 0.45`
+
+If no background is available, fall through to `a1111.txt2img()` with `location.image_tags` appended to prompt.
+
+### A1111 img2img payload additions
+
+```json
+{
+  "init_images": ["data:image/png;base64,..."],
+  "denoising_strength": 0.45,
+  "resize_mode": 1
+}
+```
+
+All other fields (steps, cfg, sampler, dimensions, ADetailer) are identical to txt2img.
+
+### Location UI additions
+
+- **Locations list** — each location shows a thumbnail strip of its background images
+- **Generate Background** button — opens a prompt dialog, calls `POST /locations/:id/generate-background`, which fires `image-pipeline.generate({ mode: 'background' })`
+- **Upload Background** button — upload an existing image via `POST /locations/:id/backgrounds`
+- **Set Default** — marks one image as the preferred background
+- **Delete** — removes a background image file and updates the JSON array
+
 ---
 
 ## Image Generation Flow
 
 ```
 turns.js (advance/nudge)
-  → image-pipeline.generateSceneImage()   [fire and forget, .catch → audit]
-      → extractor.extract()               [audit: extraction]
-      → clothing snapshot                 [audit: clothing_snapshot]
-      → enhancer.enhance()               [audit: enhancement]
-      → prompt-builder.buildPrompt()     [audit: prompt_assembly]
-      → a1111.txt2img()                  [audit: a1111_call]
-      → file verify                      [audit: file_verify]
-      → db INSERT scene_images           [audit: persist]
-      → broadcast image_ready            [audit: complete]
+  → image-pipeline.generateSceneImage()         [fire and forget, .catch → audit]
+      → config-resolver.resolveEffectiveConfig() [audit: resolve_config]
+      → prompt-builder.buildPrompt()             [audit: build_prompt]
+        (scene_card_json already on turn row, set by narrator)
+      → resolve background image                 [audit: resolve_background]
+      → a1111.img2img() or a1111.txt2img()       [audit: a1111_call]
+      → file verify                              [audit: file_verify]
+      → db INSERT scene_images                   [audit: persist]
+      → broadcast image_ready                    [audit: complete]
 ```
 
 A1111 payload shape (txt2img):
