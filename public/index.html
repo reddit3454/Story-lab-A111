@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StoryLab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;0,700;1,400;1,600&family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/css/main.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="view-dashboard" class="view"></div>
+      <div id="view-characters" class="view"></div>
+      <div id="view-scenario-setup" class="view"></div>
+      <div id="view-play" class="view"></div>
+      <div id="view-settings" class="view"></div>
+      <div id="view-styles" class="view"></div>
+      <div id="view-locations" class="view"></div>
+      <div id="view-images" class="view"></div>
+      <div id="toast-container"></div>
+      <div id="modal-overlay" class="hidden"></div>
+    </div>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script src="/js/fontlobby-client.js"></script>
+    <script src="/js/font-painter.js"></script>
+    <script src="/js/theme-presets.js"></script>
+    <script src="/js/api.js"></script>
+    <script src="/js/app.js" type="module"></script>
+    <script src="/js/styles-init.js"></script>
+    <script src="/js/locations-init.js"></script>
+    <!-- Route patch: redirect #styles hash to window.initStyles (global manager)
+         and #scenario-setup to also notify styles-init.js style picker -->
+    <script>
+    (function () {
+      // Wait for app.js to finish wiring hashchange, then intercept
+      window.addEventListener('hashchange', function () {
+        var hash = location.hash.replace('#','') || 'dashboard';
+        var view = hash.split('?')[0];
+        var params = new URLSearchParams((hash.split('?')[1] || ''));
+        if (view === 'styles') {
+          // Clear all views
+          document.querySelectorAll('.view').forEach(function(v) {
+            v.classList.remove('active');
+            v.innerHTML = '';
+          });
+          var el = document.getElementById('view-styles');
+          if (el) el.classList.add('active');
+          // Call our global initStyles (ignores scenario param)
+          if (typeof window.initStyles === 'function') {
+            window.initStyles(params.get('scenario'));
+          }
+        }
+      });
+
+      // Also handle the initial page load if starting on #styles
+      window.addEventListener('load', function () {
+        var hash = location.hash.replace('#','') || 'dashboard';
+        var view = hash.split('?')[0];
+        if (view === 'styles') {
+          setTimeout(function () {
+            var params = new URLSearchParams((hash.split('?')[1] || ''));
+            document.querySelectorAll('.view').forEach(function(v) {
+              v.classList.remove('active');
+              v.innerHTML = '';
+            });
+            var el = document.getElementById('view-styles');
+            if (el) el.classList.add('active');
+            if (typeof window.initStyles === 'function') {
+              window.initStyles(params.get('scenario'));
+            }
+          }, 50);
+        }
+      });
+    }());
+    </script>
+    <script src="/js/debug-console.js"></script>
+    <script src="http://localhost:4060/picker-client.js"></script>
+  </body>
+</html>

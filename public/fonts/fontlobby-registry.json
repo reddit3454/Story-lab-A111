@@ -1,0 +1,30 @@
+[
+  {
+    "family": "Asap",
+    "category": "sans-serif",
+    "filename": "Asap[wdth,wght].ttf",
+    "format": "truetype",
+    "cssValue": "'Asap', sans-serif"
+  },
+  {
+    "family": "Roboto Condensed",
+    "category": "sans-serif",
+    "filename": "RobotoCondensed.ttc",
+    "format": "truetype",
+    "cssValue": "'Roboto Condensed', sans-serif"
+  },
+  {
+    "family": "Akatab",
+    "category": "sans-serif",
+    "filename": "Akatab-Regular.ttf",
+    "format": "truetype",
+    "cssValue": "'Akatab', sans-serif"
+  },
+  {
+    "family": "Armata",
+    "category": "sans-serif",
+    "filename": "Armata-Regular.ttf",
+    "format": "truetype",
+    "cssValue": "'Armata', sans-serif"
+  }
+]
