@@ -32,6 +32,8 @@ directly to A1111's simple REST API.
 - Clean DB schema designed for all features at once — no incremental legacy columns
 - Service boundaries are explicit — each service has one job and one interface
 - Dropped: ImageCore, ComfyUI, Batch FaceID, Wan2.2 video, pose library
+- Unified image generation pipeline — ALL image types (scene images, character portraits, full-body images, and any future image type) pass through the same single pipeline and config system. There is no separate pipeline per image type.
+- Saved image generation profiles — users can save named profiles that pre-define prompt fragments, specific LoRAs, and turn-count behavior. Profiles sit below master settings in the resolution chain and cannot override structural master constraints.
 
 **What's unchanged from the original:**
 - All `public/` frontend (HTML, CSS, JS views) — UI preserved as-is
@@ -137,7 +139,7 @@ story-lab-a1111/
       ollama.js                  Ollama HTTP client (chat, generate, toolCall, listModels)
       a1111.js                   A1111 HTTP client (txt2img, models, loras, status)
       model-resolver.js          Picks narrator/extractor/summarizer models
-      config-resolver.js         Resolves effective config: global → style → scenario
+      config-resolver.js         Resolves effective config: master → active profile → request
       narrator.js                Builds narrator context + calls Ollama
       extractor.js               Extracts structured scene card from narrator text
       enhancer.js                SDXL prompt enhancer via Ollama
@@ -158,6 +160,7 @@ story-lab-a1111/
       styles.js                  Style preset CRUD
       locations.js               Location CRUD
       config.js                  Global config (A1111 URL, default params)
+      profiles.js                Image generation profile CRUD + activate/clear
       audit.js                   Query audit log
   public/                        Copied from story-lab, frontend unchanged
     index.html
@@ -197,13 +200,15 @@ The DB file is `database/story-lab-a1111.db`.
 
 ### Key design decisions vs. original story-lab
 
-- No `generation_config` JSON blob — all A1111 params are real typed columns on `scenarios`
+- No `generation_config` JSON blob — all A1111 params are real typed columns in `global_config`
 - `scene_images` stores the complete A1111 request + response metadata (seed, model hash, all params)
 - `character_states` is its own table — not entangled in scenario/turn columns
 - `global_config` is a key/value table for A1111 defaults and system settings
 - `audit_log` table captures every pipeline event (see Observability section)
 - No video columns anywhere
 - No workflow columns anywhere
+- `image_profiles` table replaces scenario-level image config overrides — profiles are global named presets, not per-scenario. Scenarios do not store image config.
+- Structural image settings (model, method, hires, adetailer) live only in `global_config` and cannot be overridden at any lower level.
 
 ### scenarios
 
@@ -215,26 +220,10 @@ reply_length, pacing, narrative_pov
 lust_level, violence_level, explicitness_level, tone_modifier
 llm_narrator_model, llm_extract_model   -- nullable, override global defaults
 default_start
-
--- Image config
-image_model, image_prefix, image_suffix, image_negative
-aspect_ratio DEFAULT '2:3'
-skip_enhance DEFAULT 0
-style_id → styles.id (nullable)
-
--- A1111 params (null = use global_config default)
-a1111_steps, a1111_cfg, a1111_sampler, a1111_scheduler, a1111_width, a1111_height
-
--- Hires.fix (null = use global_config default)
-hr_enabled, hr_scale, hr_steps, hr_denoising, hr_upscaler
-
--- ADetailer (null = use global_config default)
-ad_enabled, ad_model, ad_strength
-
--- LoRAs
-lora1_file, lora1_strength DEFAULT 1.0
-lora2_file, lora2_strength DEFAULT 1.0
 ```
+
+Image generation config is NOT stored per-scenario. All image settings come from
+`global_config` (master) and the active `image_profiles` row (optional overrides).
 
 ### characters
 
@@ -366,6 +355,26 @@ created_at
 id, name, description, image_tags
 created_at
 ```
+
+### image_profiles — named generation profiles
+
+```
+id, name, description
+prompt_prefix               -- text fragment prepended to all prompts when active
+prompt_suffix               -- text fragment appended to all prompts when active
+negative_additions          -- extra negative prompt terms
+lora1_file, lora1_strength
+lora2_file, lora2_strength
+steps_override              -- nullable, overrides master steps if set
+cfg_override                -- nullable, overrides master CFG if set
+is_active DEFAULT 0         -- only one profile can be active at a time
+created_at
+```
+
+Only one profile may have `is_active = 1` at a time. When no profile is active,
+generation uses master settings only. Profiles CANNOT override: model/checkpoint,
+generation method, whether LoRAs are globally enabled, hires/adetailer enabled state,
+A1111 URL.
 
 ### character_relationships
 
@@ -502,17 +511,22 @@ CLIP skip 2 is always set for SDXL.
 
 ### src/services/config-resolver.js
 
-Resolves effective image config for a scenario. Resolution chain (later overrides earlier):
-1. `global_config` defaults
-2. Style fields if `scenario.style_id` is set (prefix, suffix, negative, steps, cfg, sampler, LoRAs)
-3. Scenario-level overrides (a1111_steps, a1111_cfg, etc.) — only when non-null
+Resolves effective image config for any generation request. Resolution chain (later overrides earlier):
+1. `global_config` master settings (structural — model, method, hires, adetailer, lora_enabled flag)
+2. Active `image_profiles` row if one has `is_active = 1` (prompt fragments, specific LoRAs, steps/cfg overrides)
+3. Request context assembled by prompt-builder.js (not a config layer — prompt content only)
 
-Style fields that DO override: prefix, suffix, negative, steps, cfg, sampler, lora1, lora2.
-Style fields that do NOT override: model, dimensions, hires, adetailer.
+Profiles cannot override structural master constraints (model, generation method, lora_enabled global flag, hires/adetailer enabled state).
 
 ```js
-resolveEffectiveConfig(scenarioId, db)
-// → flat config object with all generation params resolved
+resolveMasterConfig(db)
+// → flat master config object from global_config
+
+resolveActiveProfile(db)
+// → active image_profiles row or null
+
+resolveEffectiveConfig(db)
+// → merged config: master + profile overrides applied where permitted
 ```
 
 ### src/services/model-resolver.js
@@ -625,7 +639,10 @@ buildContext(scenarioId, db)
 Single entry point for all image generation. Called as fire-and-forget from routes.
 
 ```js
-generateSceneImage(scenarioId, turnId, opts)
+generate({ mode, scenarioId, turnId, characterId, opts })
+// mode: 'scene' | 'portrait' | 'fullbody'
+// All modes pass through the same pipeline stages.
+// Mode controls which prompt-building path prompt-builder.js uses.
 // opts: { directPrompt?, rawPrompt?, contextTurns? }
 ```
 
@@ -660,6 +677,60 @@ Routes contain no business logic — validate input, call one service method, re
 | `locations.js` | CRUD /locations |
 | `config.js` | GET /config, PUT /config (global_config key/value) |
 | `audit.js` | GET /audit (filterable), GET /audit/:runId (full pipeline trace) |
+| `profiles.js` | GET /profiles, POST /profiles, PUT /profiles/:id, DELETE /profiles/:id, POST /profiles/:id/activate, DELETE /profiles/active |
+
+---
+
+## Image Generation Architecture
+
+### Core Rule: One Pipeline for All Image Types
+
+ALL image generation in story-lab-a1111 passes through the same pipeline regardless of image type. Character portraits, scene/story images, full-body images, and any future image type all use:
+
+- the same `image-pipeline.js` entry point
+- the same `config-resolver.js` config resolution chain
+- the same `a1111.js` HTTP client
+- the same `prompt-builder.js` assembly logic
+
+The only difference between image types is the **mode** passed into the pipeline, which controls which prompt-building path is used (e.g. portrait vs. scene). The core infrastructure is shared.
+
+### Config Resolution Chain
+
+Effective config for any image generation request resolves in this order (later overrides earlier):
+
+1. **Master settings** (`global_config` table) — structural constraints that apply to all generation. These cannot be overridden by profiles or scenarios:
+   - A1111 URL
+   - Active model / checkpoint
+   - Generation method (txt2img — the only supported method for now)
+   - Whether LoRAs are globally enabled or disabled
+   - Hires.fix enabled/disabled
+   - ADetailer enabled/disabled
+   - Core sampler, scheduler, steps, CFG, dimensions
+
+2. **Active profile** (`image_profiles` table, optional) — stylistic/behavioral overrides. A profile CAN override:
+   - Prompt prefix fragment (hardcoded opening appended to all prompts when this profile is active)
+   - Prompt suffix fragment
+   - Specific LoRA files and strengths (only if LoRAs are globally enabled)
+   - Number of generation steps (within master limits)
+   - CFG scale
+   - Negative prompt additions
+
+   A profile CANNOT override:
+   - Model/checkpoint
+   - Generation method
+   - Whether LoRAs are enabled globally
+   - Hires.fix or ADetailer enabled state
+   - A1111 URL
+
+3. **Request context** — per-request assembled prompt content (characters, clothing, scene card, location). This is not a user-editable config layer — it is assembled by prompt-builder.js at generation time.
+
+### Settings UI Rule
+
+There is exactly ONE area in the Settings UI for image generation settings. It is labeled "Image Generation" and contains:
+- All master settings (structural)
+- Profile management (create, edit, delete, activate named profiles)
+
+There is no image config scattered across scenario setup or other views. Scenarios do not have their own image config overrides — they use whichever profile is active (or no profile, falling back to master settings).
 
 ---
 
@@ -732,14 +803,26 @@ No client → server WS messages.
 
 All `public/` is copied from story-lab and preserved. Targeted modifications:
 
-### settings.js — new Image Generation panel
+### settings.js — Image Generation panel (master settings + profiles)
 
+Single unified panel. Two sub-sections:
+
+**Master Settings (structural):**
 - A1111 URL input + Test Connection button (GET /api/health/a1111)
 - Active Model display + Change button (modal, queries /api/a1111/models)
-- Steps, CFG, Width, Height, Sampler, Scheduler inputs
+- Generation method display (txt2img — read only for now)
+- LoRAs globally enabled toggle
+- Steps, CFG, Width, Height, Sampler, Scheduler
 - Hires.fix collapsible: enable toggle, scale, steps, denoising, upscaler select
 - ADetailer collapsible: enable toggle, model select, strength
-- Default LoRA slots (2): name picker from /api/a1111/loras, strength
+- CLIP skip
+
+**Profiles:**
+- List of saved profiles with active indicator
+- Create / Edit / Delete profile buttons
+- Profile editor fields: name, description, prompt prefix, prompt suffix, negative additions, LoRA slots (2), steps override, CFG override
+- "Set as Active" button per profile
+- "Clear Active Profile" button
 
 ### style-creator.js
 
@@ -768,6 +851,12 @@ API.getA1111Loras()
 API.setA1111Model(name)
 API.getAuditLog(filters)
 API.getAuditRun(runId)
+API.getProfiles()
+API.createProfile(data)
+API.updateProfile(id, data)
+API.deleteProfile(id)
+API.activateProfile(id)
+API.clearActiveProfile()
 ```
 
 ---
