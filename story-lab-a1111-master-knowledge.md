@@ -1065,13 +1065,31 @@ Key implementation notes:
 - Stub routes active: GET /api/health, /api/health/a1111, /api/config, /api/scenarios, /api/profiles
 - Real routes implemented: POST /api/config, POST /api/config/batch (upsert into global_config)
 
-### Phase 2 — External Clients: not started
+### Phase 2 — LLM Clients & Config: COMPLETE (2026-06-11)
 
-Files: `src/services/ollama.js`, `src/services/a1111.js`, `src/services/audit.js`
+Files: `src/services/ollama.js`, `src/services/model-resolver.js`, `src/services/config-resolver.js`,
+`src/routes/health.js`, `src/routes/config.js`, `src/routes/profiles.js`
+
+Live routes:
+
+- GET /api/health → `{ ok, ts, version }`
+- GET /api/health/ollama → calls Ollama `/api/tags`, returns model list
+- GET /api/health/a1111 → checks A1111 `/sdapi/v1/sd-models` with 3 s timeout, reads URL from global_config
+- GET /api/config → all global_config rows as `{ key: value }`
+- POST /api/config → upsert single key/value
+- POST /api/config/batch → upsert array, wrapped in BEGIN/COMMIT
+- GET /api/profiles → all image_profiles rows
+- POST /api/profiles → create profile, returns created row
+- PUT /api/profiles/:id → update profile
+- DELETE /api/profiles/:id → delete profile
+- POST /api/profiles/:id/activate → exclusive activate (BEGIN/COMMIT)
+- DELETE /api/profiles/active → deactivate all
+
+Note: `src/services/a1111.js` and `src/services/audit.js` are Phase 3 (image pipeline).
 
 ### Phase 3 — Core Services: not started
 
-Files: `src/services/config-resolver.js`, `src/services/narrator.js`, `src/services/prompt-builder.js`,
+Files: `src/services/a1111.js`, `src/services/narrator.js`, `src/services/prompt-builder.js`,
 `src/services/clothing.js`, `src/services/memory.js`, `src/services/image-pipeline.js`, etc.
 
 ### Phase 4 — Routes: not started
