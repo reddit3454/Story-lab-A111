@@ -1047,13 +1047,51 @@ API.clearActiveProfile()
 
 ---
 
+## Implementation Status
+
+### Phase 1 — Foundation: COMPLETE (2026-06-11)
+
+Files: `package.json`, `src/paths.js`, `src/logger.js`, `src/db.js`, `src/broadcast.js`, `src/server.js`
+
+DB schema: all tables created, global_config defaults seeded.
+Server verified: `node --experimental-sqlite src/server.js` starts and logs `[server] started { port: 4090 }`.
+
+Key implementation notes:
+
+- Module system: ESM (`"type": "module"`) per project rules — user spec's `"commonjs"` was corrected
+- Database: `node:sqlite` DatabaseSync (built-in) — user spec's `better-sqlite3` was corrected
+- DB location: `H:\MEDIA\Story_Lab\data\story-lab.db` (created at startup via `ensureDirectories()`)
+- Audit log: `H:\MEDIA\Story_Lab\data\audit.jsonl`
+- Stub routes active: GET /api/health, /api/health/a1111, /api/config, /api/scenarios, /api/profiles
+- Real routes implemented: POST /api/config, POST /api/config/batch (upsert into global_config)
+
+### Phase 2 — External Clients: not started
+
+Files: `src/services/ollama.js`, `src/services/a1111.js`, `src/services/audit.js`
+
+### Phase 3 — Core Services: not started
+
+Files: `src/services/config-resolver.js`, `src/services/narrator.js`, `src/services/prompt-builder.js`,
+`src/services/clothing.js`, `src/services/memory.js`, `src/services/image-pipeline.js`, etc.
+
+### Phase 4 — Routes: not started
+
+All route files under `src/routes/`.
+
+### Phase 5 — Frontend wiring: not started
+
+Wire `public/js/app.js` to use new API endpoints; add audit view to navigation.
+
+---
+
 ## Current Project State
 
 | Item | Status |
 |---|---|
 | Design spec | Complete — `docs/superpowers/specs/2026-06-10-story-lab-a1111-design.md` |
 | Implementation plan | Not yet written |
-| Source code | Not yet written |
+| Phase 1 foundation | **COMPLETE** — server starts, DB schema live, config routes functional |
+| Phase 2–5 source code | Not yet written |
 | A1111 installation | Present at `K:\stable-diffusion-webui` (fresh install, needs model path config) |
 | SDXL models | Available at `E:\ComfyUI\models\checkpoints` |
 | SDXL LoRAs | Available at `E:\ComfyUI\models\loras` |
@@ -1065,7 +1103,7 @@ API.clearActiveProfile()
 1. Write implementation plan (`docs/superpowers/plans/`)
 2. Configure A1111 to point at E:\ComfyUI\models (webui-user.bat)
 3. Install ADetailer extension in A1111
-4. Implement: Phase 1 (foundation) → Phase 2 (clients) → Phase 3 (services) → Phase 4 (routes) → Phase 5 (frontend)
+4. Implement: Phase 2 (clients) → Phase 3 (services) → Phase 4 (routes) → Phase 5 (frontend)
 
 ---
 
