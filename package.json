@@ -1,0 +1,16 @@
+{
+  "name": "story-lab-a1111",
+  "version": "0.1.0",
+  "description": "AI story and roleplay app with A1111 image generation",
+  "main": "src/server.js",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node --experimental-sqlite src/server.js",
+    "dev": "node --experimental-sqlite --watch src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.3",
+    "ws": "^8.16.0"
+  }
+}
