@@ -4,8 +4,10 @@
 > Hand this document to any coding model with codebase access to establish full
 > project context before any task.
 >
-> **Status:** Design complete — implementation not yet started (as of 2026-06-10).
-> No source code exists yet. The design spec is the ground truth for what to build.
+> **Status:** Phases 1–4 complete (as of 2026-06-12). Server runs at port 4090.
+> The source code is the ground truth for what is built. The Implementation Status
+> section at the bottom tracks completed phases with exact API surface and notes.
+> The design spec remains useful for intent and future phases.
 >
 > **Design spec:** `docs/superpowers/specs/2026-06-10-story-lab-a1111-design.md`
 > **Original reference:** `E:\TheHub\projects\story-lab\` (do not modify)
@@ -124,72 +126,61 @@ Key ones for story content:
 
 ---
 
-## Directory Structure (Planned)
+## Directory Structure (as of Phase 4)
+
+Files marked [PLANNED] do not exist yet.
 
 ```
 story-lab-a1111/
   src/
     server.js                    Entry point, Express + WS, route mounting
-    db.js                        SQLite schema, migrations, all CRUD
+    db.js                        SQLite schema, migrations, all CRUD helpers
     broadcast.js                 WS singleton broadcaster
-    logger.js                    File logger with rotation (logs/story-lab-a1111.log)
-    paths.js                     All filesystem path constants
-    input-parser.js              Bracket/slash command parsing
-    asset-logger.js              Writes asset-events.jsonl for asset-library
-    model-profiles.js            MODEL_CTX map, censorship lists, NSFW-safe lists
+    logger.js                    log() / logError() to console + audit.jsonl
+    paths.js                     All filesystem path constants + ensureDirectories()
+    input-parser.js              parseNarratorResponse() — splits ---SCENE--- block
     services/
-      audit.js                   Central audit logger → audit_log + audit.jsonl
-      ollama.js                  Ollama HTTP client (chat, generate, toolCall, listModels)
-      a1111.js                   A1111 HTTP client (txt2img, models, loras, status)
-      model-resolver.js          Picks narrator/extractor/summarizer models
-      config-resolver.js         Resolves effective config: master → active profile → request
-      narrator.js                Builds narrator context + calls Ollama
-      extractor.js               Extracts structured scene card from narrator text
-      enhancer.js                SDXL prompt enhancer via Ollama
-      prompt-builder.js          Pure prompt assembly (returns { prompt, negative, parts })
-      image-pipeline.js          Orchestrates full image generation flow
-      clothing.js                Clothing state resolution per character
-      character.js               Character appearance for prompt building
-      memory.js                  Rolling summary, promotion, context assembly
+      audit.js                   audit() — writes to audit_events DB + audit.jsonl; never throws
+      ollama.js                  chat(), generate(), listModels(), checkHealth()
+      a1111.js                   txt2img(), img2img(), getModels(), getLoras(),
+                                 getProgress(), setModel(), getOptions(), checkHealth()
+      model-resolver.js          resolveNarratorModel(db), resolveModels(db)
+      config-resolver.js         resolveMasterConfig(db), resolveActiveProfile(db),
+                                 resolveEffectiveConfig(db)
+      narrator.js                buildSystemPrompt(), runNarratorTurn()
+      prompt-builder.js          buildPrompt() — pure, no DB/LLM calls
+      image-pipeline.js          generate() — 7-stage orchestrator
+      memory.js                  shouldGenerateMemory(), generateMemory(), getRecentMemories()
+      extractor.js               [PLANNED] separate scene card extractor (narrator does it inline now)
+      enhancer.js                [PLANNED] SDXL prompt enhancer via Ollama
+      clothing.js                [PLANNED] clothing state resolution per character
+      character.js               [PLANNED] character appearance block builder
     routes/
-      health.js                  /health, /health/a1111, /health/ollama, /a1111/*
-      scenarios.js               Scenario CRUD, image config, characters, relationships
-      characters.js              Character CRUD, portrait generation
-      turns.js                   advance, nudge, regenerate, extract-scene
-      images.js                  accept, rate, delete, list
-      memories.js                Manual memory CRUD
-      world-entries.js           Lore CRUD
+      health.js                  /health, /health/a1111, /health/ollama
+      scenarios.js               Scenario CRUD; GET /:id returns characters + locations + rules + world
+      characters.js              Character CRUD + PATCH /:id/clothing
+      turns.js                   GET + POST (role=user triggers narrator pipeline) + DELETE /:id
+      images.js                  GET, POST /generate, PUT /:id/accept, PUT /:id/rate, DELETE /:id
+      memories.js                GET + POST (manual) + DELETE /:id
+      world.js                   World entries CRUD (mounted at /world)
       rules.js                   Rules CRUD
-      styles.js                  Style preset CRUD
-      locations.js               Location CRUD
-      config.js                  Global config (A1111 URL, default params)
-      profiles.js                Image generation profile CRUD + activate/clear
-      audit.js                   Query audit log
-  public/                        Copied from story-lab, frontend unchanged
-    index.html
-    css/main.css
-    js/
-      app.js, api.js, constants.js, state.js, ui.js, utils.js
-      views/
-        characters.js, dashboard.js, images.js, play.js
-        scenario-setup.js, settings.js, style-creator.js, styles.js
-        audit.js                 New — debug viewer for generation audit log
-  database/
-    story-lab-a1111.db           SQLite database
-  logs/
-    story-lab-a1111.log          Server log (ASCII, 2MB rotation)
-    audit.jsonl                  Generation audit log (JSON lines, one entry per event)
-  asset-logs/
-    asset-events.jsonl           Asset events for asset-library ingestion
+      locations.js               Location CRUD + background image routes
+      config.js                  GET + POST + POST /batch (global_config key/value)
+      profiles.js                Image profile CRUD + POST /:id/activate + DELETE /active
+      a1111.js                   GET /models, GET /loras, GET /status, POST /model
+      audit.js                   GET / (filterable), GET /:runId
+      styles.js                  [PLANNED] Style preset CRUD
+  public/                        Copied from story-lab; not yet adapted for A1111
+  H:\MEDIA\Story_Lab\
+    data\
+      story-lab.db               SQLite database (path from paths.js DB_PATH)
+      audit.jsonl                Pipeline audit events (JSON lines)
+    images\{scenarioId}\         Generated scene/portrait/fullbody images
+    backgrounds\{locationSlug}\  Location background images
   docs/
     superpowers/
       specs/
         2026-06-10-story-lab-a1111-design.md    Full design spec
-      plans/
-        (implementation plan — to be written)
-  tests/
-    services/                    node:test unit tests for pure services
-    routes/                      Integration tests
   package.json
   module.json
 ```
@@ -199,235 +190,227 @@ story-lab-a1111/
 ## Database Schema
 
 All tables use WAL, foreign keys ON, tuned PRAGMAs. Migrations use ALTER TABLE in try/catch.
-The DB file is `database/story-lab-a1111.db`.
+The DB file lives at `H:\MEDIA\Story_Lab\data\story-lab.db` (see `src/paths.js` DB_PATH).
 
-### Key design decisions vs. original story-lab
-
-- No `generation_config` JSON blob — all A1111 params are real typed columns in `global_config`
-- `scene_images` stores the complete A1111 request + response metadata (seed, model hash, all params)
-- `character_states` is its own table — not entangled in scenario/turn columns
-- `global_config` is a key/value table for A1111 defaults and system settings
-- `audit_log` table captures every pipeline event (see Observability section)
-- No video columns anywhere
-- No workflow columns anywhere
-- `image_profiles` table replaces scenario-level image config overrides — profiles are global named presets, not per-scenario. Scenarios do not store image config.
-- Structural image settings (model, method, hires, adetailer) live only in `global_config` and cannot be overridden at any lower level.
+Tables are created in a single `db.exec(...)` block in `src/db.js`. Additive migrations
+use individual `try { db.exec('ALTER TABLE ...') } catch (_) {}` calls after the main block.
 
 ### scenarios
 
 ```
-id, title, setting, tone, premise
-nsfw_enabled, ended_at, created_at
-user_character_id → characters.id
-reply_length, pacing, narrative_pov
-lust_level, violence_level, explicitness_level, tone_modifier
-llm_narrator_model, llm_extract_model   -- nullable, override global defaults
-default_start
+id INTEGER PK
+title TEXT NOT NULL
+description TEXT DEFAULT ''
+system_prompt TEXT DEFAULT ''         -- full narrator system prompt; populated by UI
+nsfw_enabled INTEGER DEFAULT 0
+narrator_model TEXT DEFAULT ''        -- overrides global narrator_model when set
+context_turns INTEGER DEFAULT 20      -- how many recent turns to include in context
+status TEXT DEFAULT 'active'
+created_at TEXT DEFAULT datetime('now')
+updated_at TEXT DEFAULT datetime('now')
 ```
 
-Image generation config is NOT stored per-scenario. All image settings come from
-`global_config` (master) and the active `image_profiles` row (optional overrides).
+Image config is NOT stored per-scenario. All image settings come from `global_config`
+(master) and the active `image_profiles` row (optional overrides).
 
 ### characters
 
-```
-id, name, description, appearance_notes
-gender, hair_color, hair_style, body_type, breast_size, height
-is_user_character DEFAULT 0
-reference_image_path          -- for FaceID
-created_at
-```
-
-### scenario_characters
+Characters are directly linked to a scenario via `scenario_id` — there is no
+`scenario_characters` join table.
 
 ```
-scenario_id, character_id (composite PK, cascade deletes)
-role DEFAULT 'npc'            -- 'user' | 'npc'
-```
-
-### turns
-
-```
-id, scenario_id, turn_number
-speaker                       -- 'user' | 'narrator' | character name
-content_text, raw_input
-scene_card_json               -- scene state JSON parsed from narrator response (narrator writes this inline; no separate extractor call)
-prompt_strategy DEFAULT 'standard'
-user_rating DEFAULT 0
-created_at
-```
-
-### scene_images — full generation provenance
-
-Every generated image gets a complete forensic record:
-
-```
-id, turn_id, scenario_id, filename
-
--- Prompt construction trace (every layer logged)
-scene_card_json               -- raw extractor output
-prompt_parts_json             -- { quality_anchor, prefix, characters[], clothing[],
-                              --   actions[], environment, suffix, nsfw_block, lora_tags }
-enhance_input                 -- exact string sent to Ollama enhancer
-enhance_output                -- exact string returned (null if skipped)
-enhance_skipped DEFAULT 0     -- 1 if skip_enhance or enhancer offline
-visual_prompt_sent            -- final prompt A1111 actually received
-negative_prompt_sent          -- final negative prompt
-
--- Complete A1111 request (reproduce any image exactly)
-a1111_request_json            -- full payload: every param, every extension arg
-
--- A1111 response metadata
-a1111_seed                    -- actual seed returned (never -1)
-a1111_model                   -- checkpoint name
-a1111_model_hash              -- model hash (catches silent model changes)
-a1111_sampler, a1111_scheduler
-a1111_steps, a1111_cfg
-a1111_width, a1111_height
-hr_enabled, hr_scale, hr_steps, hr_denoising
-ad_enabled, ad_model, ad_strength
-loras_json                    -- [{ file, strength }] actually injected
-generation_time_ms
-
--- Character snapshot at generation time
-character_states_json         -- clothing/emotion state for all characters
-
--- Quality
-accepted DEFAULT 0
-user_rating DEFAULT 0
-quality_notes                 -- user annotations
-created_at
-```
-
-### character_states — per-scenario live state
-
-```
-id, scenario_id, character_id (UNIQUE pair)
-clothing_state_json           -- layered clothing state object
-emotion DEFAULT 'neutral'
-last_updated
-```
-
-### memory_summaries
-
-```
-id, scenario_id
-summary_text, covers_turns_up_to
-type DEFAULT 'auto'           -- 'auto' | 'manual'
-tier DEFAULT 'short'          -- 'short' | 'long'
-created_at
-```
-
-Memory tiering: after each auto summary, `promote()` in memory.js keeps 3 newest
-short-tier rows and promotes older ones to long-tier.
-
-### world_entries
-
-```
-id, scenario_id (nullable = global)
-title, content_text, trigger_keywords
-is_constant DEFAULT 0
-insertion_order DEFAULT 50
-enabled DEFAULT 1
-created_at
-```
-
-### rules
-
-```
-id, scope DEFAULT 'global'    -- 'global' | 'scenario' | 'character'
-scope_id (nullable)
-rule_text, priority DEFAULT 50
-enabled DEFAULT 1
-created_at
-```
-
-### styles
-
-```
-id, name, description
-prefix, suffix, negative
-a1111_steps, a1111_cfg, a1111_sampler, a1111_scheduler
-lora1_file, lora1_strength, lora2_file, lora2_strength
-created_at
+id INTEGER PK
+scenario_id INTEGER REFERENCES scenarios(id) ON DELETE CASCADE
+name TEXT NOT NULL
+role TEXT DEFAULT 'character'         -- 'character' | 'user' (free text)
+appearance_prompt TEXT DEFAULT ''     -- SDXL-style appearance tags for prompt building
+base_clothing TEXT DEFAULT ''         -- default/starting outfit
+current_clothing TEXT DEFAULT ''      -- live clothing state (updated during play)
+personality TEXT DEFAULT ''
+is_user INTEGER DEFAULT 0             -- 1 if this is the player character
+created_at TEXT DEFAULT datetime('now')
 ```
 
 ### locations
 
 ```
-id, name, description, image_tags
-created_at
+id INTEGER PK
+scenario_id INTEGER REFERENCES scenarios(id) ON DELETE CASCADE
+name TEXT NOT NULL
+description TEXT DEFAULT ''
+image_tags TEXT DEFAULT ''            -- SDXL tags appended in txt2img mode
+background_images_json TEXT DEFAULT '[]'  -- JSON array of background filenames
+default_background TEXT DEFAULT ''    -- filename of preferred background (random if empty)
+time_of_day TEXT DEFAULT 'any'
+created_at TEXT DEFAULT datetime('now')
 ```
 
-### image_profiles — named generation profiles
+Background files live at `H:\MEDIA\Story_Lab\backgrounds\{locationSlug}\{filename}`.
+
+### turns
 
 ```
-id, name, description
-prompt_prefix               -- text fragment prepended to all prompts when active
-prompt_suffix               -- text fragment appended to all prompts when active
-negative_additions          -- extra negative prompt terms
-lora1_file, lora1_strength
-lora2_file, lora2_strength
-steps_override              -- nullable, overrides master steps if set
-cfg_override                -- nullable, overrides master CFG if set
-is_active DEFAULT 0         -- only one profile can be active at a time
-created_at
+id INTEGER PK
+scenario_id INTEGER REFERENCES scenarios(id) ON DELETE CASCADE
+turn_number INTEGER NOT NULL
+role TEXT NOT NULL                    -- 'user' | 'narrator' | character name
+content_text TEXT NOT NULL
+scene_card_json TEXT DEFAULT '{}'     -- parsed from narrator ---SCENE--- block
+location_id INTEGER REFERENCES locations(id)
+token_estimate INTEGER DEFAULT 0      -- rough estimate of context tokens used
+created_at TEXT DEFAULT datetime('now')
 ```
 
-Only one profile may have `is_active = 1` at a time. When no profile is active,
-generation uses master settings only. Profiles CANNOT override: model/checkpoint,
-generation method, whether LoRAs are globally enabled, hires/adetailer enabled state,
-A1111 URL.
-
-### character_relationships
+### scene_images
 
 ```
-id, scenario_id, character_id, related_character_id
-relationship_label
-created_at
+id INTEGER PK
+scenario_id INTEGER REFERENCES scenarios(id) ON DELETE CASCADE
+turn_id INTEGER REFERENCES turns(id)
+filename TEXT NOT NULL                -- basename only; file in IMAGES_DIR/{scenarioId}/
+mode TEXT NOT NULL                    -- 'scene' | 'portrait' | 'fullbody' | 'background'
+generation_method TEXT DEFAULT 'txt2img'  -- 'txt2img' | 'img2img'
+background_used TEXT DEFAULT ''       -- background filename used as init image (if img2img)
+prompt_used TEXT DEFAULT ''           -- final prompt sent to A1111
+negative_used TEXT DEFAULT ''
+profile_id INTEGER REFERENCES image_profiles(id)
+seed INTEGER DEFAULT -1               -- actual seed from A1111 response
+steps INTEGER DEFAULT 30
+cfg REAL DEFAULT 7
+width INTEGER DEFAULT 832
+height INTEGER DEFAULT 1216
+model_name TEXT DEFAULT ''
+generation_time_ms INTEGER DEFAULT 0
+created_at TEXT DEFAULT datetime('now')
+
+-- Added via migration (Phase 4):
+accepted INTEGER DEFAULT 0
+user_rating INTEGER DEFAULT 0
+model_hash TEXT DEFAULT ''            -- from A1111 info JSON (catches silent model switches)
+loras_json TEXT DEFAULT '[]'          -- reserved; not yet populated
 ```
 
-### global_config — A1111 defaults
-
-Key/value store. Seed rows:
-
-| Key | Default |
-|---|---|
-| `a1111_url` | `http://127.0.0.1:7860` |
-| `a1111_model` | `realcartoonXL_v7.safetensors` |
-| `a1111_steps` | `30` |
-| `a1111_cfg` | `7.0` |
-| `a1111_sampler` | `DPM++ 2M SDE` |
-| `a1111_scheduler` | `Karras` |
-| `a1111_width` | `832` |
-| `a1111_height` | `1216` |
-| `hr_enabled` | `1` |
-| `hr_scale` | `1.5` |
-| `hr_steps` | `20` |
-| `hr_denoising` | `0.4` |
-| `hr_upscaler` | `4x-UltraSharp` |
-| `ad_enabled` | `1` |
-| `ad_model` | `face_yolov8n.pt` |
-| `ad_strength` | `0.4` |
-| `clip_skip` | `2` |
-
-### audit_log — universal pipeline audit
+### memories
 
 ```
-id, created_at
-scenario_id, turn_id, scene_image_id (nullable context)
-pipeline_run_id               -- UUID linking all events in one operation
-service                       -- 'narrator'|'prompt-builder'|'a1111'
-                              -- |'clothing'|'memory'|'image-pipeline'|'system'
-stage                         -- service-specific stage name
-status                        -- 'start'|'success'|'skipped'|'failed'
-message                       -- human one-liner
-input_json                    -- what went in
-output_json                   -- what came out
-error_text                    -- stack trace if failed
-duration_ms
-token_estimate                -- for LLM calls
+id INTEGER PK
+scenario_id INTEGER REFERENCES scenarios(id) ON DELETE CASCADE
+content TEXT NOT NULL                 -- summary text (auto) or user-entered text (manual)
+memory_type TEXT DEFAULT 'auto'       -- 'auto' | 'manual'
+turn_number INTEGER DEFAULT 0         -- turn that triggered auto-summary
+created_at TEXT DEFAULT datetime('now')
 ```
+
+No memory tier promotion is implemented yet. All memories are returned newest-first up to limit.
+
+### world_entries
+
+```
+id INTEGER PK
+scenario_id INTEGER REFERENCES scenarios(id) ON DELETE CASCADE
+title TEXT NOT NULL
+content TEXT NOT NULL
+category TEXT DEFAULT 'general'
+created_at TEXT DEFAULT datetime('now')
+```
+
+### rules
+
+```
+id INTEGER PK
+scenario_id INTEGER REFERENCES scenarios(id) ON DELETE CASCADE
+content TEXT NOT NULL
+priority INTEGER DEFAULT 0
+created_at TEXT DEFAULT datetime('now')
+```
+
+### styles
+
+```
+id INTEGER PK
+name TEXT NOT NULL
+description TEXT DEFAULT ''
+prompt_prefix TEXT DEFAULT ''
+prompt_suffix TEXT DEFAULT ''
+negative TEXT DEFAULT ''
+created_at TEXT DEFAULT datetime('now')
+```
+
+### image_profiles
+
+```
+id INTEGER PK
+name TEXT NOT NULL
+description TEXT DEFAULT ''
+prompt_prefix TEXT DEFAULT ''
+prompt_suffix TEXT DEFAULT ''
+negative_additions TEXT DEFAULT ''
+lora1_file TEXT DEFAULT ''
+lora1_strength REAL DEFAULT 1.0
+lora2_file TEXT DEFAULT ''
+lora2_strength REAL DEFAULT 1.0
+steps_override INTEGER              -- nullable; overrides master steps when set
+cfg_override REAL                   -- nullable; overrides master CFG when set
+is_active INTEGER DEFAULT 0         -- only one row may have is_active=1 at a time
+created_at TEXT DEFAULT datetime('now')
+```
+
+### audit_events
+
+```
+id INTEGER PK
+pipeline_run_id TEXT DEFAULT ''     -- UUID linking all events in one generation attempt
+service TEXT NOT NULL               -- 'image-pipeline' | 'a1111' | 'prompt-builder' | 'narrator' | ...
+event TEXT NOT NULL                 -- stage name (e.g. 'resolve_config', 'a1111_call')
+data_json TEXT DEFAULT '{}'         -- input to the stage (JSON string)
+detail_json TEXT DEFAULT '{}'       -- output + error + token_estimate (JSON string)
+level TEXT DEFAULT 'info'           -- 'info' | 'error'
+created_at TEXT DEFAULT datetime('now')
+
+-- Added via migration (Phase 4):
+scenario_id INTEGER
+turn_id INTEGER
+duration_ms INTEGER
+```
+
+### global_config
+
+Key/value store seeded with defaults in `src/db.js`.
+
+| Key | Default | Notes |
+|---|---|---|
+| `a1111_url` | `http://127.0.0.1:7860` | |
+| `a1111_model` | `''` | Updated by POST /api/a1111/model |
+| `a1111_steps` | `30` | |
+| `a1111_cfg` | `7` | |
+| `a1111_sampler` | `DPM++ 2M SDE` | |
+| `a1111_scheduler` | `Karras` | |
+| `a1111_width` | `832` | |
+| `a1111_height` | `1216` | |
+| `a1111_clip_skip` | `2` | |
+| `hr_enabled` | `false` | Boolean stored as string |
+| `hr_scale` | `1.5` | |
+| `hr_steps` | `15` | |
+| `hr_denoising` | `0.4` | |
+| `hr_upscaler` | `R-ESRGAN 4x+` | |
+| `ad_enabled` | `true` | |
+| `ad_model` | `face_yolov8n.pt` | |
+| `ad_strength` | `0.4` | |
+| `lora_enabled` | `true` | Global gate; profiles cannot override |
+| `nsfw_enabled` | `false` | |
+| `master_negative` | `bad anatomy, bad hands...` | |
+| `narrator_model` | `''` | Empty = auto-select first Ollama model |
+| `narrator_context_turns` | `20` | |
+| `narrator_max_tokens` | `1200` | |
+
+`resolveMasterConfig(db)` casts keys in NUMERIC_KEYS to float and BOOLEAN_KEYS to bool.
+All other values are returned as strings.
+
+### Tables NOT yet created (planned)
+
+- `character_states` — per-scenario clothing/emotion state; clothing currently stored on `characters.current_clothing`
+- `character_relationships` — relationship labels between character pairs
+- `scenario_characters` — join table; not needed since `characters.scenario_id` is a direct FK
 
 Indexed on: `pipeline_run_id`, `(scenario_id, created_at DESC)`, `status WHERE failed`.
 
@@ -469,18 +452,6 @@ Filter `WHERE pipeline_run_id = 'x'` to see the complete trace for any image.
 
 ## Service Layer
 
-### src/services/audit.js
-
-Central audit logger. All services import this. Never throws — audit failures are console.error only.
-
-```js
-audit({ service, stage, status, message, input, output, error,
-        duration_ms, token_estimate,
-        scenario_id, turn_id, scene_image_id, pipeline_run_id })
-```
-
-Writes to `audit_log` table and appends to `logs/audit.jsonl` simultaneously.
-
 ### src/services/ollama.js
 
 Ollama HTTP client. All calls log via audit.
@@ -494,186 +465,191 @@ listModels()                      // → string[] — cached 60s
 
 ### src/services/a1111.js
 
-A1111 HTTP client. Logs full request + response via audit.
+A1111 HTTP client. All functions take `baseUrl` as first argument (read from
+`resolveEffectiveConfig(db).a1111_url` by callers). Saves decoded base64 images to disk.
 
 ```js
-txt2img(payload)       // → { filename, seed, model_name, model_hash, generation_time_ms }
-img2img(payload)       // → { filename, seed, model_name, model_hash, generation_time_ms } — used for location background mode (denoising 0.45)
-getModels()            // → [{ title, model_name, hash }]
-getLoras()             // → [{ name, path, alias }]
-getProgress()          // → { active, progress, eta }
-setModel(name)         // → void — switches active checkpoint via /sdapi/v1/options
-getOptions()           // → current A1111 options object
+txt2img(baseUrl, payload, savePath)
+// → { filename, seed, model_name, model_hash, generation_time_ms, info }
+
+img2img(baseUrl, payload, savePath)
+// → { filename, seed, model_name, model_hash, generation_time_ms, info }
+
+getModels(baseUrl)    // → [{ title, model_name, hash }]
+getLoras(baseUrl)     // → [{ name, path, alias }]
+getProgress(baseUrl)  // → { active, progress, eta }
+setModel(baseUrl, modelName)  // → void — POST /sdapi/v1/options
+getOptions(baseUrl)   // → current A1111 options object
+checkHealth(baseUrl)  // → { ok } or { ok: false, error } — 3 s timeout
 ```
 
-Images are written to `H:\MEDIA\Story_Lab\{scenario_slug}\{timestamp}.png`.
-LoRAs are injected into the prompt string as `<lora:filename:strength>` tags.
-CLIP skip 2 is always set for SDXL.
+LoRAs are injected into the prompt string as `<lora:filename:strength>` tags by prompt-builder.
+CLIP skip 2 is always set via `override_settings.CLIP_stop_at_last_layers`.
 
 ### src/services/config-resolver.js
 
-Resolves effective image config for any generation request. Resolution chain (later overrides earlier):
-1. `global_config` master settings (structural — model, method, hires, adetailer, lora_enabled flag)
-2. Active `image_profiles` row if one has `is_active = 1` (prompt fragments, specific LoRAs, steps/cfg overrides)
-3. Request context assembled by prompt-builder.js (not a config layer — prompt content only)
-
-Profiles cannot override structural master constraints (model, generation method, lora_enabled global flag, hires/adetailer enabled state).
-
 ```js
 resolveMasterConfig(db)
-// → flat master config object from global_config
+// → flat config object; NUMERIC_KEYS cast to float, BOOLEAN_KEYS cast to bool
 
 resolveActiveProfile(db)
 // → active image_profiles row or null
 
 resolveEffectiveConfig(db)
-// → merged config: master + profile overrides applied where permitted
+// → merged config: master + profile overrides (prompt_prefix/suffix, negative_additions,
+//   lora1/2, steps_override, cfg_override). Returns { ...merged, active_profile_id }
+// Profiles CANNOT override: a1111_url, a1111_model, hr_enabled, ad_enabled,
+//   lora_enabled, nsfw_enabled
 ```
 
 ### src/services/model-resolver.js
 
-Picks LLM models for a scenario. Caches installed model list 60s.
-
 ```js
-resolveModels(scenario)
-// → { narratorModel, extractorModel, summarizerModel }
+resolveNarratorModel(db)
+// → model name string
+// Reads 'narrator_model' from global_config; falls back to first available Ollama model
+
+resolveModels(db)
+// → { narrator }
+// Currently only resolves narrator. Extractor/summarizer roles not yet differentiated.
 ```
-
-Resolution: scenario overrides → SFW/NSFW routing → fallback chain → installed check.
-Throws clearly if NSFW scenario ends up with censored narrator.
-
-SFW narrator: `gemma3:12b-it-q4_K_M` → fallback `hermes3:8b-llama3.1-q6K`
-NSFW narrator: `l3-moe-champion` → fallback `dolphin3:latest`
-Extractor: `dolphin3-tools:latest` → fallback `dolphin3:latest`
-Summarizer: `hermes3:8b-llama3.1-q6K` → fallback `dolphin3:latest`
 
 ### src/services/narrator.js
 
 ```js
-buildContext({ scenario, characters, turns, memories, worldEntries, relationships, sceneCard, location })
-// → messages[] for Ollama chat
+buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, config })
+// → system prompt string
+// 7 blocks: scenario system_prompt, characters (with clothing), rules, world entries,
+//   memories, NSFW gate, ---SCENE--- instruction
 
-advance(context, userMessage, model)
-// → { text, duration_ms }
-```
-
-Context assembly logged: turn count included, memory tiers used, world entries matched, token estimate.
-
-### src/services/extractor.js
-
-```js
-extract({ narratorText, characters, scenario, model })
-// → scene_card: { primary_subject, characters: [{ name, action, clothing_change }],
-//                 environment, lighting, atmosphere }
-```
-
-Uses Ollama tool call for structured output. Falls back to minimal scene card on parse failure — never throws.
-
-### src/services/enhancer.js
-
-```js
-enhance({ prompt, scenario, model })
-// → { output, skipped, skip_reason, duration_ms }
-```
-
-Skips if: `skip_enhance=1` on scenario, or Ollama unreachable. Returns original prompt as output when skipped.
-
-### src/services/prompt-builder.js
-
-Pure prompt assembly — no LLM calls, no DB calls.
-
-```js
-buildPrompt({ sceneCard, characters, clothingStates, location, scenario, config })
-// → { prompt, negative, parts }
-// parts: { quality_anchor, prefix, characters[], environment, lighting,
-//          suffix, nsfw_block, lora_tags }
-```
-
-The `parts` object is the full labeled breakdown stored in `scene_images.prompt_parts_json`.
-
-### src/services/clothing.js
-
-```js
-resolve({ character, characterState, sceneCard })
-// → string — resolved clothing prompt with SDXL weighting
-
-applyChanges(scenarioId, characterId, changes, db)
-// → updates character_states row
-```
-
-Resolution chain (first non-empty wins):
-1. `clothing_state_json` layered fields on the character_states row
-2. `current_clothing` flat string on the same row
-3. Character `default_outfit` fallback
-
-Logs which resolution level fired.
-
-### src/services/character.js
-
-```js
-buildAppearanceBlock(character)
-// → string — physical traits for SDXL prompt
-
-buildPortraitPayload({ character, scenario, config })
-// → complete A1111 txt2img payload object
+runNarratorTurn({ db, scenario, messages, turnNumber })
+// → { story_text, scene_card, model_used, token_estimate }
+// Loads characters/rules/world/memories from DB, builds system prompt, calls Ollama chat,
+//   parses ---SCENE--- block. Never throws on parse failure — returns defaultSceneCard().
 ```
 
 ### src/services/memory.js
 
 ```js
-triggerIfNeeded(scenarioId, db)
-// → { triggered, summary_id } | { triggered: false }
-// Threshold: every 20 turns with >= 400 words across last 20 turns
+shouldGenerateMemory(turnNumber, interval=20)
+// → boolean — true when turnNumber > 0 && turnNumber % interval === 0
 
-summarize(turns, model)
-// → summary_text
+generateMemory({ db, scenarioId, turns, config })
+// → inserted memory row
+// Summarizes last 20 turns via Ollama generate(); inserts as memory_type='auto'
 
-promote(scenarioId, keepRecent=3, db)
-// → void — flips old short-tier rows to long-tier
-
-buildContext(scenarioId, db)
-// → { short[], long[], manual[] }
+getRecentMemories(db, scenarioId, limit=10)
+// → memory rows ordered by created_at DESC
 ```
+
+No memory tier promotion is implemented. All memories are a flat list; newest-first.
+
+### src/services/prompt-builder.js
+
+Pure — no DB calls, no LLM calls.
+
+```js
+buildPrompt({ sceneCard, characters, location, scenario, config, isImg2img=false })
+// → { prompt, negative, parts }
+// parts: { mode, prefix, scene_image_prompt, location_tags, atmosphere_tags,
+//           character_block, clothing_block, suffix, nsfw_tier, nsfw_tags,
+//           lora_tags, negative }
+```
+
+Clothing comes from `characters[].current_clothing` (flat string on the character row).
+Mood → atmosphere lookup table lives in prompt-builder.js (8 entries + aliases).
+Arousal gating: levels 1–3 always SFW; 4–5 add suggestive tags if nsfw_enabled;
+6–7 add explicit tags; 8–10 add explicit+hardcore. All gated behind `config.nsfw_enabled`.
 
 ### src/services/image-pipeline.js
 
-Single entry point for all image generation. Called as fire-and-forget from routes.
+Single entry point for all image generation. Called fire-and-forget from routes with `.catch()`.
 
 ```js
-generate({ mode, scenarioId, turnId, characterId, opts })
+generate({ mode, scenarioId, turnId=null, characterId=null, opts={} })
 // mode: 'scene' | 'portrait' | 'fullbody' | 'background'
-// All modes pass through the same pipeline stages.
-// Mode controls which prompt-building path prompt-builder.js uses.
-// 'background' mode generates a location background image stored in H:\MEDIA\Story_Lab\backgrounds\{slug}\.
-// opts: { directPrompt?, rawPrompt?, contextTurns? }
+// opts: { directPrompt?, rawPrompt?, locationId?, contextTurns? }
+// → { ok, imageId, filename, savePath }
+// Throws on failure (callers use .catch()); broadcasts image_error on failure
 ```
 
-Scene data (scene_card_json) is read from the turn row — it was written there by the narrator in a single response. There is no extractor call inside the pipeline.
+Pipeline stages (each writes an audit event with the same `pipeline_run_id`):
 
-Stages in order (all logged with same pipeline_run_id):
+1. `resolve_config` — resolveEffectiveConfig(db)
+2. `build_prompt` — prompt-builder.buildPrompt() using scene_card_json from turn row
+3. `resolve_background` — read location's background_images_json; load file to base64 if found
+4. `a1111_call` — img2img (denoising 0.45) if background found, txt2img otherwise
+5. `file_verify` — fs.existsSync(savePath)
+6. `persist` — INSERT scene_images row (skipped for 'background' mode)
+7. `broadcast` — image_ready WS event (skipped for 'background' mode)
 
-1. `resolve_config` — config-resolver.resolveEffectiveConfig()
-2. `build_prompt` — prompt-builder.buildPrompt() (reads scene_card_json already on turn row)
-3. `resolve_background` — read location row, select background image if available
-4. `a1111_call` — a1111.img2img() if background found, a1111.txt2img() otherwise
-5. `file_verify` — confirm file exists on disk
-6. `persist` — INSERT scene_images with all metadata
-7. `broadcast` — send `image_ready` WS event
+Background mode saves to `BACKGROUNDS_DIR/{locationSlug}/{timestamp}.png`. The calling
+route updates `locations.background_images_json` after `generate()` resolves.
+
+### src/services/extractor.js — NOT YET IMPLEMENTED
+
+Planned: separate LLM call to extract structured scene card. Currently the narrator
+writes the `---SCENE---` block inline; `input-parser.parseNarratorResponse()` parses it.
+
+### src/services/enhancer.js — NOT YET IMPLEMENTED
+
+Planned: Ollama-based SDXL prompt enhancement. Currently prompts are assembled
+deterministically by prompt-builder with no LLM rewriting.
+
+### src/services/clothing.js — NOT YET IMPLEMENTED
+
+Planned: layered clothing state resolution. Currently `characters.current_clothing`
+(flat string) is used directly by prompt-builder.
+
+### src/services/audit.js
+
+```js
+audit({ pipeline_run_id, service, stage, status, message,
+        input, output, error, duration_ms, token_estimate,
+        scenario_id, turn_id, scene_image_id })
+// → void — writes to audit_events DB + AUDIT_LOG_PATH jsonl; never throws
+```
 
 ---
 
-## Route Layer
+## Route Layer (as implemented)
 
-Routes contain no business logic — validate input, call one service method, return result.
+All nested routers use `mergeParams: true` so `:scenarioId` is accessible inside them.
 
-| Route file | Endpoints |
-|---|---|
-| `health.js` | GET /health, /health/a1111, /health/ollama; GET /a1111/models, /a1111/loras, /a1111/status; POST /a1111/model |
-| `scenarios.js` | CRUD /scenarios, /scenarios/:id/characters, /scenarios/:id/image-config, /scenarios/:id/relationships |
-| `characters.js` | CRUD /characters, POST /characters/:id/generate-reference, /characters/:id/generate-fullbody |
-| `turns.js` | POST /turns/advance, /turns/nudge, /turns/extract-scene, /turns/generate-image; PATCH /scenarios/:id/turns/:id; POST /scenarios/:id/turns/:id/regenerate |
-| `images.js` | GET /images, PUT /images/:id/accept, PUT /images/:id/rate, DELETE /images/:id |
-| `memories.js` | GET /scenarios/:id/memories, POST /scenarios/:id/memories/manual, DELETE /scenarios/:id/memories/:id |
+| Route file | Mount point | Endpoints |
+| --- | --- | --- |
+| `health.js` | /api/health | GET /, /ollama, /a1111 |
+| `config.js` | /api/config | GET /, POST /, POST /batch |
+| `profiles.js` | /api/profiles | GET /, POST /, PUT /:id, DELETE /:id, POST /:id/activate, DELETE /active |
+| `scenarios.js` | /api/scenarios | GET /, POST /, GET /:id, PUT /:id, DELETE /:id |
+| `turns.js` | /api/scenarios/:id/turns | GET /, POST /, DELETE /:id |
+| `characters.js` | /api/scenarios/:id/characters | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, PATCH /:id/clothing |
+| `locations.js` | /api/scenarios/:id/locations | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, GET /:id/backgrounds, POST /:id/generate-background, POST /:id/backgrounds/:f/set-default, DELETE /:id/backgrounds/:f |
+| `memories.js` | /api/scenarios/:id/memories | GET /, POST /, DELETE /:id |
+| `world.js` | /api/scenarios/:id/world | GET /, POST /, PUT /:id, DELETE /:id |
+| `rules.js` | /api/scenarios/:id/rules | GET /, POST /, PUT /:id, DELETE /:id |
+| `images.js` | /api/scenarios/:id/images | GET /, POST /generate, PUT /:id/accept, PUT /:id/rate, DELETE /:id |
+| `a1111.js` | /api/a1111 | GET /models, GET /loras, GET /status, POST /model |
+| `audit.js` | /api/audit | GET / (filters: scenario_id, service, level, limit), GET /:runId |
+
+Static routes: `/story-images` → `H:\MEDIA\Story_Lab\images`, `/story-backgrounds` → `H:\MEDIA\Story_Lab\backgrounds`
+
+Routes NOT yet implemented: `/api/styles`, character portrait generation, scenario relationships.
+
+### turns POST detail
+
+POST /api/scenarios/:id/turns with `role=user`:
+
+1. Insert user turn
+2. Load recent turns for context window (scenario.context_turns + 1, default 21)
+3. Build Ollama messages from history + current user message
+4. Call `narrator.runNarratorTurn()` → `{ story_text, scene_card, model_used, token_estimate }`
+5. Insert narrator turn with `scene_card_json = JSON.stringify(scene_card)`
+6. If `memory.shouldGenerateMemory(narratorTurnNum)`: fire `generateMemory()` async with `.catch()`
+7. Broadcast `turn_complete` WS event
+8. Return `{ user_turn, narrator_turn }`
+
+Images are NOT auto-generated on turn advance. Trigger via POST /api/scenarios/:id/images/generate.
 | `world-entries.js` | CRUD /world-entries |
 | `rules.js` | CRUD /rules |
 | `styles.js` | CRUD /styles, GET/POST /scenarios/:id/active-style |
