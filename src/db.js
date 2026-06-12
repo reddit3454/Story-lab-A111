@@ -183,4 +183,17 @@ for (const [key, value] of _defaults) {
   _insertDefault.run(key, value);
 }
 
+/* ── Additive migrations ─────────────────────────────────────────── */
+
+// scene_images quality columns
+try { db.exec('ALTER TABLE scene_images ADD COLUMN accepted   INTEGER DEFAULT 0'); } catch (_) {}
+try { db.exec('ALTER TABLE scene_images ADD COLUMN user_rating INTEGER DEFAULT 0'); } catch (_) {}
+try { db.exec('ALTER TABLE scene_images ADD COLUMN model_hash  TEXT DEFAULT \'\''); } catch (_) {}
+try { db.exec('ALTER TABLE scene_images ADD COLUMN loras_json  TEXT DEFAULT \'[]\''); } catch (_) {}
+
+// audit_events context columns
+try { db.exec('ALTER TABLE audit_events ADD COLUMN scenario_id INTEGER'); } catch (_) {}
+try { db.exec('ALTER TABLE audit_events ADD COLUMN turn_id     INTEGER'); } catch (_) {}
+try { db.exec('ALTER TABLE audit_events ADD COLUMN duration_ms INTEGER'); } catch (_) {}
+
 export default db;

@@ -16,6 +16,9 @@ import locationsRouter  from './routes/locations.js';
 import memoriesRouter   from './routes/memories.js';
 import worldRouter      from './routes/world.js';
 import rulesRouter      from './routes/rules.js';
+import imagesRouter     from './routes/images.js';
+import a1111Router      from './routes/a1111.js';
+import auditRouter      from './routes/audit.js';
 
 const PORT = process.env.PORT || 4090;
 
@@ -53,6 +56,17 @@ app.use('/api/scenarios/:scenarioId/locations',  locationsRouter);
 app.use('/api/scenarios/:scenarioId/memories',   memoriesRouter);
 app.use('/api/scenarios/:scenarioId/world',      worldRouter);
 app.use('/api/scenarios/:scenarioId/rules',      rulesRouter);
+
+/* ── Phase 4 image pipeline routes ──────────────────────────────────── */
+
+app.use('/api/scenarios/:scenarioId/images', imagesRouter);
+app.use('/api/a1111',  a1111Router);
+app.use('/api/audit',  auditRouter);
+
+/* ── Static image serving ────────────────────────────────────────────── */
+
+app.use('/story-images', express.static('H:\\MEDIA\\Story_Lab\\images'));
+app.use('/story-backgrounds', express.static('H:\\MEDIA\\Story_Lab\\backgrounds'));
 
 /* ── SPA fallback ────────────────────────────────────────────────────── */
 

@@ -1111,9 +1111,45 @@ Key behaviors:
 - `narrator.buildSystemPrompt` assembles 7 blocks: base prompt, characters (with clothing), rules, world, memories, NSFW gate, scene card instruction
 - `memory.generateMemory` summarizes last 20 turns into 2-3 key facts via Ollama, INSERTs into memories table as type='auto'
 
-### Phase 4 — Image Pipeline: not started
+### Phase 4 — Image Pipeline: COMPLETE (2026-06-12)
 
-Files: `src/services/a1111.js`, `src/services/prompt-builder.js`, `src/services/image-pipeline.js`
+Files: `src/services/audit.js`, `src/services/a1111.js`, `src/services/prompt-builder.js`,
+`src/services/image-pipeline.js`, `src/routes/images.js`, `src/routes/a1111.js`,
+`src/routes/audit.js`; updated `src/routes/locations.js`, `src/server.js`, `src/db.js`
+
+Live route groups:
+
+- GET /api/a1111/models — list A1111 checkpoints
+- GET /api/a1111/loras — list A1111 LoRAs
+- GET /api/a1111/status — generation progress
+- POST /api/a1111/model — switch active checkpoint (persists to global_config)
+- GET /api/scenarios/:id/images — list scene images (optional ?turn_id= filter)
+- POST /api/scenarios/:id/images/generate — fire-and-forget image gen for a turn
+- PUT /api/scenarios/:id/images/:id/accept — mark image accepted
+- PUT /api/scenarios/:id/images/:id/rate — rate image
+- DELETE /api/scenarios/:id/images/:id — delete image record
+- GET /api/scenarios/:id/locations/:lid/backgrounds — list background filenames
+- POST /api/scenarios/:id/locations/:lid/generate-background — blocking bg gen, updates location row
+- POST /api/scenarios/:id/locations/:lid/backgrounds/:file/set-default — set preferred background
+- DELETE /api/scenarios/:id/locations/:lid/backgrounds/:file — delete background file + update JSON
+- GET /api/audit — audit events (filters: scenario_id, service, level, limit)
+- GET /api/audit/:runId — full pipeline trace by run ID
+
+DB migrations added (additive, each in try/catch):
+- scene_images: accepted, user_rating, model_hash, loras_json
+- audit_events: scenario_id, turn_id, duration_ms
+
+Static serving:
+- /story-images → H:\MEDIA\Story_Lab\images
+- /story-backgrounds → H:\MEDIA\Story_Lab\backgrounds
+
+Key behaviors:
+
+- `audit.js` service writes every pipeline event to audit_events DB + logs/audit.jsonl simultaneously; never throws
+- `a1111.js` saves decoded base64 image to disk and returns `{ filename, seed, model_name, model_hash, generation_time_ms }`
+- `prompt-builder.js` is pure (no DB/LLM calls): mood→atmosphere lookup table, arousal tiers gated by nsfw_enabled, LoRA `<lora:file:strength>` injection
+- `image-pipeline.js` orchestrates 7 stages (resolve_config → build_prompt → resolve_background → a1111_call → file_verify → persist → broadcast), each audited with same `pipeline_run_id`; background mode saves to BACKGROUNDS_DIR and skips scene_images insert
+- `pipeline.generate` is always called fire-and-forget from routes with `.catch()`; background generation from locations route is blocking (awaited) to allow the route to update the location row immediately
 
 ### Phase 5 — Frontend wiring: not started
 
