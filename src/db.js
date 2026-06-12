@@ -185,6 +185,9 @@ for (const [key, value] of _defaults) {
 
 /* ── Additive migrations ─────────────────────────────────────────── */
 
+// locations background folder
+try { db.exec("ALTER TABLE locations ADD COLUMN background_folder TEXT DEFAULT ''"); } catch (_) {}
+
 // scene_images quality columns
 try { db.exec('ALTER TABLE scene_images ADD COLUMN accepted   INTEGER DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE scene_images ADD COLUMN user_rating INTEGER DEFAULT 0'); } catch (_) {}

@@ -239,13 +239,15 @@ scenario_id INTEGER REFERENCES scenarios(id) ON DELETE CASCADE
 name TEXT NOT NULL
 description TEXT DEFAULT ''
 image_tags TEXT DEFAULT ''            -- SDXL tags appended in txt2img mode
-background_images_json TEXT DEFAULT '[]'  -- JSON array of background filenames
-default_background TEXT DEFAULT ''    -- filename of preferred background (random if empty)
+background_images_json TEXT DEFAULT '[]'  -- legacy; not used by pipeline (kept for compatibility)
+background_folder TEXT DEFAULT ''     -- folder name under BACKGROUNDS_DIR (e.g. 'Sarahs_room')
+default_background TEXT DEFAULT ''    -- specific filename to pin; random pick if empty
 time_of_day TEXT DEFAULT 'any'
 created_at TEXT DEFAULT datetime('now')
 ```
 
-Background files live at `H:\MEDIA\Story_Lab\backgrounds\{locationSlug}\{filename}`.
+Background files live at `H:\MEDIA\Story_Lab\backgrounds\{background_folder}\{filename}`.
+`background_folder` is the literal folder name (not derived from location name).
 
 ### turns
 
@@ -577,14 +579,14 @@ Pipeline stages (each writes an audit event with the same `pipeline_run_id`):
 
 1. `resolve_config` — resolveEffectiveConfig(db)
 2. `build_prompt` — prompt-builder.buildPrompt() using scene_card_json from turn row
-3. `resolve_background` — read location's background_images_json; load file to base64 if found
+3. `resolve_background` — read location's background_folder; pick default_background or random file; base64-encode
 4. `a1111_call` — img2img (denoising 0.45) if background found, txt2img otherwise
 5. `file_verify` — fs.existsSync(savePath)
 6. `persist` — INSERT scene_images row (skipped for 'background' mode)
 7. `broadcast` — image_ready WS event (skipped for 'background' mode)
 
 Background mode saves to `BACKGROUNDS_DIR/{locationSlug}/{timestamp}.png`. The calling
-route updates `locations.background_images_json` after `generate()` resolves.
+route saves the generated file into `BACKGROUNDS_DIR/{background_folder}/`.
 
 ### src/services/extractor.js — NOT YET IMPLEMENTED
 
@@ -845,34 +847,28 @@ Locations can store 1–5 pre-generated background images. When a background is 
 ### Storage path
 
 ```
-H:\MEDIA\Story_Lab\backgrounds\{location_slug}\
-  background_001.png
-  background_002.png
+H:\MEDIA\Story_Lab\backgrounds\{background_folder}\
+  Sarahs_room\bg_morning.png
+  Beach\beach_sunset.png
+  Campsite\campfire_night.png
 ```
 
-`location_slug` is derived from the location name (lowercase, spaces to underscores).
-
-### Updated locations table
-
-```
-id, name, description, image_tags
-background_images_json        -- JSON array of background filenames present on disk
-default_background            -- filename of the preferred background (null = pick randomly)
-time_of_day                   -- 'morning' | 'afternoon' | 'evening' | 'night' | null
-created_at
-```
+`background_folder` is set directly on the location record — it is the literal folder name
+under `BACKGROUNDS_DIR`, not derived from the location name.
 
 ### Pipeline behavior
 
-When `resolve_background` stage runs:
+When `resolve_background` stage runs (in `image-pipeline.js`):
 
-1. Read the location row for the current scene
-2. If `background_images_json` has entries, pick `default_background` or a random entry
-3. Load image file from `H:\MEDIA\Story_Lab\backgrounds\{slug}\{file}`
-4. Convert to base64
-5. Pass to `a1111.img2img()` with `denoising_strength: 0.45`
+1. Read `location.background_folder` from the location row
+2. If `background_folder` is empty → `txt2img` (no background)
+3. If `location.default_background` is set and the file exists at
+   `BACKGROUNDS_DIR/{background_folder}/{default_background}` → use that specific file
+4. Otherwise list all `.png`/`.jpg` files in `BACKGROUNDS_DIR/{background_folder}` and pick one at random
+5. If folder does not exist or is empty → `txt2img`
+6. Selected file is base64-encoded and passed to `a1111.img2img()` with `denoising_strength: 0.45`
 
-If no background is available, fall through to `a1111.txt2img()` with `location.image_tags` appended to prompt.
+Audit log message at this stage reports the selected filename, folder, and whether img2img or txt2img is used.
 
 ### A1111 img2img payload additions
 
@@ -886,13 +882,19 @@ If no background is available, fall through to `a1111.txt2img()` with `location.
 
 All other fields (steps, cfg, sampler, dimensions, ADetailer) are identical to txt2img.
 
-### Location UI additions
+### GET /:id/backgrounds response
 
-- **Locations list** — each location shows a thumbnail strip of its background images
-- **Generate Background** button — opens a prompt dialog, calls `POST /locations/:id/generate-background`, which fires `image-pipeline.generate({ mode: 'background' })`
-- **Upload Background** button — upload an existing image via `POST /locations/:id/backgrounds`
-- **Set Default** — marks one image as the preferred background
-- **Delete** — removes a background image file and updates the JSON array
+```json
+{ "ok": true, "folder": "Sarahs_room", "files": ["bg1.png", "bg2.png"], "default_background": null }
+```
+
+Returns `{ ok: false, error: "No background folder set" }` if `background_folder` is empty.
+Returns `{ ok: false, error: "Folder not found: ..." }` if folder does not exist on disk.
+
+### Generated backgrounds
+
+`POST /api/scenarios/:id/locations/:lid/generate-background` fires `image-pipeline.generate({ mode: 'background' })`.
+Generated files are saved to `BACKGROUNDS_DIR/{background_folder}/` (falls back to location name slug if folder not set).
 
 ---
 

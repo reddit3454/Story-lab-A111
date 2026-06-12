@@ -14,6 +14,8 @@ function _locationSlug(name) {
   return (name || 'location').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 }
 
+const IMAGE_EXT = /\.(png|jpg|jpeg)$/i;
+
 function _buildA1111Payload(config, prompt, negative) {
   const payload = {
     prompt,
@@ -56,16 +58,29 @@ function _buildA1111Payload(config, prompt, negative) {
 
 function _resolveBackground(location) {
   if (!location) return null;
-  let images;
-  try { images = JSON.parse(location.background_images_json || '[]'); } catch (_) { images = []; }
-  if (!images.length) return null;
 
-  const slug    = _locationSlug(location.name);
-  const bgFile  = location.default_background || images[Math.floor(Math.random() * images.length)];
-  const bgPath  = path.join(BACKGROUNDS_DIR, slug, bgFile);
+  const folder = location.background_folder || '';
+  if (!folder) return null;
 
-  if (!fs.existsSync(bgPath)) return null;
-  return bgPath;
+  const folderPath = path.join(BACKGROUNDS_DIR, folder);
+
+  // Prefer pinned default_background if it exists on disk
+  const defaultFile = location.default_background || '';
+  if (defaultFile) {
+    const defaultPath = path.join(folderPath, defaultFile);
+    if (fs.existsSync(defaultPath)) return defaultPath;
+  }
+
+  // Otherwise list folder and pick at random
+  if (!fs.existsSync(folderPath)) return null;
+  let files;
+  try {
+    files = fs.readdirSync(folderPath).filter(f => IMAGE_EXT.test(f));
+  } catch (_) {
+    return null;
+  }
+  if (!files.length) return null;
+  return path.join(folderPath, files[Math.floor(Math.random() * files.length)]);
 }
 
 export async function generate({ mode, scenarioId, turnId = null, characterId = null, opts = {} }) {
@@ -134,19 +149,23 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
             input:  { scene_card: sceneCard, mode },
             output: { parts, prompt_length: prompt.length } });
 
-    // Stage 3: resolve_background (already done above; log outcome)
+    // Stage 3: resolve_background (resolved above; log outcome)
+    const bgMethod = bgPath ? 'img2img' : 'txt2img';
     audit({ pipeline_run_id: runId, service: 'image-pipeline', stage: 'resolve_background',
-            status: 'success', message: bgPath ? `using background ${path.basename(bgPath)}` : 'no background, txt2img',
+            status: 'success',
+            message: bgPath
+              ? `img2img — selected ${path.basename(bgPath)} from folder "${location?.background_folder || ''}"`
+              : `txt2img — no background folder or folder empty`,
             scenario_id: scenarioId, turn_id: turnId,
-            output: { bg_path: bgPath } });
+            output: { bg_path: bgPath, method: bgMethod } });
 
     // Stage 4: a1111_call
     const timestamp = Date.now();
     let saveDir, savePath;
 
     if (isBackground && location) {
-      const slug = _locationSlug(location.name);
-      saveDir   = path.join(BACKGROUNDS_DIR, slug);
+      const folderName = location.background_folder || _locationSlug(location.name);
+      saveDir   = path.join(BACKGROUNDS_DIR, folderName);
       savePath  = path.join(saveDir, `${timestamp}.png`);
     } else {
       saveDir  = path.join(IMAGES_DIR, String(scenarioId));
