@@ -3,7 +3,6 @@ import { openLightbox, closeLightbox, startStatusPolling } from './ui.js';
 import { initDashboard } from './views/dashboard.js';
 import { initCharacters } from './views/characters.js';
 import { initScenarioSetup } from './views/scenario-setup.js';
-import { initStyles } from './views/styles.js';
 import { initPlay } from './views/play.js';
 import { connectWs } from './views/play.js';
 import { initSettings } from './views/settings.js';
@@ -27,7 +26,6 @@ export function router() {
   else if (view === 'scenario-setup') { activate('view-scenario-setup'); initScenarioSetup(params.get('id')); }
   else if (view === 'play')           { activate('view-play');           initPlay(params.get('scenario')); }
   else if (view === 'settings')       { activate('view-settings');       initSettings(); }
-  else if (view === 'styles')         { activate('view-styles');         initStyles(params.get('scenario')); }
   else    { location.hash = '#dashboard'; }
 }
 
@@ -83,16 +81,6 @@ document.addEventListener('click', function (e) {
 });
 
 startStatusPolling();
-
-// Listen for ImageCore embed generate-done events
-window.addEventListener('message', function (evt) {
-  if (evt.origin !== 'http://localhost:4000') return;
-  if (!evt.data || evt.data.type !== 'imagecore-generate-done') return;
-  var genId    = evt.data.genId    || null;
-  var filename = evt.data.filename || null;
-  console.log('[story-lab] ImageCore generate done - genId:', genId, 'filename:', filename);
-  // Future: auto-insert generated image into active scene or chat
-});
 
 connectWs();
 window.addEventListener('hashchange', router);

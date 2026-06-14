@@ -4,9 +4,12 @@
 > Hand this document to any coding model with codebase access to establish full
 > project context before any task.
 >
-> **Status:** Phases 1–4 complete (as of 2026-06-12). Server runs at port 4090.
+> **Status:** Phases 1–5 complete (as of 2026-06-11). All backend and frontend wiring done.
+> Server runs at port 4090.
 > The source code is the ground truth for what is built. The Implementation Status
 > section at the bottom tracks completed phases with exact API surface and notes.
+> The "Known Stubs and Unimplemented Features" section lists everything that is absent
+> or not yet functional — consult it before answering "is X implemented?"
 > The design spec remains useful for intent and future phases.
 >
 > **Design spec:** `docs/superpowers/specs/2026-06-10-story-lab-a1111-design.md`
@@ -1025,6 +1028,46 @@ API.clearActiveProfile()
 
 ---
 
+## Known Stubs and Unimplemented Features
+
+**Rule:** Stubs are last resort. Any code that exists but does not perform its stated job
+must be marked in source with `// STUB: <description> — NOT FUNCTIONAL` and listed here.
+When asked "is X implemented?" — stub present or file absent = NOT IMPLEMENTED, say so.
+Never report a stub or an absent file as implemented.
+
+### Services — absent from disk (no file, no code, no stub)
+
+| Service | Why absent | What handles it instead |
+| --- | --- | --- |
+| `src/services/extractor.js` | Eliminated from design | Narrator writes `---SCENE---` block inline; `input-parser.parseNarratorResponse()` parses it |
+| `src/services/enhancer.js` | Eliminated from design | Prompts assembled deterministically by `prompt-builder.js` — no LLM rewrite |
+| `src/services/clothing.js` | Not yet built | `characters.current_clothing` flat string used directly by `prompt-builder.js` |
+
+### Routes — absent from disk (no file)
+
+| Route file | Feature | Status |
+| --- | --- | --- |
+| `src/routes/styles.js` | Style preset CRUD + `/api/scenarios/:id/active-style` | NOT STARTED |
+
+### API endpoints — not yet implemented
+
+| Endpoint | Feature | Status |
+| --- | --- | --- |
+| Character portrait generation | POST /api/scenarios/:id/characters/:id/portrait | NOT STARTED |
+| Scenario relationships | GET/POST/DELETE /api/scenarios/:id/relationships | NOT STARTED |
+
+### Phases
+
+| Phase | Status |
+| --- | --- |
+| Phase 1 — Foundation | **COMPLETE** |
+| Phase 2 — LLM Clients and Config | **COMPLETE** |
+| Phase 3 — Story Engine | **COMPLETE** |
+| Phase 4 — Image Pipeline | **COMPLETE** |
+| Phase 5 — Frontend wiring | **COMPLETE** — api.js fully rewritten to match A1111 backend routes (2026-06-14); turn submission wired, image gen trigger and image_ready display wired |
+
+---
+
 ## Implementation Status
 
 ### Phase 1 — Foundation: COMPLETE (2026-06-11)
@@ -1129,9 +1172,45 @@ Key behaviors:
 - `image-pipeline.js` orchestrates 7 stages (resolve_config → build_prompt → resolve_background → a1111_call → file_verify → persist → broadcast), each audited with same `pipeline_run_id`; background mode saves to BACKGROUNDS_DIR and skips scene_images insert
 - `pipeline.generate` is always called fire-and-forget from routes with `.catch()`; background generation from locations route is blocking (awaited) to allow the route to update the location row immediately
 
-### Phase 5 — Frontend wiring: not started
+### Phase 5 — Frontend wiring: COMPLETE (2026-06-14)
 
-Wire `public/js/app.js` to use new API endpoints; add audit view to navigation.
+**api.js** — fully rewritten (2026-06-14) to match actual backend routes. All stale, global, and unimplemented routes removed. Key corrections:
+
+- Characters, locations, rules, world entries all moved to scenario-scoped paths (e.g. `/api/scenarios/:id/characters`)
+- `getCharacters(sid)`, `createCharacter(sid, data)` etc. now require `scenarioId` as first arg
+- `getWorldEntries(sid)` → `GET /api/scenarios/:id/world` (was global `/api/world-entries?scenarioId=`)
+- `getRules(sid)` → `GET /api/scenarios/:id/rules` (was global `/api/rules?scope=...`)
+- Images moved to scenario-scoped: `getImages(sid, turnId?)`, `acceptImage(sid, imgId, data)`, `rateImage(sid, imgId, rating)`, `deleteImage(sid, imgId)`
+- `deleteTurn(sid, turnId)` → `DELETE /api/scenarios/:id/turns/:id` (was global `/api/turns/:id`)
+- `createManualMemory(sid, content)` → `POST /api/scenarios/:id/memories` with `{ memory_type: 'manual' }` (was `/memories/manual`)
+- `postTurn(scenarioId, contentText)` — correct turn submission
+- `setConfig` → POST, `setConfigs` → `POST /api/config/batch`
+- Location background routes added: `getLocationBackgrounds`, `generateLocationBackground`, `setDefaultBackground`, `deleteBackground`
+
+Removed entirely: global character CRUD, character bonds, character gallery, character references, relationships, styles, llamacpp config, `advanceTurn`, `nudgeTurn`, `extractScene`, `regenerateTurn`, `regenerateTurnImage`, `updateTurn`, `resetModels`, `resetScenarioTurns`, `getOllamaModels`, `getHealthLibrary`, `generateTurnImage` (duplicate of `generateSceneImage`), ImageCore upload, all character-state/clothing bulk routes.
+
+**app.js** — two targeted removals:
+
+- Removed `window.addEventListener('message', ...)` block that listened for ImageCore events from `localhost:4000` (service does not exist in this project)
+- Removed `styles` route branch from the router (`/api/styles` backend not yet implemented)
+- Removed `import { initStyles }` (unreachable after route removal)
+
+**play.js** — targeted fixes:
+
+- Initial load: normalizes `getScenario` wrapper response `{scenario,characters,...}` into flat `state.currentScenario`; normalizes `getTurns` array response (was expecting `{turns:[...]}`); maps `role` → `speaker` for frontend compat
+- `submitGuidanceTurn` + quick commands + end-story: use `API.postTurn(scenarioId, contentText)` and handle new `{user_turn, narrator_turn}` response shape
+- `createTurnElement`: narrator turn footer gets a permanent "Img" button (`.turn-gen-img-btn`) wired via event delegation in thread onclick
+- WS `turn_complete` handler: renders narrator turn if not yet in DOM (catch-all for WS-first arrival)
+- `handleImageReady`: reads `data.filename` (was `data.imageFilename`); handles null turnId gracefully
+- `_showImagePromptToast`: uses `API.generateSceneImage(scenarioId, turnId)` (was stale `API.generateTurnImage`)
+
+**settings.js** — no changes needed; `API.setConfigs` name unchanged, URL fixed in api.js.
+
+**scenario-setup.js** — no changes needed; no workflow selector exists in this project's version.
+
+**style-creator.js** — no changes needed; no workflow field exists in this project's version.
+
+**audit.js** — was already complete before Phase 5.
 
 ---
 
@@ -1142,8 +1221,11 @@ Wire `public/js/app.js` to use new API endpoints; add audit view to navigation.
 | Design spec | Complete — `docs/superpowers/specs/2026-06-10-story-lab-a1111-design.md` |
 | Implementation plan | Not yet written |
 | Phase 1 foundation | **COMPLETE** — server starts, DB schema live, config routes functional |
-| Phase 2–5 source code | Not yet written |
-| A1111 installation | Present at `K:\stable-diffusion-webui` (fresh install, needs model path config) |
+| Phase 2 LLM clients + config | **COMPLETE** — ollama.js, config-resolver.js, all config + profile routes |
+| Phase 3 story engine | **COMPLETE** — narrator pipeline, turns, characters, locations, memories, world, rules |
+| Phase 4 image pipeline | **COMPLETE** — a1111.js, prompt-builder.js, image-pipeline.js, images + audit routes |
+| Phase 5 frontend wiring | **COMPLETE** — api.js, play.js turn/image wiring, audit.js |
+| A1111 installation | Present at `K:\stable-diffusion-webui` (needs model path config in webui-user.bat) |
 | SDXL models | Available at `E:\ComfyUI\models\checkpoints` |
 | SDXL LoRAs | Available at `E:\ComfyUI\models\loras` |
 | ADetailer extension | Not yet installed |

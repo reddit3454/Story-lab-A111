@@ -100,8 +100,13 @@ export function initPlay(scenarioId) {
   /* Load data */
   Promise.all([API.getScenario(scenarioId), API.getTurns(scenarioId)])
     .then(function (results) {
-      state.currentScenario = results[0];
-      state.turns = results[1].turns || [];
+      var scenResp = results[0];
+      state.currentScenario = Object.assign(
+        { characters: scenResp.characters || [] },
+        scenResp.scenario || scenResp
+      );
+      var rawTurns = Array.isArray(results[1]) ? results[1] : (results[1].turns || []);
+      state.turns = rawTurns.map(function(t) { return Object.assign({ speaker: t.role }, t); });
 
       document.getElementById('play-scenario-title').textContent = state.currentScenario.title || 'Untitled Story';
 
@@ -126,11 +131,13 @@ export function initPlay(scenarioId) {
       var _defStart = state.turns.length === 0 && state.currentScenario && state.currentScenario.default_start;
       if (_defStart) {
         addTypingIndicator();
-        API.advanceTurn({ scenario_id: Number(scenarioId), user_message: _defStart })
-          .then(function () { return API.getTurns(scenarioId); })
-          .then(function (data) {
+        API.postTurn(scenarioId, _defStart)
+          .then(function (response) {
             removeTypingIndicator();
-            state.turns = data.turns || [];
+            var turns = [];
+            if (response && response.user_turn) turns.push(Object.assign({ speaker: 'user' }, response.user_turn));
+            if (response && response.narrator_turn) turns.push(Object.assign({ speaker: 'narrator' }, response.narrator_turn));
+            state.turns = turns;
             renderAllTurns();
             scrollThreadToBottom();
           })
@@ -372,6 +379,7 @@ function createTurnElement(turn) {
           '<button class="turn-rate-btn' + ratingUp   + '" data-turn-id="' + turn.id + '" data-rating="1"  title="Good">+</button>' +
           '<button class="turn-rate-btn' + ratingDown + '" data-turn-id="' + turn.id + '" data-rating="-1" title="Bad">-</button>' +
           '<button class="turn-regen-btn" data-turn-id="' + turn.id + '" title="Regenerate this beat">&#8635;</button>' +
+          '<button class="turn-gen-img-btn" data-turn-id="' + turn.id + '" title="Generate image for this turn">Img</button>' +
           '<button class="turn-delete-btn btn btn-xs btn-danger-ghost" data-turn-id="' + turn.id + '" title="Delete turn">&#x2715;</button>' +
         '</div>' +
       '</div>' +
@@ -871,16 +879,13 @@ function setupPlayInteractions(scenarioId) {
       if (!btn) return;
       var cmd = btn.dataset.cmd;
       if (cmd === '[image]') { generateSceneImage(scenarioId); return; }
-      // Send command token directly as user_message (legacy path handles [rewind] etc.)
-      API.advanceTurn({ scenario_id: Number(scenarioId), user_message: cmd })
+      API.postTurn(scenarioId, cmd)
         .then(function (response) {
-          if (response && response.rewound) {
-            showToast('Last turn rewound.', 'info');
-          } else if (response && response.recap) {
-            showRecapPanel(response.recap);
-          } else if (response && response.turn_id) {
-            var narTurn = { id: response.turn_id, speaker: 'narrator', content_text: response.content, turn_number: response.turn_number, user_rating: 0 };
+          if (response && response.narrator_turn) {
+            var nt = response.narrator_turn;
+            var narTurn = { id: nt.id, speaker: 'narrator', content_text: nt.content_text, turn_number: nt.turn_number, user_rating: 0 };
             appendTurnToThread(narTurn);
+            if (response.user_turn) state.turns.push(Object.assign({ speaker: 'user' }, response.user_turn));
             state.turns.push(narTurn);
             sortTurns();
           }
@@ -979,19 +984,21 @@ function setupPlayInteractions(scenarioId) {
   if (endBtn) {
     endBtn.onclick = function () {
       showConfirm('End Story', 'This will wrap up the narrative and mark the story as ended.', function () {
-        API.advanceTurn({ scenario_id: Number(scenarioId), user_message: '[end]' })
+        API.postTurn(scenarioId, '[end]')
           .then(function (response) {
-            if (response && response.turn_id) {
+            if (response && response.narrator_turn) {
+              var nt = response.narrator_turn;
               appendTurnToThread({
-                id: response.turn_id, speaker: 'narrator',
-                content_text: response.content, turn_number: response.turn_number, user_rating: 0
+                id: nt.id, speaker: 'narrator',
+                content_text: nt.content_text, turn_number: nt.turn_number, user_rating: 0
               });
             }
             showToast('Story ended.', 'info');
             return API.getScenario(scenarioId);
           })
           .then(function (s) {
-            state.currentScenario = s;
+            var sr = s;
+            state.currentScenario = Object.assign({ characters: sr.characters || [] }, sr.scenario || sr);
             var banner = document.querySelector('.story-ended-banner');
             if (!banner) {
               var thread = document.getElementById('play-thread');
@@ -1153,6 +1160,14 @@ function setupTurnFooterListeners() {
             }
           })
           .catch(function () { showToast('Could not delete turn', 'error'); });
+        return;
+      }
+      // Generate image for this turn
+      var genImgBtn = e.target.closest('.turn-gen-img-btn');
+      if (genImgBtn) {
+        var genTurnId = Number(genImgBtn.dataset.turnId);
+        var genScenId = state.currentScenario && state.currentScenario.id;
+        if (genScenId) generateSceneImage(genScenId, genTurnId);
         return;
       }
       // Toggle panel open/close
@@ -1412,17 +1427,16 @@ function submitGuidanceTurn(scenarioId, focusTarget) {
   if (guidanceInput) guidanceInput.disabled = true;
   addTypingIndicator();
 
-  var payload = {
-    scenario_id: Number(scenarioId),
-    focus_target: focusTarget,
-    guidance_text: guidanceText,
-    is_locked: isLocked
-  };
-
-  // When locked on a character, treat guidance as spoken dialogue
   var isCharacter = focusTarget !== 'continue' && focusTarget !== 'narrator';
+  var contentText;
   if (isLocked && guidanceText && isCharacter) {
-    payload.user_message = focusTarget + ' says: "' + guidanceText + '"';
+    contentText = focusTarget + ' says: "' + guidanceText + '"';
+  } else if (guidanceText) {
+    contentText = isCharacter ? '[' + focusTarget + '] ' + guidanceText : guidanceText;
+  } else if (isCharacter) {
+    contentText = 'Continue, focusing on ' + focusTarget + '.';
+  } else {
+    contentText = 'Continue the story.';
   }
 
   // Optimistic user turn label
@@ -1437,22 +1451,14 @@ function submitGuidanceTurn(scenarioId, focusTarget) {
 
   if (guidanceInput) guidanceInput.value = '';
 
-  API.advanceTurn(payload)
+  API.postTurn(scenarioId, contentText)
     .then(function (response) {
       removeTypingIndicator();
-      if (response && response.rewound) {
-        var thread = document.getElementById('play-thread');
-        if (thread) {
-          var opt = thread.querySelector('[data-turn-id="' + optimId + '"]');
-          if (opt && opt.parentNode) opt.parentNode.removeChild(opt);
-        }
-        showToast('Last turn rewound.', 'info');
-      } else if (response && response.recap) {
-        showRecapPanel(response.recap);
-      } else if (response && response.turn_id) {
-        var narTurn = { id: response.turn_id, speaker: 'narrator', content_text: response.content, turn_number: response.turn_number, user_rating: 0 };
+      if (response && response.narrator_turn) {
+        var nt = response.narrator_turn;
+        var narTurn = { id: nt.id, speaker: 'narrator', content_text: nt.content_text, turn_number: nt.turn_number, user_rating: 0 };
         appendTurnToThread(narTurn);
-        state.turns.push(optimTurn);
+        state.turns.push(Object.assign({ speaker: 'user' }, response.user_turn || optimTurn));
         state.turns.push(narTurn);
         sortTurns();
       }
@@ -3025,11 +3031,17 @@ function handleMoodUpdate(data) {
 function handleImageReady(data) {
   var turnId        = data.turnId;
   var scenarioId    = data.scenarioId;
-  var imageFilename = data.imageFilename;
+  var imageFilename = data.filename || data.imageFilename;
   var imageId       = data.imageId || null;
-  if (!turnId || !imageFilename) return;
+  if (!imageFilename) return;
 
   if (!state.currentScenario || state.currentScenario.id !== scenarioId) return;
+
+  if (!turnId) {
+    setImgStatus(null);
+    showToast('Image generated.', 'success');
+    return;
+  }
 
   var turn = state.turns.find(function (t) { return t.id === turnId; });
   if (!turn) { console.warn('handleImageReady: turn not found in state', turnId); return; }
@@ -3225,6 +3237,22 @@ export function connectWs() {
         handleImageReady(data);
         break;
 
+      case 'turn_complete': {
+        if (data.turn && state.currentScenario && data.scenarioId === state.currentScenario.id) {
+          var tcTurn = data.turn;
+          var tcEl = document.querySelector('[data-turn-id="' + tcTurn.id + '"]');
+          if (!tcEl) {
+            var narTurnObj = Object.assign({ speaker: tcTurn.role }, tcTurn);
+            appendTurnToThread(narTurnObj);
+            if (!state.turns.find(function(t) { return t.id === tcTurn.id; })) {
+              state.turns.push(narTurnObj);
+              sortTurns();
+            }
+          }
+        }
+        break;
+      }
+
       // Alternate event shape from some backend paths
       case 'sceneimage':
         handleImageReady({
@@ -3390,7 +3418,7 @@ function _showImagePromptToast(scenarioId, turnId, reason) {
   yesBtn.addEventListener('click', function () {
     clearTimeout(timer);
     toast.remove();
-    API.generateTurnImage({ scenarioId: scenarioId, turnId: turnId }).catch(function (e) {
+    API.generateSceneImage(scenarioId, turnId).catch(function (e) {
       showToast('Image generation failed: ' + (e && e.message ? e.message : 'unknown error'), 'error');
     });
   });
