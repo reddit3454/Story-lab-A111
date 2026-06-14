@@ -516,26 +516,11 @@ function setupPlayInteractions(scenarioId) {
     });
   }
 
-  /* Reset Models button -- unloads narrator + extractor from VRAM */
+  /* Reset Models button -- not implemented in A1111 backend */
   var resetModelsBtn = document.getElementById('btn-reset-models');
   if (resetModelsBtn) {
     resetModelsBtn.addEventListener('click', function () {
-      var pScenId = state.currentScenario && state.currentScenario.id;
-      if (!pScenId) return;
-      resetModelsBtn.disabled = true;
-      resetModelsBtn.textContent = 'Resetting...';
-      API.resetModels(pScenId)
-        .then(function () {
-          resetModelsBtn.textContent = 'Done';
-          setTimeout(function () {
-            resetModelsBtn.textContent = 'Reset Models';
-            resetModelsBtn.disabled = false;
-          }, 2000);
-        })
-        .catch(function () {
-          resetModelsBtn.textContent = 'Reset Models';
-          resetModelsBtn.disabled = false;
-        });
+      showToast('Reset Models is not available in this version.', 'info');
     });
   }
 
@@ -600,13 +585,18 @@ function setupPlayInteractions(scenarioId) {
       '</div>';
 
     Promise.all([
-      API.getScenarioCharacters(scenarioId),
-      API.getScenarioCharacterStates(scenarioId).catch(function () { return { states: [] }; }),
-      API.getCharacterClothing(scenarioId).catch(function () { return { clothing: [] }; })
+      API.getCharacters(scenarioId),
+      Promise.resolve({ states: [] }),
+      Promise.resolve({ clothing: [] })
     ]).then(function (results) {
       var chars    = results[0].characters || results[0] || [];
       var states   = results[1].states || [];
       var clothing = results[2].clothing || [];
+      // Seed clothing from character rows (current_clothing lives on the character record)
+      chars.forEach(function (c) {
+        if (!state.characterStates[c.id]) state.characterStates[c.id] = {};
+        if (c.current_clothing) state.characterStates[c.id].current_clothing = c.current_clothing;
+      });
       states.forEach(function (s) {
         if (!state.characterStates[s.characterId]) state.characterStates[s.characterId] = {};
         state.characterStates[s.characterId].moodcurrent    = s.moodcurrent;
@@ -676,15 +666,7 @@ function setupPlayInteractions(scenarioId) {
           document.querySelectorAll('.mood-bars[data-char-id="' + charId + '"]').forEach(function (el) {
             el.outerHTML = _buildMoodBarsHtml(charId);
           });
-          API.updateScenarioCharacterState(scenarioId, charId, {
-            moodcurrent: updated.moodcurrent, arousalcurrent: updated.arousalcurrent
-          }).catch(function (err) {
-            state.characterStates[charId][field === 'mood' ? 'moodcurrent' : 'arousalcurrent'] = current;
-            document.querySelectorAll('.mood-bars[data-char-id="' + charId + '"]').forEach(function (el) {
-              el.outerHTML = _buildMoodBarsHtml(charId);
-            });
-            showToast('Failed to update: ' + err.message, 'error');
-          });
+          // Mood state is session-local only (no backend endpoint in A1111 version)
           return;
         }
       });
@@ -698,15 +680,7 @@ function setupPlayInteractions(scenarioId) {
 
         if (card.classList.contains('portrait-scene-card')) {
           if (_statusMode) return; // ignore scene card in status mode
-          var guidanceEl = document.getElementById('portrait-guidance');
-          var guidance = guidanceEl ? guidanceEl.value.trim() : '';
-          if (guidance) {
-            showToast('Generating scene image...', 'info');
-            API.generateTurnImage({ scenarioId: pScenId, directPrompt: true, rawPrompt: guidance })
-              .catch(function (err) { showToast('Image failed: ' + err.message, 'error'); });
-          } else {
-            generateSceneImage(pScenId);
-          }
+          generateSceneImage(pScenId);
           return;
         }
 
@@ -723,32 +697,9 @@ function setupPlayInteractions(scenarioId) {
           return;
         }
 
-        // Normal mode: offscene characters get a solo idle portrait at the current location
-        if (card.classList.contains('offscene')) {
-          showToast('Generating solo portrait of ' + charName + '...', 'info');
-          var offGuidanceEl = document.getElementById('portrait-guidance');
-          var offGuidance = offGuidanceEl ? offGuidanceEl.value.trim() : '';
-          var offBody = {
-            scenario_id: pScenId,
-            character_name: charName,
-            soloPortrait: true,
-            guidance: offGuidance || (charName + ' alone, idle, resting in the current location. Sitting, leaning against something, or at ease. Not interacting with anyone.')
-          };
-          API.generateTurnImage(offBody)
-            .catch(function (err) { showToast('Image failed: ' + err.message, 'error'); });
-          return;
-        }
-
         var narratorTurns = (state.turns || []).filter(function (t) { return t.speaker === 'narrator'; });
         var latestTurn = narratorTurns.length ? narratorTurns[narratorTurns.length - 1] : null;
-        if (!latestTurn) { showToast('No story turns yet.', 'error'); return; }
-        showToast('Generating image of ' + charName + '...', 'info');
-        var guidanceEl = document.getElementById('portrait-guidance');
-        var guidance = guidanceEl ? guidanceEl.value.trim() : '';
-        var imgBody = { scenario_id: pScenId, character_name: charName };
-        if (guidance) imgBody.guidance = guidance;
-        API.generateTurnImage(imgBody)
-          .catch(function (err) { showToast('Image failed: ' + err.message, 'error'); });
+        generateSceneImage(pScenId, latestTurn ? latestTurn.id : null);
       });
     }).catch(function () {
       var list2 = document.getElementById('portrait-list');
@@ -812,43 +763,25 @@ function setupPlayInteractions(scenarioId) {
 
     addBtn.onclick = function () {
       if (pickerBar.style.display !== 'none') { closePicker(); return; }
-      Promise.all([
-        API.getCharacters(),
-        API.getScenarioCharacters(scenarioId)
-      ]).then(function (results) {
-        var all     = (results[0].characters || results[0] || []);
-        var current = (results[1].characters || results[1] || []);
-        var currentIds = new Set(current.map(function (c) { return String(c.id); }));
-        var available = all.filter(function (c) { return !currentIds.has(String(c.id)); });
-        showPicker(available, function (id) {
-          API.addScenarioCharacter(scenarioId, id)
-            .then(function () {
-              showToast('Character added to scenario.', 'info');
-              loadPortraitPanel();
-              return API.getScenario(scenarioId);
-            })
-            .then(function (updated) {
-              if (updated) state.currentScenario = updated;
-              renderCharacterFocusButtons(scenarioId);
-            })
-            .catch(function (err) { showToast('Failed to add: ' + err.message, 'error'); });
-        });
-      }).catch(function (err) { showToast('Could not load characters: ' + err.message, 'error'); });
+      showToast('Add characters via Scenario Setup.', 'info');
     };
 
     removeBtn.onclick = function () {
       if (pickerBar.style.display !== 'none') { closePicker(); return; }
-      API.getScenarioCharacters(scenarioId).then(function (data) {
+      API.getCharacters(scenarioId).then(function (data) {
         var current = (data.characters || data || []);
         showPicker(current, function (id, char) {
-          API.removeScenarioCharacter(scenarioId, id)
+          if (!confirm('Remove ' + (char ? char.name : 'this character') + ' from the scenario? This cannot be undone.')) return;
+          API.deleteCharacter(scenarioId, id)
             .then(function () {
-              showToast((char ? char.name : 'Character') + ' removed from scenario.', 'info');
+              showToast((char ? char.name : 'Character') + ' removed.', 'info');
               loadPortraitPanel();
               return API.getScenario(scenarioId);
             })
             .then(function (updated) {
-              if (updated) state.currentScenario = updated;
+              if (updated) {
+                state.currentScenario = Object.assign({ characters: [] }, updated.scenario || updated);
+              }
               renderCharacterFocusButtons(scenarioId);
             })
             .catch(function (err) { showToast('Failed to remove: ' + err.message, 'error'); });
@@ -914,27 +847,9 @@ function setupPlayInteractions(scenarioId) {
 
   /* Enhance guidance button */
   var enhanceGuidanceBtn = document.getElementById('btn-enhance-guidance');
-  if (enhanceGuidanceBtn && guidanceInput) {
+  if (enhanceGuidanceBtn) {
     enhanceGuidanceBtn.onclick = function () {
-      var text = guidanceInput.value.trim();
-      if (!text) return;
-      enhanceGuidanceBtn.disabled = true;
-      enhanceGuidanceBtn.textContent = '...';
-      function _enhanceDone() {
-        enhanceGuidanceBtn.disabled = false;
-        enhanceGuidanceBtn.textContent = 'Enhance';
-      }
-      API.enhancePromptLab(text)
-        .then(function (data) {
-          var enhanced = data.enhanced || data.result || data.prompt || '';
-          if (enhanced) guidanceInput.value = enhanced;
-          else showToast('Enhancer returned empty result', 'error');
-          _enhanceDone();
-        })
-        .catch(function (err) {
-          showToast('Enhance failed: ' + (err.message || 'Enhancer offline'), 'error');
-          _enhanceDone();
-        });
+      showToast('Guidance enhancement is not yet available.', 'info');
     };
   }
 
@@ -964,17 +879,21 @@ function setupPlayInteractions(scenarioId) {
   if (resetSceneBtn) {
     resetSceneBtn.onclick = function () {
       showConfirm('Reset Scene', 'Reset scene? All story progress will be lost.', function () {
-        API.resetScenarioTurns(Number(scenarioId))
-          .then(function () {
-            state.turns = [];
-            renderAllTurns();
-            showToast('Scene reset.', 'info');
-            var content = document.querySelector('.sidebar-content');
-            if (content && state.currentSidebarTab === 'memory') {
-              renderMemoryTab(content, scenarioId);
-            }
-          })
-          .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
+        var pScenId = state.currentScenario && state.currentScenario.id;
+        var turnIds = (state.turns || []).map(function (t) { return t.id; });
+        var chain = Promise.resolve();
+        turnIds.forEach(function (tid) {
+          chain = chain.then(function () { return API.deleteTurn(pScenId, tid); });
+        });
+        chain.then(function () {
+          state.turns = [];
+          renderAllTurns();
+          showToast('Scene reset.', 'info');
+          var content = document.querySelector('.sidebar-content');
+          if (content && state.currentSidebarTab === 'memory') {
+            renderMemoryTab(content, scenarioId);
+          }
+        }).catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
       }, 'btn-danger');
     };
   }
@@ -1016,31 +935,11 @@ function setupPlayInteractions(scenarioId) {
     };
   }
 
-  /* Filter rules — load from generation_config and save on change (debounced) */
+  /* Filter rules — local only (no backend endpoint for per-scenario image config in A1111 version) */
   var filterRulesInput = document.getElementById('filter-rules-input');
   if (filterRulesInput) {
-    var _filterSaveTimer = null;
     filterRulesInput.oninput = function () {
-      clearTimeout(_filterSaveTimer);
-      _filterSaveTimer = setTimeout(function () {
-        var existingCfg = null;
-        try {
-          var _rc = state.currentScenario && state.currentScenario.generation_config;
-          existingCfg = _rc ? (typeof _rc === 'string' ? JSON.parse(_rc) : _rc) : {};
-        } catch (_) { existingCfg = {}; }
-        var newCfg = Object.assign({}, existingCfg, { filterInstructions: filterRulesInput.value });
-        API.updateScenarioImageConfig(scenarioId, { generation_config: newCfg })
-          .then(function (updated) {
-            if (updated && updated.generation_config) {
-              if (state.currentScenario) {
-                state.currentScenario.generation_config = typeof updated.generation_config === 'string'
-                  ? updated.generation_config
-                  : JSON.stringify(updated.generation_config);
-              }
-            }
-          })
-          .catch(function (e) { showToast('Filter rules save failed: ' + e.message, 'error'); });
-      }, 1000);
+      // Kept as local state only; not persisted
     };
   }
 
@@ -1119,23 +1018,17 @@ function setupTurnFooterListeners() {
   var thread = document.getElementById('play-thread');
   if (!thread) return;
 
+  // Turn rate buttons are local-only (no turn rating endpoint in A1111 backend)
   thread.querySelectorAll('.turn-rate-btn').forEach(function (btn) {
     btn.onclick = function () {
-      var turnId = btn.dataset.turnId;
       var rating = Number(btn.dataset.rating);
-      fetch('http://localhost:4090/api/turns/' + turnId + '/rate', {
-        method: 'PUT',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({rating: rating})
-      }).then(function () {
-        var footer = btn.closest('.turn-footer');
-        if (!footer) return;
-        footer.querySelectorAll('.turn-rate-btn').forEach(function (b) {
-          b.classList.remove('active-up','active-down');
-        });
-        if (rating ===  1) btn.classList.add('active-up');
-        if (rating === -1) btn.classList.add('active-down');
-      }).catch(function () { /* 404 gracefully ignored */ });
+      var footer = btn.closest('.turn-footer');
+      if (!footer) return;
+      footer.querySelectorAll('.turn-rate-btn').forEach(function (b) {
+        b.classList.remove('active-up', 'active-down');
+      });
+      if (rating ===  1) btn.classList.add('active-up');
+      if (rating === -1) btn.classList.add('active-down');
     };
   });
 
@@ -1148,7 +1041,8 @@ function setupTurnFooterListeners() {
       if (deleteBtn) {
         if (!confirm('Delete this turn?')) return;
         var delTurnId = Number(deleteBtn.dataset.turnId);
-        API.deleteTurn(delTurnId)
+        var delScenId = state.currentScenario && state.currentScenario.id;
+        API.deleteTurn(delScenId, delTurnId)
           .then(function (r) {
             if (r && r.ok) {
               var turnEl = deleteBtn.closest('.turn');
@@ -1216,24 +1110,9 @@ function setupTurnFooterListeners() {
         var ueSaveTa     = ueSavePanel && ueSavePanel.querySelector('.user-edit-content');
         var ueNewContent = ueSaveTa ? ueSaveTa.value.trim() : '';
         if (!ueNewContent) { showToast('Cannot save empty content.', 'error'); return; }
-        var ueScenId = state.currentScenario && state.currentScenario.id;
-        userEditSaveBtn.disabled    = true;
-        userEditSaveBtn.textContent = '...';
-        API.updateTurn(ueScenId, ueSaveTurnId, ueNewContent)
-          .then(function (resp) {
-            var textEl = ueSaveTurnEl.querySelector('.turn-text');
-            if (textEl) textEl.innerHTML = formatStoryContent(resp.content);
-            state.turns = state.turns.map(function (t) {
-              return t.id === ueSaveTurnId ? Object.assign({}, t, { content_text: resp.content }) : t;
-            });
-            if (ueSavePanel) ueSavePanel.classList.add('hidden');
-            showToast('Turn updated.', 'success');
-          })
-          .catch(function (err) { showToast('Save failed: ' + err.message, 'error'); })
-          .finally(function () {
-            userEditSaveBtn.disabled    = false;
-            userEditSaveBtn.textContent = 'Save';
-          });
+        // Turn editing is not yet implemented in A1111 backend
+        showToast('Turn editing is not yet implemented.', 'info');
+        if (ueSavePanel) ueSavePanel.classList.add('hidden');
         return;
       }
       // Save image — trigger browser download
@@ -1257,10 +1136,11 @@ function setupTurnFooterListeners() {
         var delTurnEl = deleteImgBtn.closest('.turn');
         if (!delTurnEl) return;
         var delTurnId = Number(delTurnEl.dataset.turnId);
+        var delImgScenId = state.currentScenario && state.currentScenario.id;
         var imgDiv    = delTurnEl.querySelector('.turn-image');
         if (!imgDiv) return;
-        API.getImages(delTurnId).then(function (data) {
-          var images = (data && data.images) || [];
+        API.getImages(delImgScenId, delTurnId).then(function (data) {
+          var images = Array.isArray(data) ? data : (data && data.images) || [];
           var removeFromDom = function () {
             if (imgDiv.parentNode) imgDiv.parentNode.removeChild(imgDiv);
             state.turns = state.turns.map(function (t) {
@@ -1269,7 +1149,7 @@ function setupTurnFooterListeners() {
           };
           if (!images.length) { removeFromDom(); return; }
           var latest = images[images.length - 1];
-          API.deleteImage(latest.id)
+          API.deleteImage(delImgScenId, latest.id)
             .then(function () { removeFromDom(); showToast('Image deleted.', 'success'); })
             .catch(function (err) { showToast('Delete failed: ' + err.message, 'error'); });
         }).catch(function (err) { showToast('Delete failed: ' + err.message, 'error'); });
@@ -1306,20 +1186,9 @@ function setupTurnFooterListeners() {
         var imgTaEl   = imgPanel.querySelector('.img-edit-prompt');
         var promptVal = imgTaEl ? imgTaEl.value.trim() : '';
         if (!promptVal) { showToast('Prompt cannot be empty.', 'error'); return; }
-        imgSubmitBtn.disabled    = true;
-        imgSubmitBtn.textContent = '...';
-        API.regenerateTurnImage(imgScenId, imgTurnId, promptVal)
-          .then(function () {
-            imgPanel.classList.add('hidden');
-            showToast('Image regeneration queued.', 'success');
-          })
-          .catch(function (err) {
-            showToast('Image regeneration failed: ' + err.message, 'error');
-          })
-          .finally(function () {
-            imgSubmitBtn.disabled    = false;
-            imgSubmitBtn.textContent = 'Regenerate Image';
-          });
+        // Image prompt editing not yet implemented in A1111 backend — trigger fresh generation instead
+        imgPanel.classList.add('hidden');
+        generateSceneImage(imgScenId, imgTurnId);
         return;
       }
       // Character-focused image button
@@ -1334,27 +1203,9 @@ function setupTurnFooterListeners() {
       var instrEl     = regenPanel.querySelector('.regen-instruction');
       var instrVal    = instrEl ? instrEl.value : '';
 
-      submitBtn.disabled    = true;
-      submitBtn.textContent = '...';
-
-      API.regenerateTurn(scenarioId, turnId, instrVal)
-        .then(function (resp) {
-          var textEl = regenTurnEl.querySelector('.turn-text');
-          if (textEl) textEl.innerHTML = formatStoryContent(resp.content);
-          state.turns = state.turns.map(function (t) {
-            return t.id === turnId ? Object.assign({}, t, { content_text: resp.content }) : t;
-          });
-          regenPanel.classList.add('hidden');
-          if (instrEl) instrEl.value = '';
-          showToast('Turn regenerated.', 'success');
-        })
-        .catch(function (err) {
-          showToast('Regenerate failed: ' + err.message, 'error');
-        })
-        .finally(function () {
-          submitBtn.disabled    = false;
-          submitBtn.textContent = 'Regenerate';
-        });
+      // Turn regeneration is not yet implemented in A1111 backend
+      showToast('Turn regeneration is not yet implemented.', 'info');
+      regenPanel.classList.add('hidden');
     });
   }
 
@@ -1380,28 +1231,7 @@ function setupTurnFooterListeners() {
       // Submit animate — fire the animation job
       var animSubmit = e.target.closest('.turn-img-animate-submit-btn');
       if (animSubmit) {
-        var imgCard = animSubmit.closest('.turn-image');
-        if (!imgCard) return;
-        var imageId = Number(imgCard.dataset.imageId);
-        if (!imageId) { showToast('No image record — cannot animate.', 'error'); return; }
-        var variantEl    = imgCard.querySelector('.turn-img-animate-variant');
-        var modelVariant = variantEl ? variantEl.value : 'lownoise';
-        var panel        = animSubmit.closest('.turn-img-animate-panel');
-
-        animSubmit.disabled    = true;
-        animSubmit.textContent = '...';
-        _updateThreadImageVideoUi(imgCard, { videostatus: 'generating' });
-
-        API.animateImage(imageId, { modelVariant: modelVariant })
-          .then(function () {
-            if (panel) panel.classList.add('hidden');
-          })
-          .catch(function (err) {
-            showToast('Animate failed: ' + err.message, 'error');
-            animSubmit.disabled    = false;
-            animSubmit.textContent = 'Generate Clip';
-            _updateThreadImageVideoUi(imgCard, { videostatus: null });
-          });
+        showToast('Video animation is not available in this version.', 'info');
         return;
       }
     });
@@ -1752,31 +1582,7 @@ function refreshAnimatePanel() {
   }
   if (submitBtn) {
     submitBtn.onclick = function () {
-      var imgId = state.currentImageId;
-      if (!imgId) return;
-      var promptEl     = document.getElementById('animate-prompt');
-      var variantEl    = document.getElementById('animate-variant');
-      var nsfwEl       = document.getElementById('animate-nsfw-enhance');
-      var motionPrompt = promptEl  ? promptEl.value.trim()  : '';
-      var modelVariant = variantEl ? variantEl.value        : 'lownoise';
-      var useNsfwEnhance = nsfwEl ? nsfwEl.checked : false;
-      submitBtn.disabled    = true;
-      submitBtn.textContent = '...';
-      var opts = { modelVariant: modelVariant, useNsfwEnhance: useNsfwEnhance };
-      if (motionPrompt) opts.motionPrompt = motionPrompt;
-      API.animateImage(imgId, opts)
-        .then(function () {
-          // Optimistically update local state; WS event will confirm.
-          var updated = Object.assign({}, state.currentImageData, { videostatus: 'generating' });
-          state.currentImageData = updated;
-          if (updated.id) state._sceneImageCache[updated.id] = updated;
-          refreshAnimatePanel();
-        })
-        .catch(function (e) {
-          showToast('Animate failed: ' + e.message, 'error');
-          submitBtn.disabled    = false;
-          submitBtn.textContent = 'Generate Clip';
-        });
+      showToast('Video animation is not available in this version.', 'info');
     };
   }
 }
@@ -1806,7 +1612,8 @@ function showSetAsReferenceModal() {
   overlay.querySelectorAll('.char-select-btn').forEach(function (btn) {
     btn.onclick = function () {
       var charId = Number(btn.dataset.charId);
-      API.acceptImage(state.currentImageId, { set_as_character_reference: true, character_id: charId })
+      var refScenId = state.currentScenario && state.currentScenario.id;
+      API.acceptImage(refScenId, state.currentImageId, { set_as_character_reference: true, character_id: charId })
         .then(function (updated) {
           overlay.classList.add('hidden');
           showToast('Set as character reference!', 'success');
@@ -1926,11 +1733,6 @@ function showSceneInfo() {
   overlay.innerHTML =
     '<div class="modal modal-wide">' +
       '<h3 class="modal-title">Scene Info</h3>' +
-      '<div class="si-tabs">' +
-        '<button class="si-tab active" data-sitab="info">Info</button>' +
-        '<button class="si-tab" data-sitab="prompt">Prompt</button>' +
-      '</div>' +
-
       '<div class="si-panel" id="si-panel-info">' +
         '<div class="settings-grid" style="padding:8px 0">' +
           infoRow('Title', scenario.title || '-') +
@@ -1957,40 +1759,10 @@ function showSceneInfo() {
       '</div>' +
     '</div>';
 
-  // Inject si-panel-prompt before the modal-footer close
-  var modalEl = overlay.querySelector('.modal');
-  var footerEl = overlay.querySelector('.modal > .modal-footer');
-  var promptPanel = document.createElement('div');
-  promptPanel.className = 'si-panel hidden';
-  promptPanel.id = 'si-panel-prompt';
-  promptPanel.innerHTML = '<div id="si-prompt-content" style="min-height:60px"><p style="color:var(--text-muted);font-size:11px">Loading...</p></div>';
-  modalEl.insertBefore(promptPanel, footerEl);
   overlay.classList.remove('hidden');
-
-  // Tab switching
-  overlay.querySelectorAll('.si-tab').forEach(function (btn) {
-    btn.onclick = function () {
-      overlay.querySelectorAll('.si-tab').forEach(function (b) { b.classList.remove('active'); });
-      overlay.querySelectorAll('.si-panel').forEach(function (p) { p.classList.add('hidden'); });
-      btn.classList.add('active');
-      var panel = document.getElementById('si-panel-' + btn.dataset.sitab);
-      if (panel) panel.classList.remove('hidden');
-      if (btn.dataset.sitab === 'prompt') _loadSiPromptTab(scenario.id);
-    };
-  });
 
   document.getElementById('close-scene-info').onclick = function () { overlay.classList.add('hidden'); };
   overlay.onclick = function (e) { if (e.target === overlay) overlay.classList.add('hidden'); };
-
-  API.getScenarioActiveStyle(scenario.id).then(function (data) {
-    var imgEl = document.getElementById('scene-info-img-model');
-    if (!imgEl) return;
-    if (data && data.style) {
-      var label = data.style.name || 'Active Style';
-      if (data.style.model) label += ' (' + data.style.model + ')';
-      imgEl.textContent = label;
-    }
-  }).catch(function () {});
 }
 
 function _loadSiPromptTab(scenarioId) {
@@ -2382,11 +2154,11 @@ function renderMemoryTab(container, scenarioId) {
     API.getTurns(scenarioId),
     API.getMemories(scenarioId)
   ]).then(function (results) {
-    var allTurns    = results[0].turns || [];
-    var memories    = results[1].memories || [];
-    var manualMems  = memories.filter(function (m) { return m.type === 'manual'; });
-    var latest      = allTurns.filter(function (t) { return t.scene_summary_after; }).slice(-1)[0];
-    var summary     = latest ? latest.scene_summary_after : null;
+    var allTurns   = Array.isArray(results[0]) ? results[0] : (results[0].turns || []);
+    var memData    = results[1];
+    var memories   = Array.isArray(memData) ? memData : (memData.memories || []);
+    var manualMems = memories.filter(function (m) { return m.memory_type === 'manual'; });
+    var summary    = null; // auto-summary field not in A1111 backend turns
 
     container.innerHTML =
       '<div class="sidebar-tab-content">' +
@@ -2408,7 +2180,7 @@ function renderMemoryTab(container, scenarioId) {
               '<div class="memory-section-label">&#128204; Pinned</div>' +
               manualMems.map(function (m) {
                 return '<div class="memory-pinned-entry" data-id="' + m.id + '">' +
-                  '<p class="memory-pinned-text">' + escapeHtml(m.summary_text) + '</p>' +
+                  '<p class="memory-pinned-text">' + escapeHtml(m.content) + '</p>' +
                   '<button class="btn-mem-delete" data-id="' + m.id + '" title="Remove">&#215;</button>' +
                 '</div>';
               }).join('') +
@@ -2448,17 +2220,7 @@ function renderMemoryTab(container, scenarioId) {
     var forceBtn = container.querySelector('#btn-force-summary');
     if (forceBtn) {
       forceBtn.onclick = function () {
-        setLoading(forceBtn, true, '...');
-        API.advanceTurn({ scenario_id: Number(scenarioId), user_message: '[summary]' })
-          .then(function () {
-            showToast('Summary generated!', 'success');
-            renderMemoryTab(container, scenarioId);
-          })
-          .catch(function (e) { showToast('Failed: ' + e.message, 'error'); })
-          .finally(function () {
-            var b = container.querySelector('#btn-force-summary');
-            if (b) setLoading(b, false);
-          });
+        showToast('Force summary is not yet implemented.', 'info');
       };
     }
 
@@ -2484,7 +2246,7 @@ function renderMemoryTab(container, scenarioId) {
 
 function renderLoreTab(container, scenarioId) {
   API.getWorldEntries(scenarioId).then(function (data) {
-    var entries = data.worldEntries || [];
+    var entries = Array.isArray(data) ? data : (data.entries || data.worldEntries || []);
     container.innerHTML =
       '<div class="sidebar-tab-content">' +
         '<div class="tab-header">' +
@@ -2510,7 +2272,7 @@ function renderLoreTab(container, scenarioId) {
                       '<span class="toggle-sm-track"></span>' +
                     '</label>' +
                   '</div>' +
-                  '<p class="lore-excerpt">' + escapeHtml((e.content_text || '').slice(0, 120)) + ((e.content_text || '').length > 120 ? '...' : '') + '</p>' +
+                  '<p class="lore-excerpt">' + escapeHtml((e.content || '').slice(0, 120)) + ((e.content || '').length > 120 ? '...' : '') + '</p>' +
                 '</div>';
               }).join('')
             : '<div class="empty-state small">No lore entries yet.</div>'
@@ -2528,13 +2290,13 @@ function renderLoreTab(container, scenarioId) {
       var t = container.querySelector('#lore-title').value.trim();
       var c = container.querySelector('#lore-content').value.trim();
       if (!t || !c) { showToast('Title and content required.', 'error'); return; }
-      API.createWorldEntry({ title: t, content_text: c, scenario_id: Number(scenarioId), enabled: true })
+      API.createWorldEntry(scenarioId, { title: t, content: c })
         .then(function () { showToast('Lore added!', 'success'); renderLoreTab(container, scenarioId); })
         .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
     };
     container.querySelectorAll('.lore-toggle-input').forEach(function (inp) {
       inp.onchange = function () {
-        API.updateWorldEntry(inp.dataset.id, { enabled: inp.checked }).catch(function (e) {
+        API.updateWorldEntry(scenarioId, inp.dataset.id, { enabled: inp.checked }).catch(function (e) {
           showToast('Toggle failed: ' + e.message, 'error');
         });
       };
@@ -2545,8 +2307,8 @@ function renderLoreTab(container, scenarioId) {
 }
 
 function renderRulesTab(container, scenarioId) {
-  API.getScenarioRules(scenarioId).then(function (data) {
-    var rules = data.rules || data || [];
+  API.getRules(scenarioId).then(function (data) {
+    var rules = Array.isArray(data) ? data : (data.rules || []);
     container.innerHTML =
       '<div class="sidebar-tab-content">' +
         '<div class="tab-header">' +
@@ -2564,7 +2326,7 @@ function renderRulesTab(container, scenarioId) {
           (rules.length
             ? rules.map(function (r) {
                 return '<div class="rule-entry" data-rule-id="' + r.id + '">' +
-                  '<p class="rule-text">' + escapeHtml(r.rule_text) + '</p>' +
+                  '<p class="rule-text">' + escapeHtml(r.content) + '</p>' +
                   '<div class="rule-controls">' +
                     '<label class="toggle-sm">' +
                       '<input type="checkbox" class="rule-toggle-input" data-id="' + r.id + '"' + (r.enabled !== false ? ' checked' : '') + '>' +
@@ -2593,13 +2355,13 @@ function renderRulesTab(container, scenarioId) {
     container.querySelector('#rule-form-save').onclick = function () {
       var t = container.querySelector('#rule-text').value.trim();
       if (!t) { showToast('Rule text required.', 'error'); return; }
-      API.createRule({ scope: 'scenario', scope_id: Number(scenarioId), rule_text: t, enabled: true })
+      API.createRule(scenarioId, { content: t })
         .then(function () { showToast('Rule added!', 'success'); renderRulesTab(container, scenarioId); })
         .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
     };
     container.querySelectorAll('.rule-toggle-input').forEach(function (inp) {
       inp.onchange = function () {
-        API.updateRule(inp.dataset.id, { enabled: inp.checked }).catch(function (e) {
+        API.updateRule(scenarioId, inp.dataset.id, { enabled: inp.checked }).catch(function (e) {
           showToast('Toggle failed: ' + e.message, 'error');
         });
       };
@@ -2618,7 +2380,7 @@ function renderRulesTab(container, scenarioId) {
     });
     container.querySelectorAll('.rule-del-yes').forEach(function (btn) {
       btn.onclick = function () {
-        API.deleteRule(btn.dataset.id)
+        API.deleteRule(scenarioId, btn.dataset.id)
           .then(function () {
             var entry = btn.closest('.rule-entry');
             if (entry) entry.parentNode.removeChild(entry);
@@ -2634,24 +2396,13 @@ function renderRulesTab(container, scenarioId) {
 
 function renderCastTab(container, scenarioId) {
   // Fetch characters, emotional states, and clothing in parallel
-  Promise.all([
-    API.getScenarioCharacters(scenarioId),
-    API.getScenarioCharacterStates(scenarioId).catch(function () { return { states: [] }; }),
-    API.getCharacterClothing(scenarioId).catch(function () { return { clothing: [] }; })
-  ]).then(function (results) {
+  API.getCharacters(scenarioId).then(function (charData) {
+    var results = [charData, { states: [] }, { clothing: [] }];
     var chars    = results[0].characters || results[0] || [];
-    var states   = results[1].states || [];
-    var clothing = results[2].clothing || [];
-    // Cache states so _buildMoodBarsHtml can use them
-    states.forEach(function (s) {
-      if (!state.characterStates[s.characterId]) state.characterStates[s.characterId] = {};
-      state.characterStates[s.characterId].moodcurrent    = s.moodcurrent;
-      state.characterStates[s.characterId].arousalcurrent = s.arousalcurrent;
-    });
-    // Cache clothing
-    clothing.forEach(function (c) {
-      if (!state.characterStates[c.characterId]) state.characterStates[c.characterId] = {};
-      state.characterStates[c.characterId].current_clothing = c.current_clothing || null;
+    // Seed clothing from character rows
+    chars.forEach(function (c) {
+      if (!state.characterStates[c.id]) state.characterStates[c.id] = {};
+      if (c.current_clothing) state.characterStates[c.id].current_clothing = c.current_clothing;
     });
     container.innerHTML =
       '<div class="sidebar-tab-content">' +
@@ -2701,20 +2452,7 @@ function renderCastTab(container, scenarioId) {
         el.outerHTML = _buildMoodBarsHtml(charId);
       });
 
-      // Persist to server — endpoint requires BOTH fields (not partial)
-      var payload = {
-        moodcurrent:    updated.moodcurrent,
-        arousalcurrent: updated.arousalcurrent
-      };
-      API.updateScenarioCharacterState(scenarioId, charId, payload)
-        .catch(function (err) {
-          // Revert optimistic update
-          state.characterStates[charId][field === 'mood' ? 'moodcurrent' : 'arousalcurrent'] = current;
-          document.querySelectorAll('.mood-bars[data-char-id="' + charId + '"]').forEach(function (el) {
-            el.outerHTML = _buildMoodBarsHtml(charId);
-          });
-          showToast('Failed to update: ' + err.message, 'error');
-        });
+      // Mood/arousal state is session-local only in this version
     });
 
   }).catch(function (e) {
@@ -2725,136 +2463,12 @@ function renderCastTab(container, scenarioId) {
 /* ============================================================
    RELATIONSHIPS SIDEBAR TAB
    ============================================================ */
-function renderRelationshipsTab(container, scenarioId) {
-  var REL_TYPE_OPTS = [
-    '', 'mother', 'father', 'son', 'daughter', 'sister', 'brother',
-    'half-sister', 'half-brother',
-    'cousin', 'aunt', 'uncle', 'grandma', 'grandpa',
-    'best friend', 'close friend', 'friend', 'acquaintance', 'stranger',
-    'roommate', 'housemate', 'neighbor', 'coworker', 'classmate',
-    "sister's friend", "brother's friend", "friend's brother", "friend's sister",
-    "daughter's friend", "son's friend", "friend's mom", "friend's dad",
-    'crush', 'lover', 'rival', 'enemy'
-  ];
-
-  function reload() { renderRelationshipsTab(container, scenarioId); }
-
-  Promise.all([
-    API.getRelationships(scenarioId),
-    API.getScenarioCharacters(scenarioId)
-  ]).then(function (results) {
-    var rels  = results[0].relationships || [];
-    var chars = results[1].characters || results[1] || [];
-
-    function charSelect(idName, selectedId) {
-      return '<select class="form-select form-select-sm" name="' + idName + '">' +
-        chars.map(function (c) {
-          return '<option value="' + c.id + '"' + (c.id === selectedId ? ' selected' : '') + '>' + escapeHtml(c.name) + '</option>';
-        }).join('') +
-      '</select>';
-    }
-    function typeSelect(selectedVal) {
-      return '<select class="form-select form-select-sm" name="rel_type">' +
-        REL_TYPE_OPTS.map(function (v) {
-          return '<option value="' + v + '"' + (v === selectedVal ? ' selected' : '') + '>' + (v || '-- type --') + '</option>';
-        }).join('') +
-      '</select>';
-    }
-
-    var rows = rels.map(function (r) {
-      return '<div class="rel-row" data-rel-id="' + r.id + '">' +
-        '<span class="rel-a">' + escapeHtml(r.character_name || r.character_id) + '</span>' +
-        '<span class="rel-label">' + escapeHtml(r.relationship_label || '') + '</span>' +
-        '<span class="rel-b">' + escapeHtml(r.related_character_name || r.related_character_id) + '</span>' +
-        '<button class="btn btn-ghost btn-xs rel-edit-btn" data-rel-id="' + r.id + '">Edit</button>' +
-        '<button class="btn btn-ghost btn-xs rel-del-btn" data-rel-id="' + r.id + '">X</button>' +
-      '</div>';
-    }).join('');
-
-    container.innerHTML =
-      '<div class="sidebar-tab-content">' +
-        '<div class="tab-header"><h4>Relationships</h4></div>' +
-        '<div id="rel-list">' +
-          (rels.length ? rows : '<div class="empty-state small">No relationships yet.</div>') +
-        '</div>' +
-        '<div class="rel-add-form" id="rel-add-form">' +
-          '<div class="rel-form-row">' +
-            charSelect('char_id', chars[0] && chars[0].id) +
-            typeSelect('') +
-            charSelect('related_id', chars[1] && chars[1].id) +
-          '</div>' +
-          '<button class="btn btn-primary btn-sm" id="rel-add-btn">Add</button>' +
-        '</div>' +
-      '</div>';
-
-    // Delete handler
-    container.addEventListener('click', function (e) {
-      var delBtn = e.target.closest ? e.target.closest('.rel-del-btn') : null;
-      if (delBtn) {
-        var relId = Number(delBtn.dataset.relId);
-        API.deleteRelationship(scenarioId, relId).then(reload).catch(function (err) {
-          showToast('Failed to delete: ' + err.message, 'error');
-        });
-        return;
-      }
-
-      // Edit handler — replace the row with an inline edit form
-      var editBtn = e.target.closest ? e.target.closest('.rel-edit-btn') : null;
-      if (editBtn) {
-        var relId = Number(editBtn.dataset.relId);
-        var rel = rels.find(function (r) { return r.id === relId; });
-        if (!rel) return;
-        var row = container.querySelector('.rel-row[data-rel-id="' + relId + '"]');
-        if (!row) return;
-        row.innerHTML =
-          '<div class="rel-form-row">' +
-            charSelect('edit_char_id', rel.character_id) +
-            typeSelect(rel.relationship_label || '') +
-            charSelect('edit_related_id', rel.related_character_id) +
-          '</div>' +
-          '<button class="btn btn-primary btn-xs rel-save-btn" data-rel-id="' + relId + '">Save</button>' +
-          '<button class="btn btn-ghost btn-xs rel-cancel-btn">Cancel</button>';
-        return;
-      }
-
-      // Save inline edit
-      var saveBtn = e.target.closest ? e.target.closest('.rel-save-btn') : null;
-      if (saveBtn) {
-        var relId = Number(saveBtn.dataset.relId);
-        var row = container.querySelector('.rel-row[data-rel-id="' + relId + '"]');
-        var charId   = Number(row.querySelector('[name="edit_char_id"]').value);
-        var relType  = row.querySelector('[name="rel_type"]').value;
-        var relatedId = Number(row.querySelector('[name="edit_related_id"]').value);
-        API.deleteRelationship(scenarioId, relId).then(function () {
-          return API.createRelationship(scenarioId, { character_id: charId, related_character_id: relatedId, relationship_label: relType });
-        }).then(reload).catch(function (err) {
-          showToast('Failed to save: ' + err.message, 'error');
-        });
-        return;
-      }
-
-      // Cancel inline edit
-      var cancelBtn = e.target.closest ? e.target.closest('.rel-cancel-btn') : null;
-      if (cancelBtn) { reload(); return; }
-
-      // Add new relationship
-      if (e.target.id === 'rel-add-btn') {
-        var form = document.getElementById('rel-add-form');
-        var charId    = Number(form.querySelector('[name="char_id"]').value);
-        var relType   = form.querySelector('[name="rel_type"]').value;
-        var relatedId = Number(form.querySelector('[name="related_id"]').value);
-        if (!relType) { showToast('Pick a relationship type.', 'error'); return; }
-        if (charId === relatedId) { showToast('A character cannot have a relationship with themselves.', 'error'); return; }
-        API.createRelationship(scenarioId, { character_id: charId, related_character_id: relatedId, relationship_label: relType })
-          .then(reload).catch(function (err) {
-            showToast('Failed to add: ' + err.message, 'error');
-          });
-      }
-    });
-
-  }).catch(function (e) {
-    container.innerHTML = '<div class="error-state">Failed: ' + escapeHtml(e.message) + '</div>';
-  });
+function renderRelationshipsTab(container) {
+  container.innerHTML =
+    '<div class="sidebar-tab-content">' +
+      '<div class="tab-header"><h4>Relationships</h4></div>' +
+      '<div class="empty-state small">Relationships are not yet implemented in this version.</div>' +
+    '</div>';
 }
 
 
@@ -2863,18 +2477,8 @@ function renderRelationshipsTab(container, scenarioId) {
    ============================================================ */
 
 // Fetches current character states for a scenario and caches them in state.characterStates
-function _loadCharacterStates(scenarioId) {
-  return API.getScenarioCharacterStates(scenarioId)
-    .then(function (data) {
-      var states = data.states || [];
-      states.forEach(function (s) {
-        state.characterStates[s.characterId] = {
-          moodcurrent:    s.moodcurrent,
-          arousalcurrent: s.arousalcurrent
-        };
-      });
-    })
-    .catch(function () {}); // non-fatal — sidebar bars just won't populate
+function _loadCharacterStates() {
+  return Promise.resolve(); // no character-states endpoint in this version
 }
 
 // Returns compact mood + arousal bar HTML with manual +/- override buttons
@@ -2981,7 +2585,7 @@ function _commitClothingEdit(wrap) {
   var scenId  = state.currentScenario && state.currentScenario.id;
   if (!input || !charId || !scenId) { _cancelClothingEdit(wrap); return; }
   var newVal  = input.value.trim();
-  API.updateCharacterClothingById(scenId, charId, { current_clothing: newVal })
+  API.updateCharacterClothing(scenId, charId, { current_clothing: newVal })
     .then(function () {
       if (!state.characterStates[charId]) state.characterStates[charId] = {};
       state.characterStates[charId].current_clothing = newVal;
