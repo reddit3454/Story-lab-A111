@@ -17,9 +17,8 @@ export var state = {
   wizardCast:         [],
   allCharacters:      [],
   editingScenarioId:  null,
-  imagecoreOk:        null,
+  a1111Ok:            null,
   ollamaOk:           null,
-  libraryOk:          null,
   availableLoRAs:     [],
   allLocations:       [],
   characterStates:    {},   // charId -> { moodcurrent, arousalcurrent } — live mood state

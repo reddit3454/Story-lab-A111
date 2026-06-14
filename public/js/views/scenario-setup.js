@@ -58,10 +58,15 @@ export function initScenarioSetup(editId) {
   document.getElementById('btn-wizard-back').onclick = wizardBack;
   document.getElementById('btn-wizard-next').onclick = wizardNext;
 
-  var loadPromises = [API.getCharacters(), API.getLoRAs(), API.listLocations()];
+  var loadPromises = [
+    Promise.resolve({ characters: [] }),  // no global character pool in A1111 version
+    API.getA1111Loras().catch(function () { return { loras: [] }; }),
+    editId ? API.getLocations(editId).catch(function () { return { locations: [] }; })
+           : Promise.resolve({ locations: [] }),
+  ];
   if (editId) {
     loadPromises.push(API.getScenario(editId));
-    loadPromises.push(API.getScenarioCharacters(editId));
+    loadPromises.push(API.getCharacters(editId).catch(function () { return { characters: [] }; }));
   }
 
   Promise.all(loadPromises).then(function (results) {
@@ -138,7 +143,6 @@ function wizardNext() {
   if (state.wizardStep === 1) {
     collectStep1();
     if (!state.wizardData.title) { showToast('Title is required.', 'error'); return; }
-    if (!state.wizardData.active_location_id) { showToast('A location is required. Select one from the list.', 'error'); return; }
     state.wizardStep = 2;
     renderWizardStep();
   } else if (state.wizardStep === 2) {
@@ -589,31 +593,15 @@ function submitWizard() {
   var promise;
   if (state.editingScenarioId) {
     promise = API.updateScenario(state.editingScenarioId, data).then(function () {
-      return API.getScenarioCharacters(state.editingScenarioId).then(function (cd) {
-        var currentChars = cd.characters || cd || [];
-        var currentIds   = currentChars.map(function (c) { return c.id; });
-        var newIds       = state.wizardCast.map(function (c) { return c.id; });
-        var toRemove     = currentIds.filter(function (id) { return newIds.indexOf(id) === -1; });
-        var toAdd        = newIds.filter(function (id) { return currentIds.indexOf(id) === -1; });
-        var sid          = state.editingScenarioId;
-        var removes = toRemove.map(function (id) { return API.removeScenarioCharacter(sid, id).catch(function(){}); });
-        var adds    = toAdd.map(function (id)    { return API.addScenarioCharacter(sid, id).catch(function(){}); });
-        return Promise.all(removes.concat(adds)).then(function () { return sid; });
-      });
+      return state.editingScenarioId;
     });
   } else {
     promise = API.createScenario(data).then(function (created) {
-      var sid = created.id;
-      var adds = state.wizardCast.map(function (c) {
-        return API.addScenarioCharacter(sid, c.id).catch(function(){});
-      });
-      return Promise.all(adds).then(function () { return sid; });
+      return created.id;
     });
   }
 
   promise.then(function (sid) {
-    return API.setScenarioActiveLocation(sid, state.wizardData.active_location_id || null).catch(function(){}).then(function(){ return sid; });
-  }).then(function (sid) {
     showToast(state.editingScenarioId ? 'Scenario updated!' : 'Scenario created!', 'success');
     location.hash = '#play?scenario=' + sid;
   }).catch(function (e) {

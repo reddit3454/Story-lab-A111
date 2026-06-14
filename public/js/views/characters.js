@@ -45,11 +45,14 @@ export function initCharacters() {
     renderRelationshipsPanel();
   };
 
-  API.getCharacters().then(function (data) {
-    renderCharacterList(data.characters || []);
-  }).catch(function (e) {
-    showToast('Failed to load characters: ' + e.message, 'error');
-  });
+  // Characters are scenario-scoped — show guidance
+  var list = document.getElementById('char-list');
+  if (list) {
+    list.innerHTML = '<div class="empty-state small" style="padding:12px 8px;line-height:1.5">' +
+      'Characters belong to individual scenarios.<br>' +
+      '<a href="#dashboard" style="color:var(--accent)">Open a scenario</a> and use the Cast tab to manage characters.' +
+      '</div>';
+  }
 }
 
 function renderCharacterList(characters) {
@@ -837,20 +840,7 @@ function renderCharacterForm(char) {
       };
     }
 
-    // --- Load styles into the fullbody style picker ---
-    var fullbodyStyleSel = document.getElementById('fullbody-style-select');
-    if (fullbodyStyleSel) {
-      API.listStyles().then(function (data) {
-        var styles = data.styles || [];
-        if (styles.length) {
-          fullbodyStyleSel.innerHTML =
-            '<option value="">-- None (default) --</option>' +
-            styles.map(function (s) {
-              return '<option value="' + s.id + '">' + escapeHtml(s.name) + '</option>';
-            }).join('');
-        }
-      }).catch(function () { /* silently ignore — picker stays with "None" only */ });
-    }
+    // Style picker removed — styles endpoint not available in A1111 version
 
     var fullbodyBtn = document.getElementById('btn-gen-fullbody');
     if (fullbodyBtn) {
@@ -1435,322 +1425,22 @@ function renderFullbodyGrid(charId, fbs) {
       '</div>' +
     '</div>';
   }).join('');
-  grid.querySelectorAll('.fb-use-ref-btn').forEach(function (btn) {
-    btn.onclick = function (e) {
-      e.stopPropagation();
-      setLoading(btn, true, 'Saving...');
-      API.useFullbodyAsRef(charId, btn.dataset.fn).then(function () {
-        showToast('Full body set as FaceID reference.', 'success');
-      }).catch(function (err) {
-        showToast('Failed: ' + err.message, 'error');
-      }).finally(function () {
-        setLoading(btn, false);
-      });
-    };
-  });
-  grid.querySelectorAll('.fb-delete-btn').forEach(function (btn) {
-    btn.onclick = function (e) {
-      e.stopPropagation();
-      API.deleteFullbodyById(charId, parseInt(btn.dataset.fbId, 10)).then(function (data) {
-        showToast('Full body image removed.', 'success');
-        renderFullbodyGrid(charId, data.fullbodies || []);
-      }).catch(function (err) {
-        showToast('Failed: ' + err.message, 'error');
-      });
-    };
-  });
-
-  // Notify slot-order panel that the grid has new thumbnails.
-  if (typeof window._refreshFaceIdSlotOrder === 'function') {
-    // Small defer so the grid imgs are in the DOM before querySelectorAll runs.
-    setTimeout(window._refreshFaceIdSlotOrder, 50);
-  }
+  // Fullbody use-as-ref and delete removed — ImageCore features not available in A1111 version
 }
 
 function loadFullbodies(charId) {
   var grid = document.getElementById('fullbody-grid');
-  if (!grid) return;
-  grid.innerHTML = '<div class="loading-state small">Loading...</div>';
-  API.getFullbodies(charId).then(function (data) {
-    renderFullbodyGrid(charId, data.fullbodies || []);
-  }).catch(function () {
-    if (grid) grid.innerHTML = '<div class="error-state">Failed to load full body images.</div>';
-  });
+  if (grid) grid.innerHTML = '<div class="empty-state small">Full body image management not available in this version.</div>';
 }
 
 /* ============================================================
-   CHARACTER RELATIONSHIPS PANEL
-   Structured model: type / bond / dynamic / notes / lock
-   Character dropdowns show scenario cast only.
-   Edit mode: click Edit on a row to preload all fields.
+   CHARACTER RELATIONSHIPS PANEL — not yet implemented in A1111 version
    ============================================================ */
 function renderRelationshipsPanel() {
   var panel = document.getElementById('char-detail-panel');
   if (!panel) return;
-
-  var TYPE_OPTS = [
-    '', 'mother', 'father', 'son', 'daughter', 'sister', 'brother',
-    'half-sister', 'half-brother',
-    'cousin', 'aunt', 'uncle', 'grandma', 'grandpa',
-    'best friend', 'close friend', 'friend', 'acquaintance', 'stranger',
-    'roommate', 'housemate', 'neighbor', 'coworker', 'classmate',
-    "sister's friend", "brother's friend", "friend's brother", "friend's sister",
-    "daughter's friend", "son's friend", "friend's mom", "friend's dad",
-    'crush', 'lover', 'rival', 'enemy'
-  ];
-  var BOND_OPTS = [
-    '', 'very close', 'close', 'trusting', 'neutral',
-    'growing', 'cautious', 'strained', 'fractured'
-  ];
-  var DYNAMIC_OPTS = [
-    '', 'playful', 'teasing', 'supportive', 'protective', 'gentle',
-    'encouraging', 'candid', 'indulgent', 'friendly',
-    'shy', 'awkward', 'reserved', 'cautious', 'competitive', 'wary', 'hostile'
-  ];
-
-  function buildSelectOpts(opts, selectedVal) {
-    return opts.map(function (v) {
-      var lbl = v || '-- none --';
-      var sel = (v === (selectedVal || '')) ? ' selected' : '';
-      return '<option value="' + escapeHtml(v) + '"' + sel + '>' + escapeHtml(lbl) + '</option>';
-    }).join('');
-  }
-
   panel.innerHTML =
-    '<div class="rel-panel">' +
-      '<div class="rel-panel-header">' +
-        '<h2 class="panel-title">Character Relationships</h2>' +
-        '<button class="btn btn-ghost btn-sm" id="btn-rel-back">&larr; Characters</button>' +
-      '</div>' +
-      '<div class="form-group" style="padding:0 16px">' +
-        '<label class="form-label">Scenario</label>' +
-        '<select class="form-select" id="rel-scenario-select"><option value="">Loading...</option></select>' +
-      '</div>' +
-      '<div id="rel-graph-container" class="rel-graph-container"></div>' +
-      '<div id="rel-list" style="padding:0 16px 8px;max-height:150px;overflow-y:auto"></div>' +
-      '<div class="rel-add-form">' +
-        '<div class="rel-add-form-title" id="rel-form-title">Add Relationship</div>' +
-        '<div class="rel-add-row">' +
-          '<select class="form-select" id="rel-char-a"><option value="">Character A</option></select>' +
-          '<div class="rel-add-arrow">&rarr;</div>' +
-          '<select class="form-select" id="rel-char-b"><option value="">Character B</option></select>' +
-        '</div>' +
-        '<div class="rel-add-row">' +
-          '<select class="form-select" id="rel-type"><option value="">-- type --</option>' + buildSelectOpts(TYPE_OPTS.filter(Boolean), '') + '</select>' +
-          '<select class="form-select" id="rel-bond"><option value="">-- bond --</option>' + buildSelectOpts(BOND_OPTS.filter(Boolean), '') + '</select>' +
-          '<select class="form-select" id="rel-dynamic"><option value="">-- dynamic --</option>' + buildSelectOpts(DYNAMIC_OPTS.filter(Boolean), '') + '</select>' +
-        '</div>' +
-        '<div class="rel-add-row">' +
-          '<input type="text" class="form-input" id="rel-notes" placeholder="Notes (optional)" style="flex:1">' +
-          '<label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap">' +
-            '<input type="checkbox" id="rel-locked"> Locked' +
-          '</label>' +
-        '</div>' +
-        '<input type="hidden" id="rel-edit-id">' +
-        '<div class="rel-add-actions">' +
-          '<button class="btn btn-ghost btn-sm" id="btn-rel-reset">Reset</button>' +
-          '<button class="btn btn-primary btn-sm" id="btn-rel-save">Add Relationship</button>' +
-        '</div>' +
-      '</div>' +
+    '<div class="empty-state" style="padding:32px 24px">' +
+      '<p class="empty-state-text">Relationships are not yet implemented in this version.</p>' +
     '</div>';
-
-  document.getElementById('btn-rel-back').onclick = function () {
-    renderCharacterForm(state.currentCharacter || null);
-  };
-
-  var scenarioSel = document.getElementById('rel-scenario-select');
-
-  function loadScenarioRels(scenarioId) {
-    var listEl = document.getElementById('rel-list');
-    var graphEl = document.getElementById('rel-graph-container');
-    if (!scenarioId) {
-      if (listEl) listEl.innerHTML = '';
-      if (graphEl) graphEl.innerHTML = '';
-      return;
-    }
-    Promise.all([
-      API.getRelationships(scenarioId),
-      API.getScenarioCharacters(scenarioId)
-    ]).then(function (results) {
-      var rels = results[0].relationships || [];
-      var chars = results[1].characters || [];
-
-      var charOpts = '<option value="">-- select --</option>' +
-        chars.map(function (c) {
-          return '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>';
-        }).join('');
-      var selA = document.getElementById('rel-char-a');
-      var selB = document.getElementById('rel-char-b');
-      if (selA) selA.innerHTML = charOpts;
-      if (selB) selB.innerHTML = charOpts;
-
-      if (graphEl) renderRelGraph(graphEl, chars, rels);
-
-      if (!listEl) return;
-      if (!rels.length) {
-        listEl.innerHTML = '<div class="empty-state small" style="padding:8px 0">No relationships yet.</div>';
-        return;
-      }
-      listEl.innerHTML = rels.map(function (r) {
-        var nameA = escapeHtml((chars.find(function(c){return c.id===r.character_a_id;})||{name:'?'}).name);
-        var nameB = escapeHtml((chars.find(function(c){return c.id===r.character_b_id;})||{name:'?'}).name);
-        return '<div class="rel-row" data-rel-id="' + r.id + '">' +
-          '<span class="rel-names">' + nameA + ' &rarr; ' + nameB + '</span>' +
-          '<span class="rel-tags">' +
-            (r.type    ? '<span class="badge badge-muted">'   + escapeHtml(r.type)    + '</span>' : '') +
-            (r.bond    ? '<span class="badge badge-muted">'   + escapeHtml(r.bond)    + '</span>' : '') +
-            (r.dynamic ? '<span class="badge badge-accent">'  + escapeHtml(r.dynamic) + '</span>' : '') +
-            (r.locked  ? '<span class="badge badge-warning">locked</span>' : '') +
-          '</span>' +
-          '<div class="rel-row-actions">' +
-            '<button class="btn btn-ghost btn-xs btn-rel-edit" data-rel-id="' + r.id + '">Edit</button>' +
-            '<button class="btn btn-danger btn-xs btn-rel-delete" data-rel-id="' + r.id + '">x</button>' +
-          '</div>' +
-        '</div>';
-      }).join('');
-
-      listEl.querySelectorAll('.btn-rel-delete').forEach(function (btn) {
-        btn.onclick = function () {
-          API.deleteRelationship(scenarioId, btn.dataset.relId).then(function () {
-            showToast('Relationship deleted.', 'success');
-            loadScenarioRels(scenarioId);
-          }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
-        };
-      });
-
-      listEl.querySelectorAll('.btn-rel-edit').forEach(function (btn) {
-        btn.onclick = function () {
-          var rel = rels.find(function (r) { return String(r.id) === String(btn.dataset.relId); });
-          if (!rel) return;
-          var editIdEl = document.getElementById('rel-edit-id');
-          var selA2 = document.getElementById('rel-char-a');
-          var selB2 = document.getElementById('rel-char-b');
-          var typeEl = document.getElementById('rel-type');
-          var bondEl = document.getElementById('rel-bond');
-          var dynEl  = document.getElementById('rel-dynamic');
-          var notesEl = document.getElementById('rel-notes');
-          var lockedEl = document.getElementById('rel-locked');
-          var titleEl = document.getElementById('rel-form-title');
-          var saveBtn2 = document.getElementById('btn-rel-save');
-          if (editIdEl) editIdEl.value = rel.id;
-          if (selA2)   selA2.value   = rel.character_a_id;
-          if (selB2)   selB2.value   = rel.character_b_id;
-          if (typeEl)  typeEl.value  = rel.type    || '';
-          if (bondEl)  bondEl.value  = rel.bond    || '';
-          if (dynEl)   dynEl.value   = rel.dynamic || '';
-          if (notesEl) notesEl.value = rel.notes   || '';
-          if (lockedEl) lockedEl.checked = !!rel.locked;
-          if (titleEl) titleEl.textContent = 'Edit Relationship';
-          if (saveBtn2) saveBtn2.textContent = 'Save Changes';
-        };
-      });
-    }).catch(function (err) {
-      showToast('Failed to load relationships: ' + err.message, 'error');
-    });
-  }
-
-  document.getElementById('btn-rel-save').onclick = function () {
-    var scenarioId = scenarioSel.value;
-    if (!scenarioId) { showToast('Select a scenario first.', 'error'); return; }
-    var charA = document.getElementById('rel-char-a').value;
-    var charB = document.getElementById('rel-char-b').value;
-    if (!charA || !charB) { showToast('Select both characters.', 'error'); return; }
-    if (charA === charB)  { showToast('Characters must be different.', 'error'); return; }
-    var editId = document.getElementById('rel-edit-id').value;
-    var data = {
-      character_a_id: Number(charA),
-      character_b_id: Number(charB),
-      type:    document.getElementById('rel-type').value    || null,
-      bond:    document.getElementById('rel-bond').value    || null,
-      dynamic: document.getElementById('rel-dynamic').value || null,
-      notes:   document.getElementById('rel-notes').value.trim() || null,
-      locked:  document.getElementById('rel-locked').checked ? 1 : 0,
-    };
-    var promise = editId
-      ? API.updateRelationship(scenarioId, editId, data)
-      : API.createRelationship(scenarioId, data);
-    promise.then(function () {
-      showToast(editId ? 'Relationship updated.' : 'Relationship added.', 'success');
-      resetRelForm();
-      loadScenarioRels(scenarioId);
-    }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
-  };
-
-  function resetRelForm() {
-    var editIdEl = document.getElementById('rel-edit-id');
-    var selA = document.getElementById('rel-char-a');
-    var selB = document.getElementById('rel-char-b');
-    var typeEl = document.getElementById('rel-type');
-    var bondEl = document.getElementById('rel-bond');
-    var dynEl  = document.getElementById('rel-dynamic');
-    var notesEl = document.getElementById('rel-notes');
-    var lockedEl = document.getElementById('rel-locked');
-    var titleEl = document.getElementById('rel-form-title');
-    var saveBtn = document.getElementById('btn-rel-save');
-    if (editIdEl) editIdEl.value = '';
-    if (selA) selA.selectedIndex = 0;
-    if (selB) selB.selectedIndex = 0;
-    if (typeEl) typeEl.selectedIndex = 0;
-    if (bondEl) bondEl.selectedIndex = 0;
-    if (dynEl)  dynEl.selectedIndex  = 0;
-    if (notesEl) notesEl.value = '';
-    if (lockedEl) lockedEl.checked = false;
-    if (titleEl) titleEl.textContent = 'Add Relationship';
-    if (saveBtn) saveBtn.textContent = 'Add Relationship';
-  }
-
-  document.getElementById('btn-rel-reset').onclick = resetRelForm;
-
-  API.getScenarios().then(function (data) {
-    var scenarios = data.scenarios || [];
-    if (!scenarios.length) {
-      scenarioSel.innerHTML = '<option value="">No scenarios found</option>';
-      return;
-    }
-    scenarioSel.innerHTML = '<option value="">-- Select scenario --</option>' +
-      scenarios.map(function (s) {
-        return '<option value="' + s.id + '">' + escapeHtml(s.title || s.name || 'Scenario ' + s.id) + '</option>';
-      }).join('');
-    scenarioSel.onchange = function () { loadScenarioRels(scenarioSel.value); };
-  }).catch(function (err) {
-    scenarioSel.innerHTML = '<option value="">Failed to load</option>';
-  });
-}
-
-/* Simple SVG relationship graph */
-function renderRelGraph(container, chars, rels) {
-  if (!chars.length) { container.innerHTML = ''; return; }
-  var W = container.offsetWidth || 400;
-  var H = 180;
-  var R = 22;
-  var cx = W / 2, cy = H / 2;
-  var radius = Math.min(W, H) / 2 - R - 10;
-  var positions = {};
-  chars.forEach(function (c, i) {
-    var angle = (2 * Math.PI * i / chars.length) - Math.PI / 2;
-    positions[c.id] = {
-      x: cx + radius * Math.cos(angle),
-      y: cy + radius * Math.sin(angle),
-      name: c.name
-    };
-  });
-
-  var lines = rels.map(function (r) {
-    var a = positions[r.character_a_id];
-    var b = positions[r.character_b_id];
-    if (!a || !b) return '';
-    return '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y +
-      '" stroke="var(--primary)" stroke-opacity="0.35" stroke-width="1.5"/>';
-  }).join('');
-
-  var nodes = chars.map(function (c) {
-    var p = positions[c.id];
-    var initial = escapeHtml((c.name || '?')[0].toUpperCase());
-    var shortName = escapeHtml(c.name.length > 8 ? c.name.slice(0, 7) + '...' : c.name);
-    return '<circle cx="' + p.x + '" cy="' + p.y + '" r="' + R + '" fill="var(--surface-2)" stroke="var(--border)" stroke-width="1.5"/>' +
-      '<text x="' + p.x + '" y="' + (p.y + 5) + '" text-anchor="middle" font-size="13" fill="var(--text-primary)" font-family="inherit">' + initial + '</text>' +
-      '<text x="' + p.x + '" y="' + (p.y + R + 13) + '" text-anchor="middle" font-size="10" fill="var(--text-secondary)" font-family="inherit">' + shortName + '</text>';
-  }).join('');
-
-  container.innerHTML = '<svg width="' + W + '" height="' + H + '" style="display:block">' + lines + nodes + '</svg>';
 }

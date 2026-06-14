@@ -120,7 +120,7 @@
     getA1111Status: function ()     { return request('GET',  '/api/a1111/status'); },
     getA1111Models: function ()     { return request('GET',  '/api/a1111/models'); },
     getA1111Loras:  function ()     { return request('GET',  '/api/a1111/loras'); },
-    setA1111Model:  function (name) { return request('POST', '/api/a1111/model', { model: name }); },
+    setA1111Model:  function (name) { return request('POST', '/api/a1111/model', { model_name: name }); },
 
     /* Audit log */
     getAuditLog: function (filters) {

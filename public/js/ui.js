@@ -52,23 +52,19 @@ export function setImgStatus(msg) {
    SERVICE STATUS DOTS
    ============================================================ */
 export function statusDotsHtml() {
-  var icCls = state.imagecoreOk === true ? ' ok' : state.imagecoreOk === false ? ' down' : '';
-  var olCls = state.ollamaOk   === true ? ' ok' : state.ollamaOk   === false ? ' down' : '';
-  var lbCls = state.libraryOk  === true ? ' ok' : state.libraryOk  === false ? ' down' : '';
+  var a1Cls = state.a1111Ok  === true ? ' ok' : state.a1111Ok  === false ? ' down' : '';
+  var olCls = state.ollamaOk === true ? ' ok' : state.ollamaOk === false ? ' down' : '';
   return '<span class="service-status">' +
-    '<span class="status-dot' + icCls + '" data-svc="imagecore"></span>' +
-    '<span class="status-lbl">ImageCore</span>' +
+    '<span class="status-dot' + a1Cls + '" data-svc="a1111"></span>' +
+    '<span class="status-lbl">A1111</span>' +
     '<span class="status-dot' + olCls + '" data-svc="ollama" style="margin-left:10px"></span>' +
     '<span class="status-lbl">Ollama</span>' +
-    '<span class="status-dot' + lbCls + '" data-svc="library" style="margin-left:10px"></span>' +
-    '<span class="status-lbl">Library</span>' +
   '</span>';
 }
 
 export function updateStatusDots(svc, ok) {
-  if (svc === 'imagecore') state.imagecoreOk = ok;
+  if      (svc === 'a1111')  state.a1111Ok  = ok;
   else if (svc === 'ollama') state.ollamaOk = ok;
-  else if (svc === 'library') state.libraryOk = ok;
   document.querySelectorAll('.status-dot[data-svc="' + svc + '"]').forEach(function (d) {
     d.classList.toggle('ok',   ok === true);
     d.classList.toggle('down', ok === false);
@@ -76,27 +72,20 @@ export function updateStatusDots(svc, ok) {
 }
 
 export function startStatusPolling() {
-  function checkImagecore() {
-    API.getHealthImagecore()
-      .then(function (d) { updateStatusDots('imagecore', !!d.ok); })
-      .catch(function ()  { updateStatusDots('imagecore', false); });
+  function checkA1111() {
+    API.getHealthA1111()
+      .then(function (d) { updateStatusDots('a1111', !!d.ok); })
+      .catch(function ()  { updateStatusDots('a1111', false); });
   }
   function checkOllama() {
     API.getHealthOllama()
       .then(function (d) { updateStatusDots('ollama', !!d.ok); })
       .catch(function ()  { updateStatusDots('ollama', false); });
   }
-  function checkLibrary() {
-    API.getHealthLibrary()
-      .then(function (d) { updateStatusDots('library', !!d.ok); })
-      .catch(function ()  { updateStatusDots('library', false); });
-  }
-  checkImagecore();
+  checkA1111();
   checkOllama();
-  checkLibrary();
-  setInterval(checkImagecore, 15000);
-  setInterval(checkOllama,    30000);
-  setInterval(checkLibrary,   30000);
+  setInterval(checkA1111,  15000);
+  setInterval(checkOllama, 30000);
 }
 
 /* ============================================================

@@ -671,26 +671,9 @@ function wireImageTools() {
       });
       fireBtn.disabled = true;
       fireBtn.textContent = 'Generating...';
-      if (statusEl) statusEl.textContent = 'Waiting for ImageCore...';
-      API.testFireStyle(payload)
-        .then(function(r) {
-          fireBtn.disabled = false;
-          fireBtn.textContent = cfg.fireLabel;
-          if (statusEl) { statusEl.textContent = 'Done!'; setTimeout(function(){ statusEl.textContent = ''; }, 3000); }
-          var label = payload.lora1_file
-            ? payload.lora1_file.replace('.safetensors','') + ' x' + Number(payload.lora1_strength).toFixed(2)
-            : (payload.model || 'default').replace('.safetensors','');
-          var shots = loadShots(cfg.ns);
-          shots.unshift({ filename: r.filename, label: label, ns: cfg.ns, ts: Date.now() });
-          if (shots.length > 12) shots = shots.slice(0, 12);
-          saveShots(cfg.ns, shots);
-          renderShots(cfg.ns, resultsEl, cfg.imgW);
-        })
-        .catch(function(err) {
-          fireBtn.disabled = false;
-          fireBtn.textContent = cfg.fireLabel;
-          if (statusEl) statusEl.textContent = 'Error: ' + err.message;
-        });
+      if (statusEl) statusEl.textContent = 'Not available in this version.';
+      fireBtn.disabled = false;
+      fireBtn.textContent = cfg.fireLabel;
     };
   }
 
@@ -701,10 +684,14 @@ function wireImageTools() {
     promptId:'itz-fb-prompt', negativeId:'itz-fb-negative', width:832, height:1216, imgW:400,
     fireLabel:'Fire Full Body', defaultPrompt:'beautiful woman, full body shot, standing, looking at camera' });
 
-  // Populate LoRA dropdowns
-  API.getLoRAs().then(function(data) {
+  // Populate LoRA dropdowns from A1111
+  API.getA1111Loras().then(function(data) {
+    var loras = Array.isArray(data) ? data : (data.loras || []);
     var opts = '<option value="">-- none --</option>' +
-      (data.loras || []).map(function(f){ return '<option value="'+escapeHtml(f)+'">'+escapeHtml(f)+'</option>'; }).join('');
+      loras.map(function(l){
+        var f = typeof l === 'string' ? l : (l.name || l.filename || '');
+        return '<option value="'+escapeHtml(f)+'">'+escapeHtml(f)+'</option>';
+      }).join('');
     ['itz-lora1','itz-lora2','itz-lora3'].forEach(function(id){ var s=g(id); if(s) s.innerHTML=opts; });
   }).catch(function(){});
 
@@ -731,9 +718,7 @@ function wireImageTools() {
         prompt_prefix:   (g('itz-prompt').value   || '').trim() || null,
         negative_prompt: (g('itz-negative').value || '').trim() || null
       };
-      API.createStyle(data)
-        .then(function(){ if(itzStatusEl){ itzStatusEl.textContent='Style "'+data.name+'" saved!'; setTimeout(function(){ itzStatusEl.textContent=''; },3000); } })
-        .catch(function(err){ if(itzStatusEl) itzStatusEl.textContent='Save failed: '+err.message; });
+      if(itzStatusEl){ itzStatusEl.textContent='Style saving not available in this version.'; setTimeout(function(){ itzStatusEl.textContent=''; },3000); }
     };
   }
 
@@ -782,18 +767,7 @@ function _plRenderPreview() {
 }
 
 function _plLoadStyles() {
-  var sel = document.getElementById('pl-style-select');
-  if (!sel || sel.dataset.loaded === '1') return;
-  API.listStyles().then(function (data) {
-    _plStyles = data.styles || [];
-    sel.innerHTML = '<option value="">-- None --</option>' +
-      _plStyles.map(function (s) {
-        return '<option value="' + s.id + '">' + escapeHtml(s.name) + '</option>';
-      }).join('');
-    sel.onchange = _plRenderPreview;
-    sel.dataset.loaded = '1';
-    _plRenderPreview();
-  }).catch(function () {});
+  // Styles endpoint not available in A1111 version
 }
 
 function wirePromptLab() {
@@ -807,13 +781,7 @@ function wirePromptLab() {
     loadLastBtn.onclick = function () {
       var sc = state.currentScenario;
       if (!sc) { showToast('No active scenario. Open a story first.'); return; }
-      API.getScenarioLastImagePrompt(sc.id)
-        .then(function (data) {
-          var ta = g('pl-raw-prompt');
-          if (ta) ta.value = data.prompt || '';
-          if (!data.prompt) showToast('No image prompts found for this scenario.');
-        })
-        .catch(function (e) { showToast('Failed: ' + e.message); });
+      showToast('Load last prompt not available in this version.');
     };
   }
 
@@ -825,21 +793,11 @@ function wirePromptLab() {
       var statusEl = g('pl-enhance-status');
       if (statusEl) statusEl.innerHTML = 'Enhancing ' + statusDotsHtml();
       enhanceBtn.disabled = true;
-      API.enhancePromptLab(raw)
-        .then(function (data) {
-          var enhanced = data.enhanced || data.enhanced_prompt || data.result || data.text || data.prompt
-            || (typeof data === 'string' ? data : null) || raw;
-          var ta = g('pl-enhanced');
-          if (ta) { ta.dataset.baseEnhanced = enhanced; _plRenderPreview(); }
-          if (statusEl) statusEl.innerHTML = '';
-        })
-        .catch(function (err) {
-          var msg = (err.message || '').toLowerCase();
-          if (statusEl) statusEl.innerHTML = msg.includes('offline') || msg.includes('503')
-            ? 'Prompt Enhancer offline'
-            : ('Error: ' + err.message);
-        })
-        .finally(function () { enhanceBtn.disabled = false; });
+      // Prompt enhancement not available in A1111 version — pass through as-is
+      var ta = g('pl-enhanced');
+      if (ta) { ta.dataset.baseEnhanced = raw; _plRenderPreview(); }
+      if (statusEl) statusEl.innerHTML = '';
+      enhanceBtn.disabled = false;
     };
   }
 
@@ -851,36 +809,7 @@ function wirePromptLab() {
       if (!enhanced) { showToast('Enhance a prompt first.'); return; }
       var style = _plGetStyle();
       var finalPrompt = ta ? (ta.value || '').trim() : enhanced;
-      var resultArea = g('pl-result');
-      if (resultArea) resultArea.innerHTML = '<span style="font-size:12px;color:var(--text-muted)">Sending to ComfyUI...</span>';
-      sendBtn.disabled = true;
-      API.testFireStyle({
-        prompt:         finalPrompt,
-        negative_prompt: style && style.negative_prompt ? style.negative_prompt : null,
-        model:          style && style.model            ? style.model            : null,
-        width:          832,
-        height:         1216,
-        lora1_file:     style ? (style.lora1_file      || null) : null,
-        lora1_strength: style ? (parseFloat(style.lora1_strength) || 0.75) : 0.75,
-        lora2_file:     style ? (style.lora2_file      || null) : null,
-        lora2_strength: style ? (parseFloat(style.lora2_strength) || 0.75) : 0.75,
-        lora3_file:     style ? (style.lora3_file      || null) : null,
-        lora3_strength: style ? (parseFloat(style.lora3_strength) || 0.75) : 0.75
-      })
-        .then(function (data) {
-          if (!data.filename) {
-            if (resultArea) resultArea.innerHTML = '<span style="font-size:12px;color:var(--text-muted)">Done (no filename returned).</span>';
-            return;
-          }
-          if (resultArea) resultArea.innerHTML =
-            '<img src="/story-images/' + escapeHtml(data.filename) + '" ' +
-            'style="max-width:100%;border-radius:6px;border:1px solid var(--border);cursor:zoom-in;margin-top:6px" ' +
-            'onclick="(function(src){var lb=document.getElementById(\'story-lightbox\');if(lb){lb.querySelector(\'img\').src=src;lb.style.display=\'flex\';}})(this.src)">';
-        })
-        .catch(function (err) {
-          if (resultArea) resultArea.innerHTML = '<span style="color:var(--danger);font-size:12px">Error: ' + escapeHtml(err.message) + '</span>';
-        })
-        .finally(function () { sendBtn.disabled = false; });
+      showToast('Send to A1111 not available from Prompt Lab in this version.');
     };
   }
 
@@ -891,12 +820,9 @@ function wirePromptLab() {
       if (!enhanced) { showToast('Nothing to save. Enhance a prompt first.'); return; }
       var name = prompt('Name for this style:');
       if (!name || !name.trim()) return;
-      API.createStyle({ name: name.trim(), prompt_prefix: enhanced })
-        .then(function () {
-          showToast('Style "' + name.trim() + '" saved.');
-          var sel = g('pl-style-select');
-          if (sel) { sel.dataset.loaded = ''; _plLoadStyles(); }
-        })
+      Promise.resolve().then(function () {
+        showToast('Style saving not available in this version.');
+      })
         .catch(function (e) { showToast('Save failed: ' + e.message); });
     };
   }
@@ -1374,52 +1300,9 @@ function loadHealthCards() {
 function loadGlobalRules() {
   var container = document.getElementById('global-rules-section');
   if (!container) return;
-  API.getGlobalRules()
-    .then(function (data) {
-      var rules = Array.isArray(data) ? data : (data.rules || []);
-      // Flatten all rule content into one textarea (one rule per line)
-      var text = rules.map(function (r) { return r.rule_text || ''; }).join('\n');
-      container.innerHTML =
-        '<textarea class="form-input" id="global-rules-ta" rows="8" ' +
-          'style="width:100%;font-family:var(--font-mono,monospace);font-size:13px" ' +
-          'placeholder="Enter global rules that apply to all scenarios...">' +
-          escapeHtml(text) +
-        '</textarea>' +
-        '<div style="display:flex;gap:8px;margin-top:8px">' +
-          '<button class="btn btn-primary btn-sm" id="btn-save-global-rules">Save</button>' +
-          '<span id="global-rules-status" style="font-size:12px;color:var(--text-muted);align-self:center"></span>' +
-        '</div>';
-      // Store loaded rules for diffing on save
-      container._loadedRules = rules;
-      var saveBtn  = document.getElementById('btn-save-global-rules');
-      var statusEl = document.getElementById('global-rules-status');
-      if (saveBtn) {
-        saveBtn.onclick = function () {
-          var val = (document.getElementById('global-rules-ta').value || '').trim();
-          var newLines = val ? val.split('\n').map(function (s) { return s.trim(); }).filter(Boolean) : [];
-          var oldRules = container._loadedRules || [];
-          saveBtn.disabled = true;
-          // Delete all old rules, then create new ones
-          var deletePromises = oldRules.map(function (r) { return API.deleteRule(r.id); });
-          Promise.all(deletePromises)
-            .then(function () {
-              var createPromises = newLines.map(function (line) {
-                return API.createRule({ scope: 'global', rule_text: line });
-              });
-              return Promise.all(createPromises);
-            })
-            .then(function () {
-              if (statusEl) { statusEl.textContent = 'Saved!'; setTimeout(function () { statusEl.textContent = ''; }, 2000); }
-              loadGlobalRules(); // reload to refresh _loadedRules
-            })
-            .catch(function (e) { if (statusEl) statusEl.textContent = 'Error: ' + e.message; })
-            .finally(function () { saveBtn.disabled = false; });
-        };
-      }
-    })
-    .catch(function (e) {
-      container.innerHTML = '<p class="text-muted">Failed to load global rules: ' + escapeHtml(e.message) + '</p>';
-    });
+  // Rules are scenario-scoped in this version — manage them from within each story
+  container.innerHTML =
+    '<p class="text-muted" style="font-size:13px">Rules are managed per-scenario. Open a scenario and use the Rules tab in the sidebar.</p>';
 }
 // ---------------------------------------------------------------------------
 // llama.cpp config form

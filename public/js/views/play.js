@@ -1,7 +1,6 @@
 import { state, chatColors, getNpcColor } from '../state.js';
 import { escapeHtml, formatStoryContent, avatarHtml, imageSrc } from '../utils.js';
 import { showToast, showConfirm, setLoading, openLightbox, setImgStatus, statusDotsHtml } from '../ui.js';
-import { openStyleCreatorModal } from './style-creator.js';
 
 var _ws = null;
 var _wsRetryDelay = 2000;
@@ -607,9 +606,7 @@ function setupPlayInteractions(scenarioId) {
         state.characterStates[c.characterId].current_clothing = c.current_clothing || null;
       });
       var charsHtml = chars.map(function (c) {
-        var imgSrc = c.fullbody_image_filename
-          ? imageSrc(c.fullbody_image_filename)
-          : (c.reference_image_path ? imageSrc(c.reference_image_path) : '');
+        var imgSrc = '';
         var initial = escapeHtml((c.name || '?')[0].toUpperCase());
         var isNpc = !c.is_user_character;
         return '<div class="portrait-card" data-char-name="' + escapeHtml(c.name) + '" data-char-id="' + c.id + '" title="Generate image of ' + escapeHtml(c.name) + '">' +
@@ -943,11 +940,11 @@ function setupPlayInteractions(scenarioId) {
     };
   }
 
-  /* Image Styles button — open style creator modal */
+  /* Image Profiles button — styles removed, use Settings > Profiles */
   var imgSettingsBtn = document.getElementById('btn-img-settings');
   if (imgSettingsBtn) {
     imgSettingsBtn.onclick = function () {
-      openStyleCreatorModal(scenarioId);
+      showToast('Use Settings > Profiles to manage image generation profiles.', 'info');
     };
   }
 
@@ -1409,7 +1406,7 @@ function _populateSceneImageHistory() {
   imageTurns.forEach(function (t) {
     var imgObj = {
       id:                 t.image_id            || null,
-      imagecore_filename: t.image_filename,
+      filename: t.image_filename,
       visual_prompt_sent: t.image_visual_prompt  || '',
       videostatus:        t.image_videostatus    || null,
       videoclipfilename:  t.image_videoclipfilename || null,
@@ -1432,7 +1429,7 @@ function displayImage(img) {
   var container = document.getElementById('scene-image-history');
   if (!container) return;
 
-  var src = imageSrc(img.imagecore_filename);
+  var src = imageSrc(img.filename);
   var videoHtml = '';
   if (img.videostatus === 'ready' && img.videoclipfilename) {
     var vsrc = imageSrc(img.videoclipfilename);
@@ -1519,7 +1516,7 @@ function refreshAnimatePanel() {
   }
 
   // Show Animate for any image that has a DB id and a filename.
-  if (!img.id || !img.imagecore_filename) { section.innerHTML = ''; return; }
+  if (!img.id || !img.filename) { section.innerHTML = ''; return; }
 
   // Error or null state — show Animate button (with optional error note).
   var errorNote = (vs === 'error')
