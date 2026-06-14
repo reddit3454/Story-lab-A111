@@ -2,6 +2,7 @@ import * as ollama from './ollama.js';
 import { resolveMasterConfig } from './config-resolver.js';
 import { resolveNarratorModel } from './model-resolver.js';
 import { parseNarratorResponse } from '../input-parser.js';
+import { log, logError } from '../logger.js';
 
 const SCENE_CARD_INSTRUCTION = `After every story segment you write, append a scene description block using this exact format:
 ---SCENE---
@@ -67,14 +68,60 @@ export function buildSystemPrompt({ scenario, characters, rules, worldEntries, m
   return parts.join('\n\n---\n\n');
 }
 
-export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
-  const characters  = db.prepare('SELECT * FROM characters WHERE scenario_id = ?').all(scenario.id);
-  const rules       = db.prepare('SELECT * FROM rules WHERE scenario_id = ? ORDER BY priority DESC').all(scenario.id);
-  const worldEntries = db.prepare('SELECT * FROM world_entries WHERE scenario_id = ?').all(scenario.id);
-  const memories    = db.prepare('SELECT * FROM memories WHERE scenario_id = ? ORDER BY created_at DESC LIMIT 10').all(scenario.id);
+// Resolves which backend and model to use for the narrator role.
+// Returns { backend: 'ollama'|'llamacpp', model: string, port?: number }
+async function resolveNarratorBackend(db) {
+  const cfgRow = db.prepare('SELECT value FROM global_config WHERE key = ?').get('llamacpp_config');
+  if (cfgRow?.value) {
+    try {
+      const llamaCfg = JSON.parse(cfgRow.value);
+      const rc = llamaCfg.narrator || {};
+      if (rc.backend === 'llamacpp') {
+        return { backend: 'llamacpp', port: rc.port || 8080, model: rc.model_path || '' };
+      }
+      if (rc.backend === 'ollama' && rc.ollama_model) {
+        return { backend: 'ollama', model: rc.ollama_model };
+      }
+    } catch (_) {}
+  }
+  // Fall back to legacy narrator_model key (Ollama)
+  const model = await resolveNarratorModel(db);
+  return { backend: 'ollama', model };
+}
 
-  const config      = resolveMasterConfig(db);
-  const model       = await resolveNarratorModel(db);
+async function llamacppChat({ port, messages, maxTokens }) {
+  const url = `http://127.0.0.1:${port}/v1/chat/completions`;
+  const t0 = Date.now();
+  log('llamacpp', 'request', { port, endpoint: '/v1/chat/completions' });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, max_tokens: maxTokens, stream: false }),
+    });
+  } catch (err) {
+    logError('llamacpp', 'error', err);
+    throw err;
+  }
+  if (!res.ok) {
+    const err = new Error(`llama-server chat failed: HTTP ${res.status}`);
+    logError('llamacpp', 'error', err);
+    throw err;
+  }
+  const data = await res.json();
+  log('llamacpp', 'response', { port, duration_ms: Date.now() - t0 });
+  return data.choices?.[0]?.message?.content || '';
+}
+
+export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
+  const characters   = db.prepare('SELECT * FROM characters WHERE scenario_id = ?').all(scenario.id);
+  const rules        = db.prepare('SELECT * FROM rules WHERE scenario_id = ? ORDER BY priority DESC').all(scenario.id);
+  const worldEntries = db.prepare('SELECT * FROM world_entries WHERE scenario_id = ?').all(scenario.id);
+  const memories     = db.prepare('SELECT * FROM memories WHERE scenario_id = ? ORDER BY created_at DESC LIMIT 10').all(scenario.id);
+
+  const config       = resolveMasterConfig(db);
+  const backend      = await resolveNarratorBackend(db);
   const systemPrompt = buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, config });
 
   const fullMessages = [
@@ -88,14 +135,19 @@ export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
 
   const maxTokens = parseInt(config.narrator_max_tokens || '1200', 10);
 
-  const response = await ollama.chat({
-    model,
-    messages: fullMessages,
-    options: { num_predict: maxTokens },
-  });
+  let responseText;
+  if (backend.backend === 'llamacpp') {
+    responseText = await llamacppChat({ port: backend.port, messages: fullMessages, maxTokens });
+  } else {
+    const response = await ollama.chat({
+      model: backend.model,
+      messages: fullMessages,
+      options: { num_predict: maxTokens },
+    });
+    responseText = response.message?.content || '';
+  }
 
-  const responseText = response.message?.content || '';
   const { story_text, scene_card } = parseNarratorResponse(responseText);
 
-  return { story_text, scene_card, model_used: model, token_estimate: tokenEstimate };
+  return { story_text, scene_card, model_used: backend.model || `llamacpp:${backend.port}`, token_estimate: tokenEstimate };
 }

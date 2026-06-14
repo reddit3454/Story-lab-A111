@@ -98,6 +98,16 @@
       return request('POST', '/api/config/batch', { configs: configs });
     },
 
+    /* LLM backend config (narrator/extractor/summarizer/picker per-role) */
+    getLlamacppConfig: function () {
+      return request('GET', '/api/config').then(function (cfg) {
+        try { return JSON.parse(cfg.llamacpp_config || '{}'); } catch (_) { return {}; }
+      });
+    },
+    saveLlamacppConfig: function (newCfg) {
+      return request('POST', '/api/config', { key: 'llamacpp_config', value: JSON.stringify(newCfg) });
+    },
+
     /* Image generation profiles */
     getProfiles:        function ()         { return request('GET',    '/api/profiles'); },
     createProfile:      function (data)     { return request('POST',   '/api/profiles', data); },
