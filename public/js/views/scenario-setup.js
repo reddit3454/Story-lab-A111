@@ -233,119 +233,131 @@ function collectStep1() {
 function renderStep2(container) {
   var sid = state.editingScenarioId;
 
-  if (!sid) {
-    container.innerHTML =
-      '<div style="padding:48px 24px;text-align:center">' +
-        '<p style="font-size:15px;margin-bottom:8px">Save the scenario first to add characters.</p>' +
-        '<p class="form-hint">Complete the Story step and create the scenario, then return here to build your cast.</p>' +
-      '</div>';
-    return;
+  if (sid) {
+    container.innerHTML = '<div class="loading-state small">Loading cast...</div>';
+    Promise.all([
+      API.getScenarioCharacters(sid),
+      API.getCharacters()
+    ]).then(function (results) {
+      var roster   = Array.isArray(results[0]) ? results[0] : [];
+      var allChars = Array.isArray(results[1]) ? results[1] : [];
+      state.wizardCast = roster.slice();
+      _renderCastUI(container, roster, allChars, sid);
+    }).catch(function (err) {
+      container.innerHTML = '<div class="error-state">Failed to load cast: ' + escapeHtml(err.message) + '</div>';
+    });
+  } else {
+    _renderCastUI(container, state.wizardCast, state.allCharacters || [], null);
+  }
+}
+
+function _renderCastUI(container, roster, allChars, sid) {
+  var rosterIds = roster.map(function (c) { return c.id; });
+  var available = allChars.filter(function (c) { return rosterIds.indexOf(c.id) < 0; });
+  var filterText = '';
+
+  function refresh() {
+    var body = document.getElementById('wizard-body');
+    if (body) renderStep2(body);
   }
 
-  container.innerHTML = '<div class="loading-state small">Loading cast...</div>';
+  function renderView() {
+    var filtered = filterText
+      ? available.filter(function (c) { return c.name.toLowerCase().indexOf(filterText) !== -1; })
+      : available;
 
-  Promise.all([
-    API.getScenarioCharacters(sid),
-    API.getCharacters()
-  ]).then(function (results) {
-    var roster    = Array.isArray(results[0]) ? results[0] : [];
-    var allChars  = Array.isArray(results[1]) ? results[1] : [];
-    var rosterIds = roster.map(function (c) { return c.id; });
-    var available = allChars.filter(function (c) { return rosterIds.indexOf(c.id) < 0; });
-
-    // Keep module-level state in sync for narrator presence section
-    state.wizardCast = roster.slice();
-
-    var filterText = '';
-
-    function refresh() { renderStep2(container); }
-
-    function renderView() {
-      var filtered = filterText
-        ? available.filter(function (c) { return c.name.toLowerCase().indexOf(filterText) !== -1; })
-        : available;
-
-      container.innerHTML =
-        '<div class="cast-selector">' +
-          '<div class="cast-column">' +
-            '<h3 class="column-title">In This Story</h3>' +
-            '<div class="cast-list" id="cast-roster">' +
-              (roster.length
-                ? roster.map(function (c) {
-                    var sub = [c.gender, c.age_range].filter(Boolean).join(', ');
-                    return '<div class="cast-item" data-id="' + c.id + '">' +
-                      '<div class="char-avatar small">' + escapeHtml(c.name[0].toUpperCase()) + '</div>' +
-                      '<div style="flex:1;min-width:0">' +
-                        '<div style="font-weight:500">' + escapeHtml(c.name) + '</div>' +
-                        (sub ? '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(sub) + '</div>' : '') +
-                      '</div>' +
-                      '<button class="btn btn-ghost btn-xs remove-cast-btn" data-id="' + c.id + '" data-name="' + escapeHtml(c.name) + '" style="flex-shrink:0">Remove</button>' +
-                    '</div>';
-                  }).join('')
-                : '<div class="empty-state small">No characters in this story yet.</div>'
-              ) +
-            '</div>' +
+    container.innerHTML =
+      '<div class="cast-selector">' +
+        '<div class="cast-column">' +
+          '<h3 class="column-title">In This Story</h3>' +
+          '<div class="cast-list" id="cast-roster">' +
+            (roster.length
+              ? roster.map(function (c) {
+                  var sub = [c.gender, c.age_range].filter(Boolean).join(', ');
+                  return '<div class="cast-item" data-id="' + c.id + '">' +
+                    '<div class="char-avatar small">' + escapeHtml(c.name[0].toUpperCase()) + '</div>' +
+                    '<div style="flex:1;min-width:0">' +
+                      '<div style="font-weight:500">' + escapeHtml(c.name) + '</div>' +
+                      (sub ? '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(sub) + '</div>' : '') +
+                    '</div>' +
+                    '<button class="btn btn-ghost btn-xs remove-cast-btn" data-id="' + c.id + '" data-name="' + escapeHtml(c.name) + '" style="flex-shrink:0">Remove</button>' +
+                  '</div>';
+                }).join('')
+              : '<div class="empty-state small">No characters in this story yet.</div>'
+            ) +
           '</div>' +
-          '<div class="cast-divider">&rsaquo;&rsaquo;</div>' +
-          '<div class="cast-column">' +
-            '<h3 class="column-title">Available Characters</h3>' +
-            '<input type="text" class="form-input" id="cast-filter" placeholder="Filter..." value="' + escapeHtml(filterText) + '" style="margin-bottom:6px;font-size:13px">' +
-            '<div class="cast-list" id="cast-available">' +
-              (filtered.length
-                ? filtered.map(function (c) {
-                    var sub = [c.gender, c.age_range].filter(Boolean).join(', ');
-                    return '<div class="cast-item" data-id="' + c.id + '">' +
-                      '<div class="char-avatar small">' + escapeHtml(c.name[0].toUpperCase()) + '</div>' +
-                      '<div style="flex:1;min-width:0">' +
-                        '<div style="font-weight:500">' + escapeHtml(c.name) + '</div>' +
-                        (sub ? '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(sub) + '</div>' : '') +
-                      '</div>' +
-                      '<button class="btn btn-primary btn-xs add-cast-btn" data-id="' + c.id + '" style="flex-shrink:0">+ Add</button>' +
-                    '</div>';
-                  }).join('')
-                : '<div class="empty-state small">' + (filterText ? 'No matching characters.' : 'All characters are in this story.') + '</div>'
-              ) +
-            '</div>' +
-            '<a href="#characters" class="btn btn-ghost btn-sm" style="display:block;margin-top:8px">Manage Characters &rarr;</a>' +
+        '</div>' +
+        '<div class="cast-divider">&rsaquo;&rsaquo;</div>' +
+        '<div class="cast-column">' +
+          '<h3 class="column-title">Available Characters</h3>' +
+          '<input type="text" class="form-input" id="cast-filter" placeholder="Filter..." value="' + escapeHtml(filterText) + '" style="margin-bottom:6px;font-size:13px">' +
+          '<div class="cast-list" id="cast-available">' +
+            (filtered.length
+              ? filtered.map(function (c) {
+                  var sub = [c.gender, c.age_range].filter(Boolean).join(', ');
+                  return '<div class="cast-item" data-id="' + c.id + '">' +
+                    '<div class="char-avatar small">' + escapeHtml(c.name[0].toUpperCase()) + '</div>' +
+                    '<div style="flex:1;min-width:0">' +
+                      '<div style="font-weight:500">' + escapeHtml(c.name) + '</div>' +
+                      (sub ? '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(sub) + '</div>' : '') +
+                    '</div>' +
+                    '<button class="btn btn-primary btn-xs add-cast-btn" data-id="' + c.id + '" style="flex-shrink:0">+ Add</button>' +
+                  '</div>';
+                }).join('')
+              : '<div class="empty-state small">' + (filterText ? 'No matching characters.' : 'All characters are in this story.') + '</div>'
+            ) +
           '</div>' +
-        '</div>';
+          '<a href="#characters" class="btn btn-ghost btn-sm" style="display:block;margin-top:8px">Manage Characters &rarr;</a>' +
+        '</div>' +
+      '</div>';
 
-      var filterInput = container.querySelector('#cast-filter');
-      if (filterInput) {
-        filterInput.oninput = function () {
-          filterText = filterInput.value.toLowerCase().trim();
-          renderView();
-        };
-      }
+    var filterInput = container.querySelector('#cast-filter');
+    if (filterInput) {
+      filterInput.oninput = function () {
+        filterText = filterInput.value.toLowerCase().trim();
+        renderView();
+      };
+    }
 
-      container.querySelectorAll('.remove-cast-btn').forEach(function (btn) {
-        btn.onclick = function (e) {
-          e.stopPropagation();
-          var charId   = Number(btn.dataset.id);
-          var charName = btn.dataset.name || 'this character';
-          if (!confirm('Remove ' + charName + ' from this story?')) return;
+    container.querySelectorAll('.remove-cast-btn').forEach(function (btn) {
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        var charId   = Number(btn.dataset.id);
+        var charName = btn.dataset.name || 'this character';
+        if (!confirm('Remove ' + charName + ' from this story?')) return;
+        if (sid) {
           btn.disabled = true;
           API.removeCharacterFromScenario(sid, charId)
             .then(refresh)
             .catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
-        };
-      });
+        } else {
+          var idx = state.wizardCast.findIndex(function (c) { return c.id === charId; });
+          if (idx !== -1) state.wizardCast.splice(idx, 1);
+          refresh();
+        }
+      };
+    });
 
-      container.querySelectorAll('.add-cast-btn').forEach(function (btn) {
-        btn.onclick = function () {
-          var charId = Number(btn.dataset.id);
+    container.querySelectorAll('.add-cast-btn').forEach(function (btn) {
+      btn.onclick = function () {
+        var charId = Number(btn.dataset.id);
+        if (sid) {
           btn.disabled = true;
           API.addCharacterToScenario(sid, charId)
             .then(refresh)
             .catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
-        };
-      });
-    }
+        } else {
+          var char = allChars.find(function (c) { return c.id === charId; });
+          if (char && !state.wizardCast.some(function (c) { return c.id === charId; })) {
+            state.wizardCast.push(char);
+          }
+          refresh();
+        }
+      };
+    });
+  }
 
-    renderView();
-  }).catch(function (err) {
-    container.innerHTML = '<div class="error-state">Failed to load cast: ' + escapeHtml(err.message) + '</div>';
-  });
+  renderView();
 }
 
 /* --- Step 3 --- */
@@ -648,7 +660,13 @@ function submitWizard() {
     });
   } else {
     promise = API.createScenario(data).then(function (created) {
-      return created.id;
+      var newSid = created.id;
+      if (!state.wizardCast.length) return newSid;
+      return Promise.all(
+        state.wizardCast.map(function (c) {
+          return API.addCharacterToScenario(newSid, c.id).catch(function () {});
+        })
+      ).then(function () { return newSid; });
     });
   }
 
