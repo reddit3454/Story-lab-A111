@@ -84,11 +84,14 @@ Start command: `node --experimental-sqlite --max-old-space-size=4096 src/server.
 
 ## A1111 Setup Requirements
 
-### Extensions to install (via A1111 Extensions tab)
+### Extensions
+
+`sd-webui-adetailer` is **installed**. No further action needed for ADetailer.
+
+The remaining extensions still required:
 
 | Extension | Purpose | Required for |
 |---|---|---|
-| `sd-webui-adetailer` | Auto face-fix inpaint pass after generation | Face quality — install first |
 | `sd-webui-controlnet` | Pose/composition control | Pose control |
 | `sd-webui-faceid` | Reference-image character consistency | Character consistency |
 
@@ -1510,13 +1513,13 @@ Added to api.js: `getLlamacppConfig()`, `saveLlamacppConfig(newCfg)` — used by
 | A1111 installation | Present at `K:\stable-diffusion-webui` (needs model path config in webui-user.bat) |
 | SDXL models | Available at `E:\ComfyUI\models\checkpoints` |
 | SDXL LoRAs | Available at `E:\ComfyUI\models\loras` |
-| ADetailer extension | Not yet installed |
+| ADetailer extension | **Installed** |
 | ControlNet extension | Not yet installed |
 
 ### Next steps
 
 1. Configure A1111 to point at E:\ComfyUI\models (webui-user.bat)
-2. Install ADetailer extension in A1111
+2. Install ControlNet and FaceID extensions in A1111
 3. Test full play loop: new scenario → global character → add to cast → turn → image gen
 4. Implement character portrait generation endpoint
 5. Implement relationships (backend route + frontend panels)
