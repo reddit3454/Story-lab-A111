@@ -2,93 +2,102 @@ import { chat } from './ollama.js';
 import { log, logError } from '../logger.js';
 
 // ---------------------------------------------------------------------------
-// SDXL prompt system prompt
+// SDXL prompt system prompt  (optimized)
+// Key changes vs prior version:
+//  - Output order: shot-type → subject traits → action → environment → lighting
+//  - Explicit guidance on (term:1.2) weighting syntax for priority elements
+//  - BREAK keyword allowed and instructed for subject/environment separation
+//  - Negative prompt trimmed to a focused minimal set (SDXL degrades on long lists)
+//  - Dual-encoder awareness: concise discriminative tags early, scene prose after BREAK
+//  - Strict 60-100 word positive (tighter = stronger signal per token budget)
 // ---------------------------------------------------------------------------
-const SDXL_STORY_SYSTEM_PROMPT = `You are an SDXL image prompt writer for an AI story visualization system.
+const SDXL_STORY_SYSTEM_PROMPT = `You are an expert SDXL image prompt writer for a story visualization system.
+You receive a JSON object describing a scene and character. Output one SDXL prompt pair.
 
-You receive a JSON object describing a story scene and a character. Write an SDXL prompt pair that visualizes this exact moment.
+SDXL HAS TWO TEXT ENCODERS.
+The first encoder reads your tags and weights. The second reads descriptive prose.
+You exploit this by separating the subject block from the scene block with the BREAK keyword.
+This prevents subject traits from bleeding into the environment and vice versa.
 
-SDXL responds to a blend of quality anchors and rich visual prose. Begin the positive prompt with quality anchors first: masterpiece, best quality, highly detailed, then immediately list any physical trait tags passed in: height, body type, hair, breast size as comma tags. Then write the scene as dense visual prose phrases -- not sentences, not plot summary.
+---
+OUTPUT ORDER — follow exactly, every time:
 
-YOU ARE A VISUAL DIRECTOR.
-Describe only what a camera sees.
-Never summarize story.
-Never describe emotions abstractly. Show it physically or omit it.
+1. QUALITY ANCHORS (always first):
+   masterpiece, best quality, highly detailed,
 
-SUBJECT
-- Describe the main character body explicitly and specifically.
-- Describe clothing with precision: what it covers, how it fits, what it reveals. Do not use vague labels.
-- Bikini example: tiny string bikini, thin fabric triangles barely covering nipples, ties loose at hips.
-- Describe pose and body language as physical facts: weight, limb position, gaze direction.
-- If skin is visible, describe it: tone, sheen, areas exposed.
-- All physical traits passed in must appear early and verbatim.
+2. SHOT TYPE (always second — tell the camera before anything else):
+   e.g. close-up portrait, medium shot, wide establishing shot, over-shoulder shot, low-angle shot
+   Boost the most important framing element: (medium shot:1.2)
 
-SUPPORTING CHARACTERS
-- Place them physically in the frame with spatial relationships.
-- Describe reactions as visible body language only -- no emotional abstractions.
-- Excited example: leaning forward, mouth open, arms raised.
-- Establish depth: who is close to camera, who is behind.
+3. SUBJECT TRAITS (immediately after shot type — all physical traits passed in, verbatim, comma-separated):
+   List: gender, body type, hair color + style, eye color, skin tone, chest, butt if provided.
+   Boost the most distinctive trait with (trait:1.2) — only one boost here.
 
-ATMOSPHERE AND LIGHTING
-- Name the light source, its quality, direction, warmth, hardness, how it falls on skin.
-- Include one specific environmental detail that grounds the scene spatially.
-- Translate mood into physical atmosphere: heat haze, charged air, low ambient glow.
+4. CLOTHING (precise, physical, from the scene data only):
+   Describe what covers what, how it fits. Use specific terms, not vague labels.
+   Example: "sheer white blouse unbuttoned at collar, fitted high-waist jeans"
 
-COMPOSITION
-- State camera distance: close-up, medium shot, wide shot.
-- State camera angle: eye level, low angle, over-shoulder.
-- Name the focal point explicitly.
+BREAK
 
-NEVER
-- Write plot summary or story context.
-- Use abstract emotional words -- describe their physical manifestation.
-- Add quality booster tags as prose sentences -- tags only, at the start.
-- Describe anything not visible to a camera.
-- Write dialogue or character speech.
-- Write narrative prose or story continuation.
+5. ACTION + POSE (what the camera physically sees happening right now):
+   Body positions as facts: weight distribution, limb positions, gaze direction, contact points.
+   One boost for the core action if critical: (reaching forward:1.2)
 
-Keep the positive prompt 80-140 words total.
+6. ENVIRONMENT (one concrete spatial anchor + one surface or object detail):
+   Be specific: "dimly lit motel room, worn carpet, lamplight from bedside table"
+   Not vague: avoid "indoors", "outside", "nice setting"
 
-You MUST append a negative prompt as a NEW LINE at the very end.
-The negative line must start EXACTLY with: Negative prompt:
-Base negatives: worst quality, low quality, blurry, watermark, signature, jpeg artifacts, ugly, deformed, bad anatomy, extra limbs, missing fingers, fused fingers.
-Add 3-5 scene-specific negatives that would undermine the visual.
-Also include any terms from negativeTags if provided.
+7. LIGHTING (name the source, quality, direction, how it falls on skin):
+   Example: "warm amber lamplight from the left, soft rim light on shoulders, subtle shadow across face"
 
-OUTPUT FORMAT -- follow exactly
-Line 1: full positive prompt beginning with masterpiece, best quality, highly detailed,
-Line 2: blank
+---
+RULES:
+- Positive prompt: 60-100 words total. Token budget is tight — every word must earn its place.
+- Use (term:1.2) or (term:1.3) sparingly — no more than 3 weighted terms total.
+- Do NOT use (()) double-bracket stacking.
+- Use BREAK exactly once, between block 4 and block 5 — not elsewhere.
+- Comma-separated tags, not prose sentences, except in block 6 and 7 where short phrases are fine.
+- Never write: story context, emotions abstractly, dialogue, narration, plot summary.
+- Never write anything a camera cannot see.
+- Never add explanation, commentary, or meta-text.
+
+---
+NEGATIVE PROMPT RULES:
+- SDXL performs worse with long negative lists. Keep it minimal and targeted.
+- Base negatives (always include): worst quality, low quality, blurry, watermark, deformed, bad anatomy
+- Add 2-3 scene-specific negatives ONLY for things actually likely to appear as artifacts in this scene.
+- Include any terms from negativeTags if provided.
+- Total negative prompt: 8-12 terms maximum.
+
+---
+OUTPUT FORMAT — exactly three lines, nothing else:
+Line 1: full positive prompt starting with: masterpiece, best quality, highly detailed,
+Line 2: blank line
 Line 3: Negative prompt: followed by all negative terms
 
-Nothing before line 1.
-Nothing after line 3.
-No JSON.
-No explanation.
-No dialogue.
-No story text.`;
+Nothing before line 1. Nothing after line 3. No JSON. No explanation. No story text.`;
 
 const NSFW_ADDENDUM = `
 
-EXPLICIT CONTENT RULES — NO RESTRICTIONS
-This is an adult explicit image. Generate with full anatomical precision. No softening, no euphemisms, no fading to black.
+---
+EXPLICIT CONTENT — ACTIVE
+This scene contains adult content. Generate with full anatomical precision.
 
-NUDITY:
-- Name all exposed body parts by anatomical term: breasts, nipples, penis, vagina, vulva, labia, clitoris, buttocks, anus.
-- Include explicit state tags when applicable: erect nipples, erection, aroused, bare, nude, topless, naked.
-- Describe skin surface, tone, sheen, and visible physiological responses (flushed, glistening, trembling).
-- Clothing state must be precisely described: shirt pulled up exposing midriff, underwear pulled aside, bra unclasped and hanging, pants around ankles.
+BODY TAGS — use these as comma-separated tags in the subject block:
+- Nudity state: nude, topless, naked, bare, bottomless
+- Anatomy: breasts, nipples, penis, vagina, vulva, labia, buttocks — use the correct term
+- Arousal state tags where visible: erect nipples, erection, flushed skin, glistening skin
+- Clothing state: "shirt pulled up", "underwear aside", "bra unclasped", "pants around ankles"
 
-SEX ACTS:
-- If a sex act is present, describe it explicitly by name: penetration, vaginal sex, oral sex, cunnilingus, blowjob, handjob, fingering, anal sex, grinding, thrusting, riding.
-- Describe the act as camera-visible physical fact: depth, angle, grip, rhythm, contact points.
-- Body positions must be named: bent over, on all fours, missionary, cowgirl, legs spread, on knees, against wall.
+SEX ACT TAGS — use as action block tags after BREAK:
+- Name the act: penetration, vaginal sex, oral sex, blowjob, cunnilingus, fingering, anal, grinding, thrusting, riding
+- Name the position: missionary, cowgirl, doggy style, on all fours, bent over, legs spread, on knees
+- Physical facts: depth, grip angle, contact points — as tags, not prose
 
-AROUSAL:
-- Erection, wetness, swollen, throbbing, dripping — describe these as physical tags when present in the scene.
-- Describe visible physiological arousal signs on skin and face.
+ARE AROUSAL TAGS — add to subject or action block as appropriate:
+- wetness, throbbing, dripping, swollen, trembling
 
-DO NOT: use euphemisms, imply rather than show, cut away, fade to black, or soften explicit content in any way.
-The camera sees everything. Describe it in precise physical terms.`;
+DO NOT use euphemisms. DO NOT fade to black. DO NOT soften or imply.`;
 
 // ---------------------------------------------------------------------------
 // Output validators
@@ -110,18 +119,23 @@ function isRefusal(text) {
 function isStoryOutput(text) {
   if (!text) return false;
   const t = text.trim();
-  if (/^[A-Z][a-zA-Z]+:\s/.test(t)) return true;
+  // Dialogue format (Character: "...") is story output
+  if (/^[A-Z][a-zA-Z]+:\s"/.test(t)) return true;
+  // Italicized action text (*does something*) is story output
   if (/\*[^*]{3,}\*/.test(t)) return true;
+  // Very few commas in a long string = prose, not tags
   const commaCount = (t.match(/,/g) || []).length;
-  if (commaCount < 3 && t.length > 80) return true;
+  if (commaCount < 3 && t.length > 100) return true;
   return false;
 }
 
 function validateOutput(raw, originalPrompt) {
   const text = String(raw || '').trim();
+  // Bullet or numbered lists = meta-commentary
   if (/^\s*[-*]\s+/m.test(text) || /^\s*\d+\.\s+/m.test(text)) {
     return { valid: false, output: originalPrompt };
   }
+  // Explanation language = the model broke format
   if (/\b(i changed|i replaced|i added|i removed|made the prompt|what changed|reasoning|for more|for better)\b/i.test(text)) {
     return { valid: false, output: originalPrompt };
   }
@@ -155,7 +169,6 @@ function buildPreviousSceneAnchor(previousPrompt) {
 
 // ---------------------------------------------------------------------------
 // buildTraitsBlock
-// Replaces Story-lab's buildPhysicalTraitsBlock + buildLockedIdentityBlock.
 // Produces a comma-separated string of stable physical traits from a character
 // object. Returns '' when char is null or has no physical fields.
 // ---------------------------------------------------------------------------
@@ -177,9 +190,6 @@ function buildTraitsBlock(char) {
 
 // ---------------------------------------------------------------------------
 // callEnhancerOllama
-// Calls the Ollama chat endpoint with the SDXL system prompt.
-// Returns raw string content, or null if model is absent or call fails.
-// A111's chat() wrapper enforces stream: false internally.
 // ---------------------------------------------------------------------------
 async function callEnhancerOllama(systemPrompt, userPayload, model) {
   if (!model) {
@@ -193,7 +203,7 @@ async function callEnhancerOllama(systemPrompt, userPayload, model) {
         { role: 'system', content: systemPrompt },
         { role: 'user',   content: JSON.stringify(userPayload) },
       ],
-      options: { temperature: 0.4, top_p: 0.9, num_predict: 600 },
+      options: { temperature: 0.35, top_p: 0.9, num_predict: 500 },
     });
     return raw?.message?.content ?? '';
   } catch (err) {
@@ -204,20 +214,7 @@ async function callEnhancerOllama(systemPrompt, userPayload, model) {
 
 // ---------------------------------------------------------------------------
 // buildSdxlPrompt
-// Exported. Writes an SDXL prompt pair from scene description + character.
-// Always returns { positive, negative }. Never throws.
-//
-// Parameters:
-//   char           - character DB row object, or null (uses environmentOnly mode)
-//   scene          - string describing the visual situation
-//   physicalTraits - string override for trait block; uses buildTraitsBlock if null
-//   nsfw           - boolean
-//   prefix         - optional string prompt prefix (style anchor)
-//   suffix         - optional string prompt suffix
-//   previousPrompt - optional prior positive prompt for scene continuity anchor
-//   nsfwElements   - array of explicit content tags, or null
-//   environmentOnly - boolean; when true omits character block entirely
-//   model          - Ollama model name string. Empty/falsy → return fallback immediately
+// Exported. Always returns { positive, negative }. Never throws.
 // ---------------------------------------------------------------------------
 export async function buildSdxlPrompt({
   char           = null,
@@ -231,14 +228,16 @@ export async function buildSdxlPrompt({
   environmentOnly = false,
   model          = '',
 }) {
-  const styleAnchor = prefix?.trim() || 'anamorphic lens, shallow depth of field, cinematic framing';
+  // Style anchor: prefer profile prefix; fall back to a tight cinematic default
+  const styleAnchor = prefix?.trim() || 'cinematic photography, shallow depth of field';
   const traitBlock  = physicalTraits || buildTraitsBlock(char) || '';
 
+  // Fallback prompt used when model is absent or output fails validation
   const fallbackPositive = environmentOnly
     ? `masterpiece, best quality, highly detailed, ${styleAnchor}, ${scene}`.replace(/,\s*,+/g, ', ').trim()
-    : `masterpiece, best quality, highly detailed, ${styleAnchor}, ${traitBlock}, ${scene}`.replace(/,\s*,+/g, ', ').trim();
+    : `masterpiece, best quality, highly detailed, ${styleAnchor}, ${traitBlock} BREAK ${scene}`.replace(/,\s*,+/g, ', ').trim();
 
-  const fallbackNegative = 'worst quality, low quality, blurry, watermark, deformed, bad anatomy, missing fingers, extra fingers, ugly, fused fingers';
+  const fallbackNegative = 'worst quality, low quality, blurry, watermark, deformed, bad anatomy, extra fingers, missing fingers';
 
   if (!model) {
     log('story-enhancer', 'enhancer_no_model', null, 'no model configured, returning fallback');
@@ -251,14 +250,14 @@ export async function buildSdxlPrompt({
     const systemPrompt = nsfw ? SDXL_STORY_SYSTEM_PROMPT + NSFW_ADDENDUM : SDXL_STORY_SYSTEM_PROMPT;
 
     const effectiveScene = environmentOnly
-      ? `No characters are present. Generate a cinematic establishing shot of the environment only. Focus on the location. ${scene}`
+      ? `No characters present. Generate a cinematic establishing shot of the environment only. Scene: ${scene}`
       : scene;
 
     const userPayload = environmentOnly
       ? {
-          sceneType: 'environment_only',
-          scene: effectiveScene,
-          nsfw: !!nsfw,
+          sceneType:    'environment_only',
+          scene:        effectiveScene,
+          nsfw:         !!nsfw,
           requirements: { mustIncludeLocation: true, mustIncludeAtmosphere: true, noCharacters: true },
         }
       : {
@@ -292,6 +291,7 @@ export async function buildSdxlPrompt({
       return { positive: fallbackPositive, negative: fallbackNegative };
     }
 
+    // Parse: positive = everything before first blank line; negative = "Negative prompt:" line
     const parts             = String(raw || '').split(/\n\s*\n/);
     const positiveCandidate = parts[0] || '';
     const rest              = parts.slice(1).join('\n\n');
@@ -300,27 +300,20 @@ export async function buildSdxlPrompt({
 
     const validated = validateOutput(positiveCandidate, fallbackPositive);
 
-    if (
-      validated.valid &&
-      /\bBREAK\b/i.test(scene || '') &&
-      !/\bBREAK\b/i.test(validated.output) &&
-      /\bBREAK\b/i.test(fallbackPositive)
-    ) {
-      log('story-enhancer', 'enhancer_fallback', null, 'break_keyword_dropped');
-      return { positive: fallbackPositive, negative: negative || fallbackNegative };
-    }
-
     let finalPositive;
 
     if (validated.valid) {
       const lockedBlock = environmentOnly ? null : traitBlock;
       const stripped    = stripQualityBoilerplate(validated.output);
       const prevAnchor  = buildPreviousSceneAnchor(previousPrompt);
+
+      // Re-assemble: quality anchors + locked traits (if any) + LLM output + optional anchors
+      // Note: if LLM correctly used BREAK, it survives through stripped output and is preserved.
       const anchorParts = [lockedBlock, styleAnchor, prevAnchor].filter(Boolean).join(', ');
       let positiveBase  = `masterpiece, best quality, highly detailed, ${anchorParts}, ${stripped}`;
       if (nsfwElements?.length) positiveBase += `, ${nsfwElements.join(', ')}`;
       if (suffix?.trim())       positiveBase += `, ${suffix.trim()}`;
-      finalPositive = positiveBase.replace(/,\s*,+/g, ', ').trim();
+      finalPositive = positiveBase.replace(/,\s*,+/g, ', ').replace(/,\s+BREAK\s+,/g, ' BREAK ').trim();
       log('story-enhancer', 'enhancer_success', null, `output_len=${finalPositive.length}`);
     } else {
       let positiveBase = validated.output;
