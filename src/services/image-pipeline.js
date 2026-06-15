@@ -9,6 +9,8 @@ import { resolveEffectiveConfig } from './config-resolver.js';
 import { buildPrompt, buildCharacterPrompt } from './prompt-builder.js';
 import { audit } from './audit.js';
 import * as a1111 from './a1111.js';
+import { pickBestMoment } from './scene-picker.js';
+import { buildSdxlPrompt } from './story-enhancer.js';
 
 function _locationSlug(name) {
   return (name || 'location').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
@@ -133,6 +135,33 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
       ORDER BY c.name
     `).all(scenarioId);
     const scenario = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(scenarioId);
+
+    // Stage 2a: scene_picker — advisory only, never mutates sceneCard/location/characters
+    let pickedMoment = null;
+    if (!isBackground && mode !== 'character') {
+      const recentTurns = db.prepare(
+        `SELECT content_text FROM turns WHERE scenario_id = ? AND role = 'narrator' ORDER BY turn_number DESC LIMIT 6`
+      ).all(scenarioId).map(r => r.content_text).filter(Boolean).reverse();
+
+      // scene_images has no scene_card_json column in current schema — recentImageCards
+      // will always be []. The picker degrades gracefully (no variety penalty).
+      const recentImageCards = db.prepare(
+        `SELECT scene_card_json FROM scene_images WHERE scenario_id = ? ORDER BY id DESC LIMIT 4`
+      ).all(scenarioId).map(r => { try { return JSON.parse(r.scene_card_json); } catch (_) { return null; } }).filter(Boolean);
+
+      if (recentTurns.length > 0) {
+        pickedMoment = await pickBestMoment(
+          recentTurns,
+          characters.filter(c => c.role !== 'player'),
+          recentImageCards,
+          config.picker_model || config.narrator_model,
+          config.nsfw_enabled === true,
+        );
+        log('image-pipeline', 'picker_result', null,
+          pickedMoment ? `picked: ${pickedMoment.visibleAction}` : 'picker returned null, using scene card');
+      }
+    }
+
     if (isBackground && location) {
       sceneCard = { image_prompt: location.image_tags || location.description || location.name };
     }
@@ -163,6 +192,41 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
         sceneCard, characters, location, scenario, config,
         isImg2img: bgPath != null,
       }));
+    }
+
+    // Stage 2b: story_enhancer — advisory only, rewrites prompt if model is configured
+    // and output passes validation. Falls back to buildPrompt values silently.
+    if (!isBackground && mode !== 'character' && mode !== 'background') {
+      const sceneDescription = pickedMoment
+        ? [
+            pickedMoment.visibleAction,
+            pickedMoment.setting,
+            pickedMoment.shotType ? pickedMoment.shotType + ' shot' : null,
+          ].filter(Boolean).join(', ')
+        : (sceneCard?.image_prompt || prompt);
+
+      const mainChar = characters.find(c => c.role !== 'player') || characters[0] || null;
+      const nsfwOn   = config.nsfw_enabled === true;
+      const enhModel = config.enhancer_model || config.narrator_model || '';
+
+      try {
+        const enhanced = await buildSdxlPrompt({
+          char:          mainChar,
+          scene:         sceneDescription,
+          physicalTraits: null,
+          nsfw:          nsfwOn,
+          prefix:        config.prompt_prefix  || null,
+          suffix:        config.prompt_suffix  || null,
+          nsfwElements:  [],
+          model:         enhModel,
+        });
+        if (enhanced?.positive && enhanced.positive.length > 20) {
+          prompt   = enhanced.positive;
+          negative = enhanced.negative || negative;
+        }
+      } catch (enhErr) {
+        log('image-pipeline', 'enhancer_skipped', null, enhErr.message);
+      }
     }
 
     // Inject location environment into txt2img prompts (no background image selected)
