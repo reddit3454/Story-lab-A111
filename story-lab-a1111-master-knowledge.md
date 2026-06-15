@@ -255,17 +255,72 @@ Image config is NOT stored per-scenario. All image settings come from `global_co
 Characters are **global** — not scenario-scoped. They belong to no particular scenario.
 Scenarios pull characters via the `scenario_characters` join table.
 
+Original columns (in main CREATE TABLE block):
 ```
 id INTEGER PK
 name TEXT NOT NULL
-role TEXT DEFAULT 'character'         -- 'character' | 'user' (free text)
-appearance_prompt TEXT DEFAULT ''     -- SDXL-style appearance tags for prompt building
-base_clothing TEXT DEFAULT ''         -- default/starting outfit
-current_clothing TEXT DEFAULT ''      -- live clothing state (updated during play)
-personality TEXT DEFAULT ''
-is_user INTEGER DEFAULT 0             -- 1 if this is the player character
+role TEXT DEFAULT 'character'
+appearance_prompt TEXT DEFAULT ''
+base_clothing TEXT DEFAULT ''
+current_clothing TEXT DEFAULT ''
+personality TEXT DEFAULT ''           -- stored as labeled block (see Personality Format below)
+is_user INTEGER DEFAULT 0
 created_at TEXT DEFAULT datetime('now')
 ```
+
+Extended columns added via additive migrations in `src/db.js`:
+```
+reference_image_path TEXT             -- active FaceID ref; set via accept or fullbody use-as-ref
+description TEXT DEFAULT ''
+image_description TEXT                -- freeform image gen override
+appearance_notes TEXT DEFAULT ''
+gender TEXT DEFAULT ''
+age_range TEXT DEFAULT 'adult'
+height TEXT DEFAULT ''
+body_type TEXT DEFAULT ''
+breast_size TEXT DEFAULT ''           -- 10 options: Flat/Petite/Small/Small-Medium/Medium/Medium-Large/Large/Extra Large/Very Large/Massive
+butt_size TEXT
+penis_state TEXT DEFAULT 'soft'
+skin_tone TEXT DEFAULT ''
+skin_extras TEXT
+eye_color TEXT DEFAULT ''
+eye_shape TEXT                        -- 6 options including Large Round Cartoon
+nose_shape TEXT
+lip_shape TEXT
+face_shape TEXT
+hair_color TEXT DEFAULT ''
+hair_style TEXT DEFAULT ''
+hair_extras TEXT
+default_outfit TEXT
+outfit_style TEXT
+outfit_sets TEXT                      -- JSON array of { name, description, underwear }
+default_outfit_name TEXT
+is_user_character INTEGER DEFAULT 0   -- kept in sync with is_user on every write
+moodbaseline INTEGER DEFAULT 3
+arousalthreshold TEXT DEFAULT 'medium'
+arousallockeduntil INTEGER DEFAULT 2
+arousalmax INTEGER DEFAULT 5
+moodtriggerspos TEXT
+moodtriggersneg TEXT
+arousaltriggers TEXT
+image_prompt_override TEXT            -- if set, overrides all assembled prompts
+faceid_ref_count INTEGER DEFAULT 5
+faceid_ref_order TEXT                 -- JSON array of fullbody IDs for slot ordering
+```
+
+### Personality Format
+
+`characters.personality` is a multi-line labeled block:
+```
+PERSONALITY: ...
+MOTIVATIONS: ...
+FEARS: ...
+SOCIAL_STYLE: ...
+BOUNDARIES: ...
+```
+Parsed by `_parsePersonality(str)` in `characters.js`. Legacy plain-text values (no labels)
+are treated as `PERSONALITY` field only. `buildSystemPrompt` in `narrator.js` injects these
+as a CHARACTER PERSONALITIES block (section 6) in the narrator system prompt.
 
 Character image files live at `H:\MEDIA\Story_Lab\images\characters\{charId}\references\`
 and `characters\{charId}\fullbody\`. The old `{scenarioId}/characters/{charId}/...` path
@@ -541,6 +596,8 @@ img2img(baseUrl, payload, savePath)
 
 getModels(baseUrl)    // → [{ title, model_name, hash }]
 getLoras(baseUrl)     // → [{ name, path, alias }]
+getSamplers(baseUrl)  // → string[] — sampler names from /sdapi/v1/samplers
+getSchedulers(baseUrl)// → string[] — scheduler names from /sdapi/v1/schedulers
 getProgress(baseUrl)  // → { active, progress, eta }
 setModel(baseUrl, modelName)  // → void — POST /sdapi/v1/options
 getOptions(baseUrl)   // → current A1111 options object
@@ -698,14 +755,14 @@ All nested routers use `mergeParams: true` so `:scenarioId` is accessible inside
 | `profiles.js` | /api/profiles | GET /, POST /, PUT /:id, DELETE /:id, POST /:id/activate, DELETE /active |
 | `scenarios.js` | /api/scenarios | GET /, POST /, GET /:id, PUT /:id, DELETE /:id |
 | `turns.js` | /api/scenarios/:id/turns | GET /, POST /, DELETE /:id |
-| `characters.js` | /api/characters | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, PATCH /:id/clothing, GET /:id/references, POST /:id/references/generate, POST /:id/references/upload, POST /:id/references/:ref/accept, DELETE /:id/references/faceid, GET /:id/fullbody, POST /:id/fullbody/generate, DELETE /:id/fullbody/:fbId, POST /:id/fullbody/:fbId/set-default |
+| `characters.js` | /api/characters | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, PATCH /:id/clothing, GET /:id/references, DELETE /:id/references/faceid, DELETE /:id/references/:refId, POST /:id/references/generate, POST /:id/references/upload, POST /:id/references/:ref/accept, PATCH /:id/faceid-config, GET /:id/fullbody, POST /:id/fullbody/generate, DELETE /:id/fullbody/:fbId, POST /:id/fullbody/:fbId/set-default, POST /:id/fullbody/:fbId/use-as-ref |
 | `scenario-characters.js` | /api/scenarios/:scenarioId/characters | GET / (roster list), POST /:charId (add), DELETE /:charId (remove) |
 | `locations.js` | /api/scenarios/:id/locations | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, GET /:id/backgrounds, POST /:id/generate-background, POST /:id/backgrounds/:f/set-default, DELETE /:id/backgrounds/:f |
 | `memories.js` | /api/scenarios/:id/memories | GET /, POST /, DELETE /:id |
 | `world.js` | /api/scenarios/:id/world | GET /, POST /, PUT /:id, DELETE /:id |
 | `rules.js` | /api/scenarios/:id/rules | GET /, POST /, PUT /:id, DELETE /:id |
 | `images.js` | /api/scenarios/:id/images | GET /, POST /generate, PUT /:id/accept, PUT /:id/rate, DELETE /:id |
-| `a1111.js` | /api/a1111 | GET /models, GET /loras, GET /status, POST /model |
+| `a1111.js` | /api/a1111 | GET /models, GET /loras, GET /status, GET /samplers, GET /schedulers, POST /model |
 | `audit.js` | /api/audit | GET / (filters: scenario_id, service, level, limit), GET /:runId |
 
 Static routes: `/story-images` → `H:\MEDIA\Story_Lab\images`, `/story-backgrounds` → `H:\MEDIA\Story_Lab\backgrounds`
@@ -1131,12 +1188,15 @@ API.removeCharacterFromScenario(scenarioId, charId) // DELETE /api/scenarios/:id
 API.getReferences(charId)
 API.generateReference(charId, body)
 API.uploadReference(charId, file)         // multipart POST via upload() helper
-API.acceptReference(charId, ref)
-API.clearFaceId(charId)
+API.acceptReference(charId, ref)          // ref = numeric character_references.id or filename
+API.deleteReference(charId, refId)
+API.clearFaceId(charId)                   // DELETE /references/faceid (route ordered before /:refId)
+API.saveFaceIdConfig(charId, data)        // PATCH /faceid-config — saves slot count + order
 API.getFullbodies(charId)
 API.generateFullbody(charId, body)
 API.deleteFullbody(charId, fbId)
 API.setDefaultFullbody(charId, fbId)
+API.useFullbodyAsRef(charId, fbId)        // POST /fullbody/:fbId/use-as-ref — sets reference_image_path
 ```
 
 **Turns:**
@@ -1187,6 +1247,8 @@ API.deleteBackground(scenarioId, locId, filename)
 API.getA1111Status()
 API.getA1111Models()
 API.getA1111Loras()
+API.getA1111Samplers()    // → string[] — live from A1111 with fallback to hardcoded list
+API.getA1111Schedulers()  // → string[] — live from A1111 with fallback to hardcoded list
 API.setA1111Model(name)   // POSTs { model_name: name } to /api/a1111/model
 ```
 
@@ -1388,6 +1450,80 @@ from the global pool via a `scenario_characters` join table.
   - `removeBtn.onclick`: replaced `deleteCharacter` (permanent global delete — was a critical bug) with `removeCharacterFromScenario`; guards against removing last character
   - `renderCastTab`: uses `getScenarioCharacters`; adds "× Remove" button per card (with `showConfirm` + last-character guard); adds inline "+ Add" panel with searchable character list
 
+### Phase 7 — Bug fixes, UI polish, and character system completion: COMPLETE (2026-06-14)
+
+Files: `public/js/constants.js`, `public/js/api.js`, `public/js/views/characters.js`,
+`public/js/views/settings.js`, `src/services/a1111.js`, `src/routes/a1111.js`,
+`src/routes/characters.js`, `src/db.js`, `src/services/narrator.js`,
+`start.bat`, `start-llamacpp.bat`
+
+**Boolean config serialization fix (settings.js)**
+- `hr_enabled` and `ad_enabled` were saving as `'1'`/`'0'` but the resolver expected `'true'`/`'false'`.
+  Fixed: save path uses `hrOn ? 'true' : 'false'`. Added `boolCfg(key, def)` helper in `buildMasterForm`
+  that handles all four truthy forms (`true`, `'true'`, `1`, `'1'`).
+
+**start.bat — auto-launch A1111**
+- Added curl health-check for A1111 at `http://127.0.0.1:7860`. If not running, launches
+  `K:\stable-diffusion-webui\webui-user.bat` in a new window via `start /D ...`.
+
+**start-llamacpp.bat — fixes**
+- `--flash-attn` (no value) caused a crash because the next flag was consumed as its argument.
+  Fixed to `--flash-attn on`.
+- Context window: `-c 32768` (was mistakenly set to 16384, restored).
+
+**A1111 sampler/scheduler live fetch (settings.js + a1111.js + routes/a1111.js + api.js)**
+- Settings page now fetches live sampler and scheduler lists from A1111 via
+  `GET /api/a1111/samplers` and `GET /api/a1111/schedulers`, falling back to comprehensive
+  hardcoded lists (23 samplers, 12 schedulers) when A1111 is offline.
+- `Promise.all` with `.catch(() => [])` used so Settings loads whether or not A1111 is running.
+
+**Model selection — inline dropdown (settings.js)**
+- Changed from `prompt()` dialog to an inline dropdown. Clicking "Change Model" fetches the
+  model list and renders a `<select>` pre-selected on the current model. "Set Model" button
+  calls `API.setA1111Model` and closes the picker.
+
+**Character Personality section (characters.js + narrator.js)**
+- Added 5-field personality section (Traits, Motivations, Fears, Social Style, Boundaries)
+  to the character editor, placed between Notes and the user-character toggle.
+- Stored as a single labeled-line block in `characters.personality`.
+- `_parsePersonality(str)` in `characters.js` handles both labeled and legacy plain-text formats.
+- `buildSystemPrompt` in `narrator.js` includes a CHARACTER PERSONALITIES block (section 6)
+  when any active cast member has a personality set.
+
+**Character DB schema completion (db.js + routes/characters.js)**
+- 36 additive `ALTER TABLE ADD COLUMN` migrations cover all UI fields.
+- `POST /api/characters` and `PUT /api/characters/:id` now handle all 40 character fields.
+- `is_user` and `is_user_character` kept in sync on every write.
+
+**Character image generation — prompt assembly (routes/characters.js)**
+- `_assembleCharacterPrompt(char)` builds the best available image prompt from character
+  trait columns. Priority: `image_prompt_override` → `image_description` → assembled traits
+  → `appearance_prompt` → `char.name`. Used by both reference generate and fullbody generate.
+
+**Delete reference and FaceID buttons (routes/characters.js + api.js)**
+- `DELETE /api/characters/:id/references/:refId` route added.
+- `PATCH /api/characters/:id/faceid-config` route added.
+- `API.deleteReference` and `API.saveFaceIdConfig` added to api.js.
+- **Route ordering fix**: `DELETE /:id/references/faceid` moved to BEFORE
+  `DELETE /:id/references/:refId` so clearFaceId no longer returns 404.
+
+**Fullbody image buttons wired (characters.js + routes/characters.js + api.js)**
+- "Use as Ref" and "Delete" buttons on fullbody images were rendered but had no event handlers.
+- Added handlers: Use as Ref calls `POST /:id/fullbody/:fbId/use-as-ref` (sets
+  `reference_image_path` on the character, updates FaceID display in UI); Delete calls
+  `DELETE /:id/fullbody/:fbId` and reloads the grid.
+- Added `API.useFullbodyAsRef(charId, fbId)` to api.js.
+- Delete threshold changed from `count > 2` to `count > 1` (allow deletion down to 1 image).
+
+**Eye shape options (constants.js)**
+- Added `Large Round Cartoon` to `EYE_SHAPE_OPTS` (now 6 options).
+
+**Breast size options (constants.js)**
+- Expanded from 5 to 10 options:
+  Flat / Petite / Small / Small-Medium / Medium / Medium-Large / Large / Extra Large / Very Large / Massive
+
+---
+
 ### Phase 5 — Frontend wiring: COMPLETE (2026-06-14)
 
 Phase 5 was completed in two stages: initial frontend wiring (early 2026-06-14) and a full stale-API audit (later 2026-06-14, 22 issues fixed, -718 lines net).
@@ -1509,8 +1645,9 @@ Added to api.js: `getLlamacppConfig()`, `saveLlamacppConfig(newCfg)` — used by
 | Phase 4 image pipeline | **COMPLETE** — a1111.js, prompt-builder.js, image-pipeline.js, images + audit routes |
 | Phase 5 frontend wiring | **COMPLETE** — full stale-API audit done (2026-06-14), all ImageCore/ComfyUI refs removed |
 | Phase 6 characters decoupled | **COMPLETE** — global characters, `scenario_characters` join table, live cast management UI (2026-06-14) |
+| Phase 7 bug fixes + character system | **COMPLETE** — all character fields persisted, fullbody buttons wired, boolean config fixed, eye/breast options expanded, route ordering fixed (2026-06-14) |
 | llamacpp narrator support | **COMPLETE** — start-llamacpp.bat + narrator.js routing + api.js getLlamacppConfig/saveLlamacppConfig |
-| A1111 installation | Present at `K:\stable-diffusion-webui` (needs model path config in webui-user.bat) |
+| A1111 installation | Present at `K:\stable-diffusion-webui`; start.bat auto-launches it if not running |
 | SDXL models | Available at `E:\ComfyUI\models\checkpoints` |
 | SDXL LoRAs | Available at `E:\ComfyUI\models\loras` |
 | ADetailer extension | **Installed** |
@@ -1518,9 +1655,9 @@ Added to api.js: `getLlamacppConfig()`, `saveLlamacppConfig(newCfg)` — used by
 
 ### Next steps
 
-1. Configure A1111 to point at E:\ComfyUI\models (webui-user.bat)
+1. Configure A1111 to point at E:\ComfyUI\models (webui-user.bat — `--ckpt-dir`, `--lora-dir`, `--esrgan-models-path`)
 2. Install ControlNet and FaceID extensions in A1111
-3. Test full play loop: new scenario → global character → add to cast → turn → image gen
+3. Test full play loop: new scenario → global character → add to cast → turn → image gen → reference gen → fullbody gen
 4. Implement character portrait generation endpoint
 5. Implement relationships (backend route + frontend panels)
 6. Implement scenario wizard → backend field persistence (backend schema change required)
