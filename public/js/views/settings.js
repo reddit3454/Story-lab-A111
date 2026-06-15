@@ -855,6 +855,7 @@ function wireMasterSettings() {
   function buildMasterForm(cfg) {
     cfg = cfg || {};
     function v(key, def) { return cfg[key] != null ? cfg[key] : def; }
+    function boolCfg(key, def) { var val = v(key, def); return val === true || val === 'true' || val === 1 || val === '1'; }
 
     var samplerOpts = A1111_SAMPLERS.map(function (s) {
       return '<option value="' + escapeHtml(s) + '"' + (v('a1111_sampler','DPM++ 2M SDE') === s ? ' selected' : '') + '>' + escapeHtml(s) + '</option>';
@@ -923,10 +924,10 @@ function wireMasterSettings() {
         '<div style="margin-bottom:10px">' +
           '<label class="toggle-label">' +
             '<span>Enable Hires.fix</span>' +
-            '<div class="toggle' + (v('hr_enabled','1') == 1 || v('hr_enabled',1) === true ? ' active' : '') + '" id="ms-hr-enabled"></div>' +
+            '<div class="toggle' + (boolCfg('hr_enabled', false) ? ' active' : '') + '" id="ms-hr-enabled"></div>' +
           '</label>' +
         '</div>' +
-        '<div id="ms-hr-params" style="' + (v('hr_enabled',1) == 1 ? '' : 'display:none') + '">' +
+        '<div id="ms-hr-params" style="' + (boolCfg('hr_enabled', false) ? '' : 'display:none') + '">' +
           '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">' +
             '<div class="form-group" style="margin:0"><label class="form-label">Scale</label><input class="form-input" id="ms-hr-scale" type="number" min="1" max="4" step="0.1" value="' + v('hr_scale',1.5) + '"></div>' +
             '<div class="form-group" style="margin:0"><label class="form-label">Steps</label><input class="form-input" id="ms-hr-steps" type="number" min="1" max="60" step="1" value="' + v('hr_steps',20) + '"></div>' +
@@ -942,10 +943,10 @@ function wireMasterSettings() {
         '<div style="margin-bottom:10px">' +
           '<label class="toggle-label">' +
             '<span>Enable ADetailer</span>' +
-            '<div class="toggle' + (v('ad_enabled','1') == 1 || v('ad_enabled',1) === true ? ' active' : '') + '" id="ms-ad-enabled"></div>' +
+            '<div class="toggle' + (boolCfg('ad_enabled', true) ? ' active' : '') + '" id="ms-ad-enabled"></div>' +
           '</label>' +
         '</div>' +
-        '<div id="ms-ad-params" style="' + (v('ad_enabled',1) == 1 ? '' : 'display:none') + '">' +
+        '<div id="ms-ad-params" style="' + (boolCfg('ad_enabled', true) ? '' : 'display:none') + '">' +
           '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
             '<div class="form-group" style="margin:0"><label class="form-label">Model</label><input class="form-input" id="ms-ad-model" type="text" value="' + escapeHtml(v('ad_model','face_yolov8n.pt')) + '"></div>' +
             '<div class="form-group" style="margin:0"><label class="form-label">Strength</label><input class="form-input" id="ms-ad-strength" type="number" min="0" max="1" step="0.05" value="' + v('ad_strength',0.4) + '"></div>' +
@@ -1029,12 +1030,12 @@ function wireMasterSettings() {
           a1111_height:        tv('ms-height') || '1216',
           clip_skip:           tv('ms-clip-skip') || '2',
           a1111_negative_prompt: (tv('ms-negative') || '').trim(),
-          hr_enabled:          String(hrOn),
+          hr_enabled:          hrOn ? 'true' : 'false',
           hr_scale:            tv('ms-hr-scale') || '1.5',
           hr_steps:            tv('ms-hr-steps') || '20',
           hr_denoising:        tv('ms-hr-denoising') || '0.4',
           hr_upscaler:         (tv('ms-hr-upscaler') || '').trim() || '4x-UltraSharp',
-          ad_enabled:          String(adOn),
+          ad_enabled:          adOn ? 'true' : 'false',
           ad_model:            (tv('ms-ad-model') || '').trim() || 'face_yolov8n.pt',
           ad_strength:         tv('ms-ad-strength') || '0.4',
         };
