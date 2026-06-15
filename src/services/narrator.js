@@ -26,7 +26,12 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
     parts.push(scenario.system_prompt);
   }
 
-  // 2. Characters
+  // 2. Premise
+  if (scenario.premise) {
+    parts.push(`Story Premise:\n${scenario.premise}`);
+  }
+
+  // 3. Characters
   if (characters.length > 0) {
     const block = characters.map(function (c) {
       let s = `${c.name} (${c.role || 'character'})`;
@@ -38,14 +43,14 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
     parts.push(`Characters:\n${block}`);
   }
 
-  // 3. Active location
+  // 4. Active location
   if (location) {
     let locBlock = `Current Location: ${location.name}`;
     if (location.description) locBlock += `\n${location.description}`;
     parts.push(locBlock);
   }
 
-  // 4. Character relationships
+  // 5. Character relationships
   if (relationships.length > 0) {
     const block = relationships.map(function (r) {
       let line = `${r.from_name} → ${r.to_name}: ${r.relationship_type}`;
@@ -56,25 +61,25 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
     parts.push(`Character Relationships:\n${block}`);
   }
 
-  // 5. Rules (priority-ordered, descending)
+  // 6. Rules (priority-ordered, descending)
   if (rules.length > 0) {
     const block = rules.map(function (r) { return `- ${r.content}`; }).join('\n');
     parts.push(`Rules:\n${block}`);
   }
 
-  // 6. World entries
+  // 7. World entries
   if (worldEntries.length > 0) {
     const block = worldEntries.map(function (e) { return `${e.title}: ${e.content}`; }).join('\n\n');
     parts.push(`World Knowledge:\n${block}`);
   }
 
-  // 7. Memory block
+  // 8. Memory block
   if (memories.length > 0) {
     const block = memories.map(function (m) { return `- ${m.content}`; }).join('\n');
     parts.push(`Story Memory:\n${block}`);
   }
 
-  // 8. Character personalities
+  // 9. Character personalities
   const charsWithPersonality = characters.filter(c => c.personality && c.personality.trim());
   if (charsWithPersonality.length > 0) {
     const header = [
@@ -92,17 +97,34 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
     parts.push(header + block);
   }
 
-  // 9. NSFW instruction
+  // 10. Narrative style
+  const povLabel = scenario.narrative_pov === 'first' ? 'first' : scenario.narrative_pov === 'second' ? 'second' : 'third';
+  const styleLines = [
+    'Narrative Style:',
+    `- POV: ${povLabel} person`,
+    `- Tone: ${scenario.tone || 'Dramatic'}`,
+    `- Pacing: ${scenario.pacing || 'normal'} — (slow = immersive detail, normal = balanced, fast = action-forward)`,
+    `- Reply length: ${scenario.reply_length || 'medium'} — (short = 1-2 paragraphs, medium = 3-4, long = 5+)`,
+    `- Violence level: ${scenario.violence_level || 'mild'}`,
+  ];
+  parts.push(styleLines.join('\n'));
+
+  // 11. NSFW instruction
   if (scenario.nsfw_enabled && config.nsfw_enabled) {
     parts.push('Explicit adult content is permitted in this story. Write without censorship when the narrative calls for it.');
   } else {
     parts.push('Keep content tasteful. Avoid explicit sexual content.');
   }
 
-  // 10. Arousal continuity
+  // 12. Arousal continuity
   parts.push(`Current arousal level: ${lastArousal}/10. Maintain narrative continuity from this baseline.`);
 
-  // 11. Scene card instruction
+  // 13. Tone modifier (free-text wizard override)
+  if (scenario.tone_modifier && scenario.tone_modifier.trim()) {
+    parts.push(`Additional tone instruction: ${scenario.tone_modifier.trim()}`);
+  }
+
+  // 14. Scene card instruction
   parts.push(SCENE_CARD_INSTRUCTION);
 
   return parts.join('\n\n---\n\n');

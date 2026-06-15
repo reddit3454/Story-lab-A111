@@ -84,6 +84,27 @@ router.post('/', async function (req, res) {
     );
     const narratorTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(narratorIns.lastInsertRowid);
 
+    // Apply clothing changes declared in scene card
+    const clothingChanges = result.scene_card?.clothing_changes;
+    if (Array.isArray(clothingChanges) && clothingChanges.length > 0) {
+      const castRows = db.prepare(`
+        SELECT c.id, c.name FROM characters c
+        JOIN scenario_characters sc ON c.id = sc.character_id
+        WHERE sc.scenario_id = ?
+      `).all(scenarioId);
+      const nameToId = {};
+      for (const c of castRows) nameToId[c.name.toLowerCase()] = c.id;
+
+      const updateClothing = db.prepare('UPDATE characters SET current_clothing = ? WHERE id = ?');
+      for (const change of clothingChanges) {
+        const charId = change.character_id
+          ?? nameToId[(change.character_name || '').toLowerCase()];
+        if (charId && change.new_clothing) {
+          updateClothing.run(change.new_clothing, charId);
+        }
+      }
+    }
+
     // Fire memory generation async if threshold reached
     if (memory.shouldGenerateMemory(narratorTurnNum)) {
       const allTurns = db.prepare('SELECT * FROM turns WHERE scenario_id = ? ORDER BY turn_number ASC').all(scenarioId);
