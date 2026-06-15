@@ -4,7 +4,7 @@
 > Hand this document to any coding model with codebase access to establish full
 > project context before any task.
 >
-> **Status:** Phases 1–8 complete (as of 2026-06-14). Full stale-API audit done (2026-06-14);
+> **Status:** Phases 1–9 complete (as of 2026-06-15). Full stale-API audit done (2026-06-14);
 > all ImageCore/ComfyUI references removed. llamacpp narrator support added.
 > Characters decoupled from scenarios (2026-06-14): global `/api/characters` CRUD +
 > `scenario_characters` join table + live cast management UI in wizard and play view.
@@ -12,6 +12,10 @@
 > DB columns), `character_relationships` table + full CRUD + narrator wiring + play sidebar UI,
 > dashboard data bug fixed, scenario-edit field-load bug fixed, play.js `allLocations` populated,
 > `unique_trait` on characters, `is_default` migration on `character_fullbodies`.
+> Phase 9 (2026-06-15): story-aware image generation — `image_prompt` field added to narrator
+> scene card; `src/services/scene-picker.js` (advisory moment selector) and
+> `src/services/story-enhancer.js` (SDXL prompt writer) added; both wired into
+> `image-pipeline.js` as optional advisory layers with full fallback to deterministic assembly.
 > Server runs at port 4090.
 > The source code is the ground truth for what is built. The Implementation Status
 > section at the bottom tracks completed phases with exact API surface and notes.
@@ -46,8 +50,8 @@ directly to A1111's simple REST API.
 - Dropped: ImageCore, ComfyUI, Batch FaceID, Wan2.2 video, pose library
 - Unified image generation pipeline — ALL image types (scene images, character portraits, full-body images, and any future image type) pass through the same single pipeline and config system. There is no separate pipeline per image type.
 - Saved image generation profiles — users can save named profiles that pre-define prompt fragments, specific LoRAs, and turn-count behavior. Profiles sit below master settings in the resolution chain and cannot override structural master constraints.
-- Narrator-driven scene data — narrator outputs story text AND a structured JSON scene block (`---SCENE---` ... `---END---`) in one response; no separate extractor LLM call needed
-- Template-driven prompt assembly — image prompts assembled deterministically from narrator-supplied scene data + profile prefix/suffix; no LLM enhancer call in the image pipeline
+- Narrator-driven scene data — narrator outputs story text AND a structured JSON scene block (`---SCENE---` ... `---END---`) in one response; no separate extractor LLM call needed. Scene card includes `image_prompt` field (camera-observable facts, under 40 words) used by the image pipeline.
+- Template-driven prompt assembly — image prompts assembled deterministically from narrator-supplied scene data + profile prefix/suffix. An optional advisory LLM layer (`scene-picker` + `story-enhancer`) can rewrite the prompt for SDXL quality; both layers degrade gracefully to the deterministic result if the model is absent or the call fails.
 - Location background images — pre-generated backgrounds enable img2img mode (denoising 0.45), improving environment consistency and reducing prompt complexity
 
 **What's unchanged from the original:**
@@ -1352,7 +1356,6 @@ Never report a stub or an absent file as implemented.
 | Service | Why absent | What handles it instead |
 | --- | --- | --- |
 | `src/services/extractor.js` | Eliminated from design | Narrator writes `---SCENE---` block inline; `input-parser.parseNarratorResponse()` parses it |
-| `src/services/enhancer.js` | Eliminated from design | Prompts assembled deterministically by `prompt-builder.js` — no LLM rewrite |
 | `src/services/clothing.js` | Not yet built | `characters.current_clothing` flat string used directly by `prompt-builder.js` |
 
 ### Routes — absent from disk (no file)
@@ -1388,6 +1391,7 @@ Never report a stub or an absent file as implemented.
 | Phase 4 — Image Pipeline | **COMPLETE** |
 | Phase 5 — Frontend wiring | **COMPLETE** — api.js rewritten + full stale-API audit (2026-06-14); 22 issues fixed, -718 lines, all ImageCore/ComfyUI refs removed; llamacpp narrator added |
 | Phase 8 — Persistence audit + relationships | **COMPLETE** |
+| Phase 9 — Story-aware image generation | **COMPLETE** (2026-06-15) |
 
 ---
 
@@ -1805,6 +1809,53 @@ Added to api.js: `getLlamacppConfig()`, `saveLlamacppConfig(newCfg)` — used by
 5. Implement styles CRUD backend (`src/routes/styles.js` — table exists in DB, route file absent)
 
 ---
+
+---
+
+### Phase 9 — Story-aware image generation: COMPLETE (2026-06-15)
+
+Files added:
+- `src/services/scene-picker.js` — scene moment picker (ported from Story-lab, Ollama-only)
+- `src/services/story-enhancer.js` — SDXL prompt writer (ported from Story-lab, Ollama-only)
+- `src/services/__tests__/scene-picker.test.js` — 9 pure-function tests (node:test, no deps)
+- `src/services/__tests__/story-enhancer.test.js` — 5 pure-function tests (node:test, no deps)
+
+Files modified:
+- `src/services/narrator.js` — `image_prompt` field added to `SCENE_CARD_INSTRUCTION`
+- `src/services/image-pipeline.js` — picker + enhancer wired as advisory layers (Stage 2a + 2b)
+
+**How the image pipeline now works (non-character, non-background modes):**
+
+```
+narrator turn → scene card (includes image_prompt)
+  ↓
+Stage 2a: scene_picker — reads last 6 narrator turns (content_text), calls Ollama to pick
+          the most visual moment → pickedMoment { visibleAction, setting, shotType, ... }
+          Advisory only: never mutates sceneCard/location/characters.
+          Returns null if model absent, turns empty, or Ollama fails.
+  ↓
+Stage 2b: story_enhancer — builds sceneDescription from pickedMoment (or falls back to
+          sceneCard.image_prompt, or base prompt). Calls Ollama to write SDXL prompt pair.
+          Advisory only: only replaces prompt/negative if output passes validation (>20 chars,
+          no refusal, no story output, no bullet lists).
+          Returns fallback if model absent or call fails.
+  ↓
+buildPrompt() or buildCharacterPrompt() — deterministic fallback, always present
+  ↓
+A1111 txt2img / img2img (unchanged)
+```
+
+**Config keys used (read from global_config):**
+- `config.picker_model` — Ollama model for scene picker (falls back to `narrator_model`)
+- `config.enhancer_model` — Ollama model for SDXL enhancer (falls back to `narrator_model`)
+- If neither is configured, both stages log and skip silently
+
+**Key design decisions:**
+- `recentImageCards` for variety penalty always `[]` — `scene_images` has no `scene_card_json` column; degrades gracefully with a comment in code
+- `content_text` column used for narrator turns (not `turn_text` as in original Story-lab)
+- llama.cpp branch removed from story-enhancer — A111 uses Ollama only
+- `buildPhysicalTraitsBlock` + `buildLockedIdentityBlock` from Story-lab inlined as single `buildTraitsBlock()` using same logic as `prompt-builder.js _characterBlock`
+- Tests use `node:test` + `node:assert` (built-in Node 22, zero new deps)
 
 ---
 
