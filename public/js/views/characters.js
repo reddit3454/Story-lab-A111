@@ -1465,20 +1465,46 @@ function renderFullbodyGrid(charId, fbs) {
     return;
   }
   grid.innerHTML = fbs.map(function (fb) {
-    // Allow deletion only when 2+ images exist so FaceID always has at least 1 remaining.
-    var canDelete = count > 2;
+    var canDelete = count > 1;
     return '<div class="ref-thumb" data-fb-id="' + fb.id + '">' +
       '<img src="' + imageSrc(fb.filename) + '" alt="Full body" loading="lazy" onerror="this.style.display=\'none\'">' +
       '<div class="ref-hover">' +
-        '<button class="btn btn-success btn-xs fb-use-ref-btn" data-fb-id="' + fb.id + '" data-fn="' + escapeHtml(fb.filename) + '">Use as Ref</button>' +
+        '<button class="btn btn-success btn-xs fb-use-ref-btn" data-fb-id="' + fb.id + '">Use as Ref</button>' +
         (canDelete
           ? '<button class="btn btn-danger btn-xs fb-delete-btn" data-fb-id="' + fb.id + '">Delete</button>'
           : '<button class="btn btn-danger btn-xs" disabled style="cursor:not-allowed;opacity:0.5" ' +
-              'title="Keep at least 2 images for FaceID consistency">Delete</button>') +
+              'title="Keep at least 1 full body image">Delete</button>') +
       '</div>' +
     '</div>';
   }).join('');
-  // Fullbody use-as-ref and delete removed — ImageCore features not available in A1111 version
+
+  grid.querySelectorAll('.fb-use-ref-btn').forEach(function (btn) {
+    btn.onclick = function (e) {
+      e.stopPropagation();
+      API.useFullbodyAsRef(charId, btn.dataset.fbId).then(function (result) {
+        showToast('Set as FaceID reference!', 'success');
+        var thumbDisplay = document.getElementById('faceid-display');
+        if (thumbDisplay && result && result.character && result.character.reference_image_path) {
+          thumbDisplay.innerHTML =
+            '<img src="' + imageSrc(result.character.reference_image_path) + '" ' +
+            'alt="FaceID reference" class="faceid-thumb" id="faceid-thumb-img" ' +
+            'onerror="this.style.display=\'none\'">';
+        }
+      }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
+    };
+  });
+
+  grid.querySelectorAll('.fb-delete-btn').forEach(function (btn) {
+    btn.onclick = function (e) {
+      e.stopPropagation();
+      API.deleteFullbody(charId, btn.dataset.fbId).then(function () {
+        showToast('Full body image deleted.', 'success');
+        loadFullbodies(charId);
+      }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
+    };
+  });
+
+  if (typeof window._refreshFaceIdSlotOrder === 'function') setTimeout(window._refreshFaceIdSlotOrder, 50);
 }
 
 function loadFullbodies(charId) {

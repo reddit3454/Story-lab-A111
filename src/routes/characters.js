@@ -307,6 +307,13 @@ router.get('/:id/references', function (req, res) {
   res.json({ references: refs });
 });
 
+// Specific literal routes MUST be before dynamic /:refId or Express swallows them
+router.delete('/:id/references/faceid', function (req, res) {
+  db.prepare('UPDATE characters SET reference_image_path = NULL WHERE id = ?').run(req.params.id);
+  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
+  res.json({ ok: true, character: char });
+});
+
 router.delete('/:id/references/:refId', function (req, res) {
   const ref = db.prepare('SELECT * FROM character_references WHERE id = ? AND character_id = ?')
     .get(req.params.refId, req.params.id);
@@ -402,12 +409,6 @@ router.post('/:id/references/:ref/accept', function (req, res) {
   res.json({ ok: true, character: char });
 });
 
-router.delete('/:id/references/faceid', function (req, res) {
-  db.prepare('UPDATE characters SET reference_image_path = NULL WHERE id = ?').run(req.params.id);
-  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
-  res.json({ ok: true, character: char });
-});
-
 /* ── Character Full-Body Images ───────────────────────────────────────────── */
 
 router.get('/:id/fullbody', function (req, res) {
@@ -485,6 +486,18 @@ router.post('/:id/fullbody/:fbId/set-default', function (req, res) {
   db.prepare('UPDATE character_fullbodies SET is_default = 1 WHERE id = ?').run(req.params.fbId);
 
   res.json({ ok: true, fullbody: db.prepare('SELECT * FROM character_fullbodies WHERE id = ?').get(req.params.fbId) });
+});
+
+router.post('/:id/fullbody/:fbId/use-as-ref', function (req, res) {
+  const row = db.prepare('SELECT * FROM character_fullbodies WHERE id = ? AND character_id = ?')
+    .get(req.params.fbId, req.params.id);
+  if (!row) return res.status(404).json({ error: 'Full-body image not found' });
+
+  db.prepare('UPDATE characters SET reference_image_path = ? WHERE id = ?')
+    .run(row.filename, req.params.id);
+
+  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
+  res.json({ ok: true, character: char });
 });
 
 export default router;

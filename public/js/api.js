@@ -72,6 +72,7 @@
     deleteFullbody:     function (charId, fbId)  { return request('DELETE', '/api/characters/' + charId + '/fullbody/' + fbId); },
     setDefaultFullbody: function (charId, fbId)  { return request('POST',   '/api/characters/' + charId + '/fullbody/' + fbId + '/set-default'); },
     saveFaceIdConfig:   function (charId, data)  { return request('PATCH',  '/api/characters/' + charId + '/faceid-config', data); },
+    useFullbodyAsRef:   function (charId, fbId)  { return request('POST',   '/api/characters/' + charId + '/fullbody/' + fbId + '/use-as-ref'); },
 
     /* Locations — scenario-scoped */
     getLocations:   function (sid)         { return request('GET',    '/api/scenarios/' + sid + '/locations'); },

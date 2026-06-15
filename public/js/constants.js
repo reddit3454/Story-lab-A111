@@ -46,7 +46,9 @@ export var BODY_TYPE_OPTS = [
 ];
 
 export var BREAST_SIZE_OPTS = [
-  ['Flat','Flat'],['Small','Small'],['Medium','Medium'],['Large','Large'],['Very Large','Very Large']
+  ['Flat','Flat'],['Petite','Petite'],['Small','Small'],['Small-Medium','Small-Medium'],
+  ['Medium','Medium'],['Medium-Large','Medium-Large'],['Large','Large'],
+  ['Extra Large','Extra Large'],['Very Large','Very Large'],['Massive','Massive']
 ];
 
 export var BUTT_SIZE_OPTS = [
@@ -82,7 +84,7 @@ export var AGE_RANGE_OPTS = [
 
 export var EYE_SHAPE_OPTS = [
   ['Wide','Wide'],['Almond','Almond'],['Squinty','Squinty'],
-  ['Round','Round'],['Hooded','Hooded']
+  ['Round','Round'],['Hooded','Hooded'],['Large Round Cartoon','Large Round Cartoon']
 ];
 
 export var NOSE_SHAPE_OPTS = [
