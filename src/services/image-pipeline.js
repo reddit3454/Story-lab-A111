@@ -164,6 +164,8 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
             scenario_id: scenarioId, turn_id: turnId,
             output: { bg_path: bgPath, method: bgMethod } });
 
+    broadcast.send('image_status', { message: 'Sending to A1111...' });
+
     // Stage 4: a1111_call
     const timestamp = Date.now();
     let saveDir, savePath;

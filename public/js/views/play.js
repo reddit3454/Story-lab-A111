@@ -2937,11 +2937,12 @@ export function connectWs() {
     switch (data.type) {
 
       case 'image_status':
-        setImgStatus(data.message || null);
+        setImgStatus((data.payload && data.payload.message) || data.message || null);
         break;
 
       case 'image_ready':
-        handleImageReady(data);
+        // broadcast wraps the payload as data.payload; support both shapes
+        handleImageReady(data.payload ? Object.assign({}, data.payload, data) : data);
         break;
 
       case 'turn_complete': {
@@ -2970,14 +2971,16 @@ export function connectWs() {
         });
         break;
 
-      case 'image_error':
+      case 'image_error': {
+        var errMsg = (data.payload && data.payload.error) || data.message || 'Image generation failed';
         setImgStatus(null);
-        showToast(data.message || 'Image generation failed', 'error');
+        showToast(errMsg, 'error');
         document.querySelectorAll('.turn-img-pending').forEach(function (el) {
           el.className = 'turn-img-error';
-          el.textContent = 'Image failed';
+          el.textContent = 'Image failed: ' + errMsg;
         });
         break;
+      }
 
       case 'moodupdate':
         if (!Array.isArray(data.characters)) break;

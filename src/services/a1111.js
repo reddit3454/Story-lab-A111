@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { logError } from '../logger.js';
 
-const DEFAULT_TIMEOUT_MS = 60000;
+const DEFAULT_TIMEOUT_MS = 600000; // 10 min — SDXL + Hires.fix + ADetailer can be slow
 const HEALTH_TIMEOUT_MS  = 3000;
 const INFO_TIMEOUT_MS    = 10000;
 
