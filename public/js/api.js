@@ -85,6 +85,12 @@
     setDefaultBackground:       function (sid, locId, file) { return request('POST',   '/api/scenarios/' + sid + '/locations/' + locId + '/backgrounds/' + encodeURIComponent(file) + '/set-default'); },
     deleteBackground:           function (sid, locId, file) { return request('DELETE', '/api/scenarios/' + sid + '/locations/' + locId + '/backgrounds/' + encodeURIComponent(file)); },
 
+    /* Character Relationships — scenario-scoped */
+    getRelationships:   function (sid)         { return request('GET',    '/api/scenarios/' + sid + '/relationships'); },
+    createRelationship: function (sid, data)   { return request('POST',   '/api/scenarios/' + sid + '/relationships', data); },
+    updateRelationship: function (sid, id, d)  { return request('PUT',    '/api/scenarios/' + sid + '/relationships/' + id, d); },
+    deleteRelationship: function (sid, id)     { return request('DELETE', '/api/scenarios/' + sid + '/relationships/' + id); },
+
     /* Turns — scenario-scoped */
     getTurns:   function (sid)                { return request('GET',    '/api/scenarios/' + sid + '/turns'); },
     postTurn:   function (sid, contentText)   { return request('POST',   '/api/scenarios/' + sid + '/turns', { role: 'user', content_text: contentText }); },

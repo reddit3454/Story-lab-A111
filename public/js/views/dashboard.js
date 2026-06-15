@@ -29,7 +29,7 @@ export function initDashboard() {
   };
 
   API.getScenarios().then(function (data) {
-    renderScenarioGrid(data.scenarios || []);
+    renderScenarioGrid(Array.isArray(data) ? data : (data.scenarios || []));
   }).catch(function (e) {
     showToast('Failed to load scenarios: ' + e.message, 'error');
     document.getElementById('scenario-grid').innerHTML =
@@ -71,6 +71,7 @@ function renderScenarioGrid(scenarios) {
       }).join('');
       stripHtml = '<div class="scenario-char-strip">' + avatars + '</div>';
     }
+    var settingText = s.setting || s.premise || '';
     return '<div class="scenario-card" data-id="' + s.id + '">' +
       '<div class="scenario-card-header">' +
         '<h2 class="scenario-title story-font">' + escapeHtml(s.title) + '</h2>' +
@@ -78,11 +79,11 @@ function renderScenarioGrid(scenarios) {
           (s.ended_at ? 'Ended' : 'Active') +
         '</span>' +
       '</div>' +
-      '<p class="scenario-setting">' + escapeHtml(s.setting || 'No setting defined.') + '</p>' +
+      (settingText ? '<p class="scenario-setting">' + escapeHtml(settingText.slice(0, 120)) + (settingText.length > 120 ? '...' : '') + '</p>' : '') +
       '<div class="scenario-meta">' +
         '<span class="meta-item">' + (s.character_count || 0) + ' characters</span>' +
         '<span class="meta-sep">&middot;</span>' +
-        '<span class="meta-item">Last played ' + relativeTime(s.last_turn_at) + '</span>' +
+        '<span class="meta-item">' + (s.last_turn_at ? 'Last played ' + relativeTime(s.last_turn_at) : 'Never played') + '</span>' +
       '</div>' +
       stripHtml +
       '<div class="scenario-card-actions">' +

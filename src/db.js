@@ -234,6 +234,43 @@ try { db.exec('ALTER TABLE audit_events ADD COLUMN scenario_id INTEGER'); } catc
 try { db.exec('ALTER TABLE audit_events ADD COLUMN turn_id     INTEGER'); } catch (_) {}
 try { db.exec('ALTER TABLE audit_events ADD COLUMN duration_ms INTEGER'); } catch (_) {}
 
+// scenario extended wizard fields
+try { db.exec("ALTER TABLE scenarios ADD COLUMN tone                        TEXT    DEFAULT 'Dramatic'"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN premise                     TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN setting                     TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN default_start               TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN reply_length                TEXT    DEFAULT 'medium'"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN lust_level                  INTEGER DEFAULT 3"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN explicitness_level          TEXT    DEFAULT 'moderate'"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN pacing                      TEXT    DEFAULT 'normal'"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN narrative_pov               TEXT    DEFAULT 'third'"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN violence_level              TEXT    DEFAULT 'mild'"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN tone_modifier               TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN narrator_presence_enabled   INTEGER DEFAULT 0"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN narrator_presence_mode      TEXT    DEFAULT 'all'"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN narrator_presence_config    TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN active_location_id          INTEGER DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN user_character_id           INTEGER DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN ended_at                    TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE scenarios ADD COLUMN generation_config           TEXT    DEFAULT NULL"); } catch (_) {}
+
+// character relationships table
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS character_relationships (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      scenario_id       INTEGER NOT NULL,
+      from_character_id INTEGER NOT NULL,
+      to_character_id   INTEGER NOT NULL,
+      relationship_type TEXT NOT NULL DEFAULT 'friend',
+      description       TEXT DEFAULT '',
+      strength          INTEGER DEFAULT 3,
+      created_at        TEXT DEFAULT (datetime('now')),
+      UNIQUE(scenario_id, from_character_id, to_character_id)
+    )
+  `);
+} catch (_) {}
+
 // character extended profile columns
 try { db.exec("ALTER TABLE characters ADD COLUMN description          TEXT    DEFAULT ''"); } catch (_) {}
 try { db.exec("ALTER TABLE characters ADD COLUMN image_description    TEXT    DEFAULT NULL"); } catch (_) {}
@@ -270,5 +307,7 @@ try { db.exec("ALTER TABLE characters ADD COLUMN arousaltriggers      TEXT    DE
 try { db.exec("ALTER TABLE characters ADD COLUMN image_prompt_override TEXT   DEFAULT NULL"); } catch (_) {}
 try { db.exec("ALTER TABLE characters ADD COLUMN faceid_ref_count     INTEGER DEFAULT 5"); } catch (_) {}
 try { db.exec("ALTER TABLE characters ADD COLUMN faceid_ref_order     TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN unique_trait         TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec('ALTER TABLE character_fullbodies ADD COLUMN is_default INTEGER DEFAULT 0'); } catch (_) {}
 
 export default db;

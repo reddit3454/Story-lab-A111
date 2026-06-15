@@ -19,7 +19,8 @@ import worldRouter      from './routes/world.js';
 import rulesRouter      from './routes/rules.js';
 import imagesRouter     from './routes/images.js';
 import a1111Router      from './routes/a1111.js';
-import auditRouter      from './routes/audit.js';
+import auditRouter             from './routes/audit.js';
+import relationshipsRouter    from './routes/character-relationships.js';
 
 const PORT = process.env.PORT || 4090;
 
@@ -59,7 +60,8 @@ app.use('/api/scenarios/:scenarioId/characters', scenarioCharactersRouter);
 app.use('/api/scenarios/:scenarioId/locations',  locationsRouter);
 app.use('/api/scenarios/:scenarioId/memories',   memoriesRouter);
 app.use('/api/scenarios/:scenarioId/world',      worldRouter);
-app.use('/api/scenarios/:scenarioId/rules',      rulesRouter);
+app.use('/api/scenarios/:scenarioId/rules',         rulesRouter);
+app.use('/api/scenarios/:scenarioId/relationships', relationshipsRouter);
 
 /* ── Phase 4 image pipeline routes ──────────────────────────────────── */
 

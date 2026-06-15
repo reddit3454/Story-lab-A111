@@ -4,10 +4,14 @@
 > Hand this document to any coding model with codebase access to establish full
 > project context before any task.
 >
-> **Status:** Phases 1–5 complete (as of 2026-06-14). Full stale-API audit done (2026-06-14);
+> **Status:** Phases 1–8 complete (as of 2026-06-14). Full stale-API audit done (2026-06-14);
 > all ImageCore/ComfyUI references removed. llamacpp narrator support added.
 > Characters decoupled from scenarios (2026-06-14): global `/api/characters` CRUD +
 > `scenario_characters` join table + live cast management UI in wizard and play view.
+> Phase 8 (2026-06-14): full persistence audit — all scenario wizard fields now persist (18 new
+> DB columns), `character_relationships` table + full CRUD + narrator wiring + play sidebar UI,
+> dashboard data bug fixed, scenario-edit field-load bug fixed, play.js `allLocations` populated,
+> `unique_trait` on characters, `is_default` migration on `character_fullbodies`.
 > Server runs at port 4090.
 > The source code is the ground truth for what is built. The Implementation Status
 > section at the bottom tracks completed phases with exact API surface and notes.
@@ -234,6 +238,7 @@ use individual `try { db.exec('ALTER TABLE ...') } catch (_) {}` calls after the
 
 ### scenarios
 
+Original columns (in main CREATE TABLE block):
 ```
 id INTEGER PK
 title TEXT NOT NULL
@@ -246,6 +251,36 @@ status TEXT DEFAULT 'active'
 created_at TEXT DEFAULT datetime('now')
 updated_at TEXT DEFAULT datetime('now')
 ```
+
+Extended columns added via additive migrations in `src/db.js` (Phase 8):
+```
+tone                      TEXT    DEFAULT 'Dramatic'
+premise                   TEXT    DEFAULT ''
+setting                   TEXT    DEFAULT ''
+default_start             TEXT    DEFAULT ''         -- opening message for new play sessions
+reply_length              TEXT    DEFAULT 'medium'
+lust_level                INTEGER DEFAULT 3
+explicitness_level        TEXT    DEFAULT 'moderate'
+pacing                    TEXT    DEFAULT 'normal'
+narrative_pov             TEXT    DEFAULT 'third'
+violence_level            TEXT    DEFAULT 'mild'
+tone_modifier             TEXT    DEFAULT ''
+narrator_presence_enabled INTEGER DEFAULT 0
+narrator_presence_mode    TEXT    DEFAULT 'all'
+narrator_presence_config  TEXT    DEFAULT NULL       -- JSON blob for per-character config
+active_location_id        INTEGER DEFAULT NULL
+user_character_id         INTEGER DEFAULT NULL
+ended_at                  TEXT    DEFAULT NULL
+generation_config         TEXT    DEFAULT NULL       -- JSON blob for per-scenario image overrides
+```
+
+`GET /api/scenarios` (list) now returns two computed columns alongside the row:
+- `character_count` — count of linked characters via `scenario_characters`
+- `last_turn_at` — `MAX(turns.created_at)` for the scenario
+- `characters[]` — embedded array of character rows (id, name, reference_image_path) per scenario
+
+`PUT /api/scenarios/:id` uses a dynamic SET clause — only updates fields present in `req.body`.
+Boolean fields (`nsfw_enabled`, `narrator_presence_enabled`) are cast to 0/1 integers on write.
 
 Image config is NOT stored per-scenario. All image settings come from `global_config`
 (master) and the active `image_profiles` row (optional overrides).
@@ -306,6 +341,7 @@ arousaltriggers TEXT
 image_prompt_override TEXT            -- if set, overrides all assembled prompts
 faceid_ref_count INTEGER DEFAULT 5
 faceid_ref_order TEXT                 -- JSON array of fullbody IDs for slot ordering
+unique_trait TEXT DEFAULT NULL        -- one-line distinctive trait injected into narrator prompt
 ```
 
 ### Personality Format
@@ -526,10 +562,31 @@ Backend can be `"llamacpp"` or `"ollama"`. If unset or `{}`, narrator defaults t
 `resolveMasterConfig(db)` casts keys in NUMERIC_KEYS to float and BOOLEAN_KEYS to bool.
 All other values are returned as strings.
 
+### character_relationships
+
+Created via `CREATE TABLE IF NOT EXISTS` in an additive migration in `src/db.js` (Phase 8).
+
+```
+id                INTEGER PK
+scenario_id       INTEGER NOT NULL
+from_character_id INTEGER NOT NULL
+to_character_id   INTEGER NOT NULL
+relationship_type TEXT NOT NULL DEFAULT 'friend'   -- friend/romantic/enemy/sibling/parent/rival/colleague/mentor/nemesis/other
+description       TEXT DEFAULT ''
+strength          INTEGER DEFAULT 3                -- 1–5 intensity
+created_at        TEXT DEFAULT (datetime('now'))
+UNIQUE(scenario_id, from_character_id, to_character_id)
+```
+
+Routes at `/api/scenarios/:scenarioId/relationships` (see `src/routes/character-relationships.js`).
+GET and POST responses include `from_name` and `to_name` via JOIN to `characters`.
+POST returns HTTP 409 on duplicate pair (UNIQUE constraint violation).
+The narrator reads these via `runNarratorTurn` and injects them as a "Character Relationships"
+block in the system prompt (section 3, between Characters and Rules).
+
 ### Tables NOT yet created (planned)
 
 - `character_states` — per-scenario clothing/emotion state; clothing currently stored on `characters.current_clothing`
-- `character_relationships` — relationship labels between character pairs
 
 Indexed on: `pipeline_run_id`, `(scenario_id, created_at DESC)`, `status WHERE failed`.
 
@@ -638,10 +695,13 @@ resolveModels(db)
 ### src/services/narrator.js
 
 ```js
-buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, config })
+buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, relationships = [], config })
 // → system prompt string
-// 7 blocks: scenario system_prompt, characters (with clothing), rules, world entries,
-//   memories, NSFW gate, ---SCENE--- instruction
+// 9 blocks: 1) scenario system_prompt, 2) characters (with clothing),
+//   3) character relationships (if any), 4) rules, 5) world entries,
+//   6) memories, 7) CHARACTER PERSONALITIES, 8) NSFW gate, 9) ---SCENE--- instruction
+// relationships: array of { from_name, to_name, relationship_type, description, strength }
+// Relationship block format: "A → B: type (description) [intensity N/5]" — one per line
 
 resolveNarratorBackend(db)
 // → { backend: 'ollama'|'llamacpp', port?, model }
@@ -654,7 +714,8 @@ llamacppChat({ port, messages, maxTokens })
 
 runNarratorTurn({ db, scenario, messages, turnNumber })
 // → { story_text, scene_card, model_used, token_estimate }
-// Loads characters/rules/world/memories from DB, builds system prompt.
+// Loads characters/rules/world/memories/relationships from DB, builds system prompt.
+// Also queries character_relationships for the scenario and passes them to buildSystemPrompt.
 // Calls resolveNarratorBackend(); routes to llamacppChat() or ollama.chat() accordingly.
 // model_used = backend.model || `llamacpp:${backend.port}` (llamacpp) or ollama model name.
 // Parses ---SCENE--- block. Never throws on parse failure — returns defaultSceneCard().
@@ -753,7 +814,7 @@ All nested routers use `mergeParams: true` so `:scenarioId` is accessible inside
 | `health.js` | /api/health | GET /, /ollama, /a1111 |
 | `config.js` | /api/config | GET /, POST /, POST /batch |
 | `profiles.js` | /api/profiles | GET /, POST /, PUT /:id, DELETE /:id, POST /:id/activate, DELETE /active |
-| `scenarios.js` | /api/scenarios | GET /, POST /, GET /:id, PUT /:id, DELETE /:id |
+| `scenarios.js` | /api/scenarios | GET / (enriched: character_count, last_turn_at, characters[]), POST /, GET /:id, PUT /:id (dynamic SET), DELETE /:id |
 | `turns.js` | /api/scenarios/:id/turns | GET /, POST /, DELETE /:id |
 | `characters.js` | /api/characters | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, PATCH /:id/clothing, GET /:id/references, DELETE /:id/references/faceid, DELETE /:id/references/:refId, POST /:id/references/generate, POST /:id/references/upload, POST /:id/references/:ref/accept, PATCH /:id/faceid-config, GET /:id/fullbody, POST /:id/fullbody/generate, DELETE /:id/fullbody/:fbId, POST /:id/fullbody/:fbId/set-default, POST /:id/fullbody/:fbId/use-as-ref |
 | `scenario-characters.js` | /api/scenarios/:scenarioId/characters | GET / (roster list), POST /:charId (add), DELETE /:charId (remove) |
@@ -764,10 +825,11 @@ All nested routers use `mergeParams: true` so `:scenarioId` is accessible inside
 | `images.js` | /api/scenarios/:id/images | GET /, POST /generate, PUT /:id/accept, PUT /:id/rate, DELETE /:id |
 | `a1111.js` | /api/a1111 | GET /models, GET /loras, GET /status, GET /samplers, GET /schedulers, POST /model |
 | `audit.js` | /api/audit | GET / (filters: scenario_id, service, level, limit), GET /:runId |
+| `character-relationships.js` | /api/scenarios/:scenarioId/relationships | GET /, POST /, PUT /:id, DELETE /:id |
 
 Static routes: `/story-images` → `H:\MEDIA\Story_Lab\images`, `/story-backgrounds` → `H:\MEDIA\Story_Lab\backgrounds`
 
-Routes NOT yet implemented: `/api/styles`, character portrait generation, scenario relationships.
+Routes NOT yet implemented: `/api/styles`, character portrait generation.
 
 ### turns POST detail
 
@@ -1230,6 +1292,14 @@ API.updateRule(scenarioId, ruleId, data)
 API.deleteRule(scenarioId, ruleId)
 ```
 
+**Character relationships (scenario-scoped):**
+```js
+API.getRelationships(scenarioId)                      // GET /api/scenarios/:id/relationships
+API.createRelationship(scenarioId, data)              // POST — data: { from_character_id, to_character_id, relationship_type, description, strength }
+API.updateRelationship(scenarioId, relId, data)       // PUT /:id
+API.deleteRelationship(scenarioId, relId)             // DELETE /:id
+```
+
 **Locations (scenario-scoped):**
 ```js
 API.getLocations(scenarioId)
@@ -1296,20 +1366,17 @@ Never report a stub or an absent file as implemented.
 | Endpoint | Feature | Status |
 | --- | --- | --- |
 | Character portrait generation | POST /api/scenarios/:id/characters/:id/portrait | NOT STARTED |
-| Scenario relationships | GET/POST/DELETE /api/scenarios/:id/relationships | NOT STARTED |
 | Styles CRUD | GET/POST/PUT/DELETE /api/styles | NOT STARTED — `styles` table exists in DB, route file absent |
 
 ### Frontend features — confirmed stubs (present in UI, not functional)
 
 | Feature | Location | Stub behavior |
 | --- | --- | --- |
-| Relationships panel | play.js `renderRelationshipsTab`, characters.js `renderRelationshipsPanel` | Renders "not yet implemented" empty state |
 | Styles / style creator | settings.js, play.js | Toast: "not available in this version" |
 | Full-body image management | characters.js `loadFullbodies` | Renders "not available in this version" empty state |
 | enhancePromptLab | settings.js | Pass-through only — copies raw prompt to enhanced textarea, no LLM call |
 | Prompt Lab → Send to A1111 | settings.js `pl-send-btn` | Toast: "not available from Prompt Lab in this version" |
 | Global rules | settings.js `loadGlobalRules` | Guidance message: "Rules are managed per-scenario" |
-| Scenario wizard Step 3 fields | scenario-setup.js `submitWizard` | Fields collected but backend silently discards `tone`, `premise`, `reply_length`, `lust_level`, `pacing`, etc. |
 
 ### Phases
 
@@ -1320,6 +1387,7 @@ Never report a stub or an absent file as implemented.
 | Phase 3 — Story Engine | **COMPLETE** |
 | Phase 4 — Image Pipeline | **COMPLETE** |
 | Phase 5 — Frontend wiring | **COMPLETE** — api.js rewritten + full stale-API audit (2026-06-14); 22 issues fixed, -718 lines, all ImageCore/ComfyUI refs removed; llamacpp narrator added |
+| Phase 8 — Persistence audit + relationships | **COMPLETE** |
 
 ---
 
@@ -1568,7 +1636,7 @@ Added to api.js: `getLlamacppConfig()`, `saveLlamacppConfig(newCfg)` — used by
 - **`scene_images.filename`** — correct field name (NOT `imagecore_filename`)
 - **`characters` schema** — no `fullbody_image_filename` or `reference_image_path` columns
 - **`POST /api/a1111/model`** — body must be `{ model_name: name }` (NOT `{ model: name }`)
-- **`scenarios` schema** — only stores: `title, description, system_prompt, nsfw_enabled, narrator_model, context_turns`. Wizard fields (`tone`, `premise`, `reply_length`, `lust_level`, `pacing`, etc.) are silently discarded by the backend.
+- **`scenarios` schema** — at Phase 5b time, only stored: `title, description, system_prompt, nsfw_enabled, narrator_model, context_turns`. **Fixed in Phase 8**: 18 new columns added; all wizard fields now persist.
 - **No global character pool** — `GET /api/scenarios/:id/characters` only; no `/api/characters` global endpoint
 - **No global locations endpoint** — `GET /api/scenarios/:id/locations` only
 - **No `/api/styles` route** — backend route does not exist; table exists in DB but is unused
@@ -1634,6 +1702,80 @@ Added to api.js: `getLlamacppConfig()`, `saveLlamacppConfig(newCfg)` — used by
 
 ---
 
+### Phase 8 — Persistence audit and character relationships: COMPLETE (2026-06-14)
+
+> **Audit rule:** Every UI area that saves data must persist to DB and survive restart.
+> No localStorage/sessionStorage hacks. No fake saves. No silently discarded fields.
+
+**src/db.js — 18 new scenario column migrations:**
+- Added additive `ALTER TABLE scenarios ADD COLUMN` migrations for: `tone`, `premise`, `setting`,
+  `default_start`, `reply_length`, `lust_level`, `explicitness_level`, `pacing`, `narrative_pov`,
+  `violence_level`, `tone_modifier`, `narrator_presence_enabled`, `narrator_presence_mode`,
+  `narrator_presence_config`, `active_location_id`, `user_character_id`, `ended_at`, `generation_config`
+- Added `CREATE TABLE IF NOT EXISTS character_relationships (...)` in try/catch
+- Added `ALTER TABLE characters ADD COLUMN unique_trait TEXT DEFAULT NULL`
+- Added `ALTER TABLE character_fullbodies ADD COLUMN is_default INTEGER DEFAULT 0`
+  (column was already in main CREATE TABLE block but the additive migration was missing, causing
+  crash on first run against an existing DB that predates the column)
+
+**src/routes/scenarios.js — full rewrite:**
+- `GET /` enriched: `LEFT JOIN scenario_characters` + `LEFT JOIN turns` + `GROUP BY s.id` returns
+  `character_count`, `last_turn_at`, and `characters[]` array (id, name, reference_image_path) per scenario
+- `GET /:id` uses `scenario_characters` join for characters (not legacy `scenario_id` column)
+- `POST /` inserts all 25 fields including all 18 new wizard fields
+- `PUT /:id` dynamic SET clause: builds from `SCENARIO_FIELDS` array (25 fields), only updates
+  keys present in `req.body`; `BOOL_FIELDS = new Set(['nsfw_enabled', 'narrator_presence_enabled'])`
+  cast to 0/1 integers
+
+**src/routes/character-relationships.js — new file:**
+- Full CRUD at `/api/scenarios/:scenarioId/relationships`
+- All GET/POST responses JOIN characters to include `from_name` and `to_name`
+- POST returns HTTP 409 on UNIQUE constraint violation (duplicate pair)
+- PUT supports partial update of any subset of `relationship_type`, `description`, `strength`
+
+**src/server.js:**
+- Added `import relationshipsRouter from './routes/character-relationships.js'`
+- Added `app.use('/api/scenarios/:scenarioId/relationships', relationshipsRouter)`
+
+**src/services/narrator.js:**
+- `buildSystemPrompt` accepts new optional param `relationships = []`
+- New system prompt section 3 "Character Relationships" inserted between Characters and Rules:
+  `"A → B: type (description) [intensity N/5]"` format, one line per relationship
+- `runNarratorTurn` now queries `character_relationships` for the scenario and passes
+  `relationships` array to `buildSystemPrompt`
+- Section numbering updated: Rules→4, World→5, Memory→6, Personalities→7, NSFW→8, Scene→9
+
+**public/js/api.js:**
+- 4 new relationship methods added between Locations and Turns sections:
+  `getRelationships(sid)`, `createRelationship(sid, data)`, `updateRelationship(sid, id, d)`,
+  `deleteRelationship(sid, id)`
+
+**public/js/views/dashboard.js — data bug fixed:**
+- `renderScenarioGrid(data.scenarios || [])` → `renderScenarioGrid(Array.isArray(data) ? data : (data.scenarios || []))`
+  (API returns flat array; code was always passing `[]` because `data.scenarios` was undefined)
+- Card renderer updated to use real DB fields: `s.setting || s.premise`, `s.character_count`,
+  `s.last_turn_at`, `s.ended_at`, `s.characters` — all now returned by enriched GET /
+
+**public/js/views/scenario-setup.js — field-load bug fixed:**
+- `var s = results[3]` → `var s = results[3].scenario || results[3]`
+  (`API.getScenario(id)` returns `{ scenario: {...}, characters: [...], ... }` wrapper;
+  old code accessed `s.title` on the wrapper object, producing empty fields in edit mode)
+
+**public/js/views/play.js:**
+- `initPlay`: added `state.allLocations = scenResp.locations || []` after scenario load
+  (Scene Info modal was showing raw location IDs instead of names)
+- `renderRelationshipsTab`: replaced 5-line stub with full implementation:
+  - Loads `API.getRelationships(scenarioId)` + `API.getScenarioCharacters(scenarioId)` in parallel
+  - Renders list: `from_name → type-badge → to_name`, optional description, delete button
+  - Renders add form: from/to selects (populated with cast), type select (10 types),
+    description input; submit wired to `API.createRelationship`
+
+**src/routes/characters.js:**
+- `POST /`: added `unique_trait` to INSERT column list (41st column) and `.run()` values
+- `PUT /:id`: added `unique_trait = ?` to SET clause and `b.unique_trait ?? null` in `.run()` values
+
+---
+
 ## Current Project State
 
 | Item | Status |
@@ -1646,6 +1788,7 @@ Added to api.js: `getLlamacppConfig()`, `saveLlamacppConfig(newCfg)` — used by
 | Phase 5 frontend wiring | **COMPLETE** — full stale-API audit done (2026-06-14), all ImageCore/ComfyUI refs removed |
 | Phase 6 characters decoupled | **COMPLETE** — global characters, `scenario_characters` join table, live cast management UI (2026-06-14) |
 | Phase 7 bug fixes + character system | **COMPLETE** — all character fields persisted, fullbody buttons wired, boolean config fixed, eye/breast options expanded, route ordering fixed (2026-06-14) |
+| Phase 8 persistence audit + relationships | **COMPLETE** — all scenario wizard fields persist (18 new columns), character_relationships full stack, dashboard/scenario-setup/play.js bugs fixed, unique_trait + is_default migrations (2026-06-14) |
 | llamacpp narrator support | **COMPLETE** — start-llamacpp.bat + narrator.js routing + api.js getLlamacppConfig/saveLlamacppConfig |
 | A1111 installation | Present at `K:\stable-diffusion-webui`; start.bat auto-launches it if not running |
 | SDXL models | Available at `E:\ComfyUI\models\checkpoints` |
@@ -1658,9 +1801,8 @@ Added to api.js: `getLlamacppConfig()`, `saveLlamacppConfig(newCfg)` — used by
 1. Configure A1111 to point at E:\ComfyUI\models (webui-user.bat — `--ckpt-dir`, `--lora-dir`, `--esrgan-models-path`)
 2. Install ControlNet and FaceID extensions in A1111
 3. Test full play loop: new scenario → global character → add to cast → turn → image gen → reference gen → fullbody gen
-4. Implement character portrait generation endpoint
-5. Implement relationships (backend route + frontend panels)
-6. Implement scenario wizard → backend field persistence (backend schema change required)
+4. Implement character portrait generation endpoint (`POST /api/scenarios/:id/characters/:id/portrait`)
+5. Implement styles CRUD backend (`src/routes/styles.js` — table exists in DB, route file absent)
 
 ---
 

@@ -133,9 +133,9 @@ router.post('/', function (req, res) {
       personality, is_user, is_user_character,
       moodbaseline, arousalthreshold, arousallockeduntil, arousalmax,
       moodtriggerspos, moodtriggersneg, arousaltriggers,
-      image_prompt_override
+      image_prompt_override, unique_trait
     ) VALUES (
-      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
     )
   `).run(
     b.name                ?? '',
@@ -178,6 +178,7 @@ router.post('/', function (req, res) {
     b.moodtriggersneg     ?? null,
     b.arousaltriggers     ?? null,
     b.image_prompt_override ?? null,
+    b.unique_trait          ?? null,
   );
 
   res.status(201).json(db.prepare('SELECT * FROM characters WHERE id = ?').get(result.lastInsertRowid));
@@ -233,7 +234,8 @@ router.put('/:id', function (req, res) {
       moodtriggerspos      = ?,
       moodtriggersneg      = ?,
       arousaltriggers      = ?,
-      image_prompt_override = ?
+      image_prompt_override = ?,
+      unique_trait          = ?
     WHERE id = ?
   `).run(
     b.name                ?? null,
@@ -276,6 +278,7 @@ router.put('/:id', function (req, res) {
     b.moodtriggersneg     ?? null,
     b.arousaltriggers     ?? null,
     b.image_prompt_override ?? null,
+    b.unique_trait          ?? null,
     req.params.id,
   );
 

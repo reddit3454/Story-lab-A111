@@ -104,6 +104,7 @@ export function initPlay(scenarioId) {
         { characters: scenResp.characters || [] },
         scenResp.scenario || scenResp
       );
+      state.allLocations = scenResp.locations || [];
       var rawTurns = Array.isArray(results[1]) ? results[1] : (results[1].turns || []);
       state.turns = rawTurns.map(function(t) { return Object.assign({ speaker: t.role }, t); });
 
@@ -2566,12 +2567,128 @@ function renderCastTab(container, scenarioId) {
 /* ============================================================
    RELATIONSHIPS SIDEBAR TAB
    ============================================================ */
-function renderRelationshipsTab(container) {
-  container.innerHTML =
-    '<div class="sidebar-tab-content">' +
-      '<div class="tab-header"><h4>Relationships</h4></div>' +
-      '<div class="empty-state small">Relationships are not yet implemented in this version.</div>' +
-    '</div>';
+function renderRelationshipsTab(container, scenarioId) {
+  var REL_TYPES = ['friend', 'romantic', 'enemy', 'sibling', 'parent', 'rival', 'colleague', 'mentor', 'nemesis', 'other'];
+
+  Promise.all([
+    API.getRelationships(scenarioId),
+    API.getScenarioCharacters(scenarioId),
+  ]).then(function (results) {
+    var rels  = Array.isArray(results[0]) ? results[0] : [];
+    var chars = Array.isArray(results[1]) ? results[1] : [];
+
+    var charOpts = chars.map(function (c) {
+      return '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>';
+    }).join('');
+
+    var typeOpts = REL_TYPES.map(function (t) {
+      return '<option value="' + t + '">' + t[0].toUpperCase() + t.slice(1) + '</option>';
+    }).join('');
+
+    container.innerHTML =
+      '<div class="sidebar-tab-content">' +
+        '<div class="tab-header" style="display:flex;align-items:center;justify-content:space-between">' +
+          '<h4>Relationships</h4>' +
+          '<button class="btn btn-ghost btn-xs" id="btn-add-rel">+ Add</button>' +
+        '</div>' +
+
+        '<div id="rel-add-form" style="display:none;padding:6px 0 8px;border-bottom:1px solid var(--border);margin-bottom:8px">' +
+          '<select class="form-input" id="rel-from" style="font-size:12px;margin-bottom:4px">' +
+            '<option value="">From...</option>' + charOpts +
+          '</select>' +
+          '<select class="form-input" id="rel-to" style="font-size:12px;margin-bottom:4px">' +
+            '<option value="">To...</option>' + charOpts +
+          '</select>' +
+          '<select class="form-input" id="rel-type" style="font-size:12px;margin-bottom:4px">' + typeOpts + '</select>' +
+          '<input type="text" class="form-input" id="rel-desc" placeholder="Description (optional)" style="font-size:12px;margin-bottom:6px">' +
+          '<div style="display:flex;gap:6px">' +
+            '<button class="btn btn-ghost btn-xs" id="rel-form-cancel">Cancel</button>' +
+            '<button class="btn btn-primary btn-xs" id="rel-form-save">Save</button>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="rel-list">' +
+          (rels.length
+            ? rels.map(function (r) {
+                return '<div class="rel-entry" data-rel-id="' + r.id + '" ' +
+                  'style="display:flex;flex-direction:column;padding:6px 0;border-bottom:1px solid var(--border)">' +
+                  '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">' +
+                    '<strong style="font-size:12px">' + escapeHtml(r.from_name) + '</strong>' +
+                    '<span style="font-size:10px;padding:1px 5px;border-radius:8px;background:var(--bg-secondary);color:var(--text-muted)">' + escapeHtml(r.relationship_type) + '</span>' +
+                    '<strong style="font-size:12px">' + escapeHtml(r.to_name) + '</strong>' +
+                    '<button class="btn-rel-delete" data-rel-id="' + r.id + '" ' +
+                      'style="margin-left:auto;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1;padding:0 2px" title="Delete">&#215;</button>' +
+                  '</div>' +
+                  (r.description ? '<span style="font-size:11px;color:var(--text-muted);margin-top:2px">' + escapeHtml(r.description) + '</span>' : '') +
+                '</div>';
+              }).join('')
+            : '<div class="empty-state small">No relationships defined yet.</div>'
+          ) +
+        '</div>' +
+      '</div>';
+
+    var addBtn  = container.querySelector('#btn-add-rel');
+    var addForm = container.querySelector('#rel-add-form');
+    if (addBtn && addForm) {
+      addBtn.onclick = function () {
+        var open = addForm.style.display !== 'none';
+        addForm.style.display = open ? 'none' : '';
+      };
+    }
+
+    var cancelBtn = container.querySelector('#rel-form-cancel');
+    if (cancelBtn) {
+      cancelBtn.onclick = function () { if (addForm) addForm.style.display = 'none'; };
+    }
+
+    var saveBtn = container.querySelector('#rel-form-save');
+    if (saveBtn) {
+      saveBtn.onclick = function () {
+        var fromEl = container.querySelector('#rel-from');
+        var toEl   = container.querySelector('#rel-to');
+        var typeEl = container.querySelector('#rel-type');
+        var descEl = container.querySelector('#rel-desc');
+        var from   = fromEl ? fromEl.value : '';
+        var to     = toEl   ? toEl.value   : '';
+        if (!from || !to)  { showToast('Select both characters.', 'error'); return; }
+        if (from === to)   { showToast('A character cannot have a relationship with themselves.', 'error'); return; }
+        saveBtn.disabled = true;
+        API.createRelationship(scenarioId, {
+          from_character_id: Number(from),
+          to_character_id:   Number(to),
+          relationship_type: typeEl ? typeEl.value : 'friend',
+          description:       descEl ? descEl.value.trim() : '',
+        }).then(function () {
+          showToast('Relationship added!', 'success');
+          renderRelationshipsTab(container, scenarioId);
+        }).catch(function (err) {
+          saveBtn.disabled = false;
+          showToast('Failed: ' + err.message, 'error');
+        });
+      };
+    }
+
+    container.querySelectorAll('.btn-rel-delete').forEach(function (btn) {
+      btn.onclick = function () {
+        if (!confirm('Delete this relationship?')) return;
+        btn.disabled = true;
+        API.deleteRelationship(scenarioId, btn.dataset.relId)
+          .then(function () {
+            var entry = btn.closest('.rel-entry');
+            if (entry) entry.parentNode.removeChild(entry);
+            showToast('Relationship removed.', 'info');
+            var list = container.querySelector('.rel-list');
+            if (list && !list.querySelectorAll('.rel-entry').length) {
+              list.innerHTML = '<div class="empty-state small">No relationships defined yet.</div>';
+            }
+          })
+          .catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
+      };
+    });
+
+  }).catch(function (e) {
+    container.innerHTML = '<div class="error-state">Failed: ' + escapeHtml(e.message) + '</div>';
+  });
 }
 
 

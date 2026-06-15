@@ -18,7 +18,7 @@ const SCENE_CARD_INSTRUCTION = `After every story segment you write, append a sc
 
 Rules for image_prompt: write as plain comma-separated tags. Subjects first with explicit clothing description. Then action/pose. Then setting. Then lighting/atmosphere. Describe only what is literally visible in the scene you just wrote. Do not add things not in the scene.`;
 
-export function buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, config }) {
+export function buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, relationships = [], config }) {
   const parts = [];
 
   // 1. Scenario base prompt
@@ -37,7 +37,18 @@ export function buildSystemPrompt({ scenario, characters, rules, worldEntries, m
     parts.push(`Characters:\n${block}`);
   }
 
-  // 3. Rules (priority-ordered, descending)
+  // 3. Character relationships
+  if (relationships.length > 0) {
+    const block = relationships.map(function (r) {
+      let line = `${r.from_name} → ${r.to_name}: ${r.relationship_type}`;
+      if (r.description) line += ` (${r.description})`;
+      if (r.strength != null) line += ` [intensity ${r.strength}/5]`;
+      return line;
+    }).join('\n');
+    parts.push(`Character Relationships:\n${block}`);
+  }
+
+  // 4. Rules (priority-ordered, descending)
   if (rules.length > 0) {
     const block = rules.map(function (r) { return `- ${r.content}`; }).join('\n');
     parts.push(`Rules:\n${block}`);
@@ -55,7 +66,7 @@ export function buildSystemPrompt({ scenario, characters, rules, worldEntries, m
     parts.push(`Story Memory:\n${block}`);
   }
 
-  // 6. Character personalities
+  // 7. Character personalities
   const charsWithPersonality = characters.filter(c => c.personality && c.personality.trim());
   if (charsWithPersonality.length > 0) {
     const header = [
@@ -73,14 +84,14 @@ export function buildSystemPrompt({ scenario, characters, rules, worldEntries, m
     parts.push(header + block);
   }
 
-  // 7. NSFW instruction
+  // 8. NSFW instruction
   if (scenario.nsfw_enabled && config.nsfw_enabled) {
     parts.push('Explicit adult content is permitted in this story. Write without censorship when the narrative calls for it.');
   } else {
     parts.push('Keep content tasteful. Avoid explicit sexual content.');
   }
 
-  // 8. Scene card instruction
+  // 9. Scene card instruction
   parts.push(SCENE_CARD_INSTRUCTION);
 
   return parts.join('\n\n---\n\n');
@@ -142,10 +153,18 @@ export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
   const rules        = db.prepare('SELECT * FROM rules WHERE scenario_id = ? ORDER BY priority DESC').all(scenario.id);
   const worldEntries = db.prepare('SELECT * FROM world_entries WHERE scenario_id = ?').all(scenario.id);
   const memories     = db.prepare('SELECT * FROM memories WHERE scenario_id = ? ORDER BY created_at DESC LIMIT 10').all(scenario.id);
+  const relationships = db.prepare(`
+    SELECT cr.*, cf.name AS from_name, ct.name AS to_name
+    FROM character_relationships cr
+    JOIN characters cf ON cf.id = cr.from_character_id
+    JOIN characters ct ON ct.id = cr.to_character_id
+    WHERE cr.scenario_id = ?
+    ORDER BY cf.name
+  `).all(scenario.id);
 
   const config       = resolveMasterConfig(db);
   const backend      = await resolveNarratorBackend(db);
-  const systemPrompt = buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, config });
+  const systemPrompt = buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, relationships, config });
 
   const fullMessages = [
     { role: 'system', content: systemPrompt },

@@ -74,7 +74,7 @@ export function initScenarioSetup(editId) {
     state.availableLoRAs = (results[1].loras || []);
     state.allLocations   = (results[2].locations || []);
     if (editId && results[3]) {
-      var s = results[3];
+      var s = results[3].scenario || results[3];
       Object.assign(state.wizardData, {
         id: s.id,
         title: s.title || '',
