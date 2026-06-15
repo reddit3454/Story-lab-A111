@@ -20,10 +20,20 @@ function _moodTags(mood) {
 
 function _characterBlock(characters) {
   if (!characters || !characters.length) return '';
-  return characters
-    .map(c => c.appearance_prompt || c.name)
-    .filter(Boolean)
-    .join(', ');
+  return characters.map(c => {
+    const parts = [];
+    if (c.gender)     parts.push(c.gender);
+    if (c.body_type)  parts.push(c.body_type + ' build');
+    const hair = [c.hair_color, c.hair_style].filter(Boolean);
+    if (hair.length)  parts.push(hair.join(' ') + ' hair');
+    if (c.eye_color)  parts.push(c.eye_color + ' eyes');
+    if (c.skin_tone)  parts.push(c.skin_tone + ' skin');
+    const gL = (c.gender || '').toLowerCase();
+    if (c.breast_size && (gL === 'female' || gL === 'non-binary')) parts.push(c.breast_size + ' breasts');
+    if (c.butt_size)  parts.push(c.butt_size + ' butt');
+    if (parts.length) return parts.join(', ');
+    return c.appearance_prompt || c.name;
+  }).filter(Boolean).join(', ');
 }
 
 function _clothingBlock(characters) {
@@ -47,11 +57,15 @@ function _join(...parts) {
 }
 
 export function buildPrompt({ sceneCard, characters, location, scenario, config, isImg2img = false }) {
+  const scene_image_prompt = sceneCard?.image_prompt ?? '';
+  const location_tags = (isImg2img || !scene_image_prompt)
+    ? (location?.image_tags || '')
+    : '';
   const parts = {
     mode:               isImg2img ? 'img2img' : 'txt2img',
     prefix:             config.prompt_prefix     ?? '',
-    scene_image_prompt: sceneCard?.image_prompt  ?? '',
-    location_tags:      (!isImg2img && location?.image_tags) ? location.image_tags : '',
+    scene_image_prompt,
+    location_tags,
     atmosphere_tags:    _moodTags(sceneCard?.mood),
     character_block:    _characterBlock(characters),
     clothing_block:     _clothingBlock(characters),

@@ -153,11 +153,9 @@ router.get('/:id/scene-card', function (req, res) {
 });
 
 router.post('/:id/reset-scene', function (req, res) {
-  db.prepare(
-    `UPDATE turns SET scene_card_json = NULL
-     WHERE scenario_id = ? AND role = 'narrator'
-     AND turn_number = (SELECT MAX(turn_number) FROM turns WHERE scenario_id = ? AND role = 'narrator')`
-  ).run(req.params.id, req.params.id);
+  db.prepare('DELETE FROM scene_images WHERE scenario_id = ?').run(req.params.id);
+  db.prepare('DELETE FROM turns WHERE scenario_id = ?').run(req.params.id);
+  db.prepare("UPDATE scenarios SET active_location_id = NULL, updated_at = datetime('now') WHERE id = ?").run(req.params.id);
   res.json({ ok: true });
 });
 

@@ -893,10 +893,13 @@ function setupPlayInteractions(scenarioId) {
   var resetSceneBtn = document.getElementById('btn-reset-scene');
   if (resetSceneBtn) {
     resetSceneBtn.onclick = function () {
-      showConfirm('Reset Scene', 'Clear the current scene card? The next image will regenerate fresh.', function () {
+      showConfirm('Reset Scene', 'Delete all turns and restart the story from the beginning?', function () {
         fetch('/api/scenarios/' + scenarioId + '/reset-scene', { method: 'POST' })
           .then(function (r) { return r.json(); })
-          .then(function () { showToast('Scene card cleared.', 'info'); })
+          .then(function () {
+            showToast('Scene reset.', 'info');
+            location.reload();
+          })
           .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
       }, 'btn-danger');
     };
