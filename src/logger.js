@@ -15,7 +15,7 @@ function _toMsg(event, data) {
   if (typeof data === 'string') return event + ' ' + data;
   try {
     const s = JSON.stringify(data);
-    return event + ' ' + (s.length > 200 ? s.slice(0, 200) + '…' : s);
+    return event + ' ' + (s.length > 2000 ? s.slice(0, 2000) + '…' : s);
   } catch (_) { return event; }
 }
 
@@ -26,7 +26,7 @@ export function log(service, event, data, detail) {
   try { fs.appendFileSync(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n'); } catch (_) {}
   broadcast.send('logline', {
     cat: _CAT[service] || 'SERVER',
-    msg: `[${service}] ${_toMsg(event, data)}`,
+    msg: `[${service}] ${_toMsg(event, data)}` + (detail ? `\n${detail}` : ''),
     ts:  ts.slice(11, 19),
   });
 }

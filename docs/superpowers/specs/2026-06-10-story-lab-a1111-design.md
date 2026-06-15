@@ -787,6 +787,25 @@ The "SCENE" card is unchanged.
 
 ---
 
+### 2026-06-15 — Debug console: full prompt logging
+**Modified:** `src/logger.js`, `src/services/image-pipeline.js`
+
+**logger.js:**
+- `_toMsg` truncation limit raised from 200 → 2000 characters so full prompt strings
+  appear in the debug console without being cut off.
+- `log()` broadcast msg now appends `\n${detail}` when a `detail` string is provided,
+  so callers can pass long multi-line blocks that appear as separate lines in the UI console.
+
+**image-pipeline.js:**
+- Two `log()` calls added immediately before the A1111 request is fired:
+  - `PROMPT_SUBMITTED` — logs the complete assembled prompt and negative prompt strings.
+  - `SCENE_CARD` — logs `image_prompt`, `mood`, and `arousal_level` from the scene card
+    so you can compare what the LLM returned against what was submitted to A1111.
+- A1111 call errors are already caught by the outer `try/catch` which calls
+  `logError('image-pipeline', 'failed', err)` — no additional wrapper needed.
+
+---
+
 ### 2026-06-15 — Remove NSFW gating: app is always fully unrestricted
 **Modified:** `src/services/narrator.js`, `src/services/prompt-builder.js`
 

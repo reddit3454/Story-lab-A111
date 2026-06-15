@@ -186,6 +186,13 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
     fs.mkdirSync(saveDir, { recursive: true });
     const basePayload = _buildA1111Payload(config, prompt, negative);
 
+    log('image-pipeline', 'PROMPT_SUBMITTED', null,
+      `[FULL PROMPT]\n${basePayload.prompt}\n\n[NEGATIVE]\n${basePayload.negative_prompt}`
+    );
+    log('image-pipeline', 'SCENE_CARD', null,
+      `image_prompt="${sceneCard?.image_prompt || '(empty)'}" | mood="${sceneCard?.mood || '?'}" | arousal=${sceneCard?.arousal_level ?? '?'}`
+    );
+
     let genResult;
     const t1 = Date.now();
     if (bgPath) {
