@@ -10,7 +10,7 @@ echo ========================================
 echo  Story-Lab-A111 - llama.cpp Narrator
 echo  Model: MN-12B-Mag-Mell-R1.Q4
 echo  Port:  %PORT%
-echo  Context: 32768
+echo  Context: 16384
 echo ========================================
 echo.
 echo  In Settings > Model Backends:
@@ -43,8 +43,8 @@ llama-server.exe ^
   -m "%MODEL_PATH%" ^
   --port %PORT% ^
   -ngl 99 ^
-  -c 32768 ^
-  --flash-attn ^
+  -c 16384 ^
+  --flash-attn on ^
   --cache-type-k q8_0 ^
   --cache-type-v q8_0 ^
   --cont-batching ^
