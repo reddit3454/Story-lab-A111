@@ -23,13 +23,14 @@ router.get('/', function (req, res) {
 
 router.post('/generate', async function (req, res) {
   const { scenarioId } = req.params;
-  const { turn_id, mode = 'scene', directPrompt, rawPrompt } = req.body;
+  const { turn_id, mode = 'scene', characterId, directPrompt, rawPrompt } = req.body;
 
   pipeline.generate({
     mode,
-    scenarioId: parseInt(scenarioId, 10),
-    turnId:     turn_id ? parseInt(turn_id, 10) : null,
-    opts:       { directPrompt: !!directPrompt, rawPrompt: rawPrompt || '' },
+    scenarioId:  parseInt(scenarioId, 10),
+    turnId:      turn_id     ? parseInt(turn_id, 10)     : null,
+    characterId: characterId ? parseInt(characterId, 10) : null,
+    opts:        { directPrompt: !!directPrompt, rawPrompt: rawPrompt || '' },
   }).catch(function (err) {
     console.error('[images] generate failed:', err.message);
   });

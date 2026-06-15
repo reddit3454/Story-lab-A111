@@ -91,3 +91,37 @@ export function buildPrompt({ sceneCard, characters, location, scenario, config,
 
   return { prompt, negative: parts.negative, parts };
 }
+
+export function buildCharacterPrompt({ character, actionContext = '', config }) {
+  if (!character) return { prompt: '', negative: '', parts: {} };
+  const appearance = [];
+  if (character.gender)    appearance.push(character.gender);
+  if (character.body_type) appearance.push(character.body_type + ' build');
+  const hair = [character.hair_color, character.hair_style].filter(Boolean);
+  if (hair.length)         appearance.push(hair.join(' ') + ' hair');
+  if (character.eye_color) appearance.push(character.eye_color + ' eyes');
+  if (character.skin_tone) appearance.push(character.skin_tone + ' skin');
+  const gL = (character.gender || '').toLowerCase();
+  if (character.breast_size && (gL === 'female' || gL === 'non-binary'))
+    appearance.push(character.breast_size + ' breasts');
+  if (character.butt_size) appearance.push(character.butt_size + ' butt');
+  if (!appearance.length && character.appearance_prompt)
+    appearance.push(character.appearance_prompt);
+  const clothing = character.current_clothing || character.base_clothing || '';
+  const action   = actionContext || 'standing, natural pose, candid';
+  const prompt = _join(
+    config.prompt_prefix ?? '',
+    appearance.join(', '),
+    clothing,
+    action,
+    'solo, single person, not looking at camera',
+    config.prompt_suffix ?? '',
+    _loraTags(config),
+  );
+  const negative = _join(
+    config.master_negative ?? '',
+    config.negative_additions ?? '',
+    'multiple people, group, looking at viewer, facing camera, eye contact',
+  );
+  return { prompt, negative, parts: { appearance, clothing, action } };
+}

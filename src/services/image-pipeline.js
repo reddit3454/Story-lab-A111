@@ -6,7 +6,7 @@ import { IMAGES_DIR, BACKGROUNDS_DIR } from '../paths.js';
 import { log, logError } from '../logger.js';
 import broadcast from '../broadcast.js';
 import { resolveEffectiveConfig } from './config-resolver.js';
-import { buildPrompt } from './prompt-builder.js';
+import { buildPrompt, buildCharacterPrompt } from './prompt-builder.js';
 import { audit } from './audit.js';
 import * as a1111 from './a1111.js';
 
@@ -132,25 +132,36 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
       WHERE sc.scenario_id = ?
       ORDER BY c.name
     `).all(scenarioId);
-
     const scenario = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(scenarioId);
-
-    // For background mode use location image_tags as the scene image prompt
     if (isBackground && location) {
       sceneCard = { image_prompt: location.image_tags || location.description || location.name };
     }
-
     if (opts.directPrompt && opts.rawPrompt) {
       sceneCard = { image_prompt: opts.rawPrompt };
     }
-
-    // Backgrounds are never img2img (we're generating them)
     let bgPath = isBackground ? null : _resolveBackground(location);
-
-    const { prompt, negative, parts } = buildPrompt({
-      sceneCard, characters, location, scenario, config,
-      isImg2img: bgPath != null,
-    });
+    let prompt, negative, parts;
+    if (mode === 'character' && characterId) {
+      const char = characters.find(c => c.id === characterId) || characters;
+      let actionContext = '';
+      if (sceneCard?.image_prompt) {
+        actionContext = sceneCard.image_prompt;
+      } else {
+        const locName = (location?.name || '').toLowerCase();
+        if      (locName.includes('bed') || locName.includes('room')) actionContext = 'lying on bed, relaxed';
+        else if (locName.includes('bath'))                            actionContext = 'in bathroom, standing';
+        else if (locName.includes('car'))                             actionContext = 'sitting in car seat';
+        else if (locName.includes('beach'))                           actionContext = 'standing on beach, looking away';
+        else if (locName.includes('park') || locName.includes('outdoor')) actionContext = 'standing outdoors, natural pose';
+        else                                                          actionContext = 'standing, natural candid pose';
+      }
+      ({ prompt, negative, parts } = buildCharacterPrompt({ character: char, actionContext, config }));
+    } else {
+      ({ prompt, negative, parts } = buildPrompt({
+        sceneCard, characters, location, scenario, config,
+        isImg2img: bgPath != null,
+      }));
+    }
 
     audit({ pipeline_run_id: runId, service: 'prompt-builder', stage: 'build_prompt',
             status: 'success', message: 'prompt assembled',

@@ -699,9 +699,15 @@ function setupPlayInteractions(scenarioId) {
           return;
         }
 
+        var charId = Number(card.dataset.charId);
         var narratorTurns = (state.turns || []).filter(function (t) { return t.speaker === 'narrator'; });
         var latestTurn = narratorTurns.length ? narratorTurns[narratorTurns.length - 1] : null;
-        generateSceneImage(pScenId, latestTurn ? latestTurn.id : null);
+        setImgStatus('Preparing character image...');
+        fetch('/api/scenarios/' + pScenId + '/images/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'character', characterId: charId, turn_id: latestTurn ? latestTurn.id : null }),
+        }).catch(function (e) { showToast('Image failed: ' + e.message, 'error'); });
       });
     }).catch(function () {
       var list2 = document.getElementById('portrait-list');
