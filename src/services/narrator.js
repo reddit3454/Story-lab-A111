@@ -54,13 +54,13 @@ export function buildSystemPrompt({ scenario, characters, rules, worldEntries, m
     parts.push(`Rules:\n${block}`);
   }
 
-  // 4. World entries
+  // 5. World entries
   if (worldEntries.length > 0) {
     const block = worldEntries.map(function (e) { return `${e.title}: ${e.content}`; }).join('\n\n');
     parts.push(`World Knowledge:\n${block}`);
   }
 
-  // 5. Memory block
+  // 6. Memory block
   if (memories.length > 0) {
     const block = memories.map(function (m) { return `- ${m.content}`; }).join('\n');
     parts.push(`Story Memory:\n${block}`);
