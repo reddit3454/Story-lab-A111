@@ -1,5 +1,8 @@
+import fs from 'fs';
+import path from 'path';
 import { Router } from 'express';
 import db from '../db.js';
+import { BACKGROUNDS_DIR } from '../paths.js';
 
 const router = Router();
 
@@ -91,6 +94,41 @@ router.post('/:id/backgrounds/:bgId/set-default', function (req, res) {
 router.delete('/:id/backgrounds/:bgId', function (req, res) {
   db.prepare('DELETE FROM location_backgrounds WHERE id = ? AND location_id = ?').run(req.params.bgId, req.params.id);
   res.json({ ok: true });
+});
+
+router.post('/:id/scan-backgrounds', function (req, res) {
+  const row = db.prepare('SELECT * FROM locations WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Location not found' });
+  const folder = row.background_folder || '';
+  if (!folder) return res.status(400).json({ error: 'No background_folder set on this location' });
+  const folderPath = path.join(BACKGROUNDS_DIR, folder);
+  if (!fs.existsSync(folderPath)) {
+    return res.status(404).json({ error: `Folder not found: ${folderPath}` });
+  }
+  let files;
+  try {
+    files = fs.readdirSync(folderPath).filter(f => /\.(png|jpg|jpeg)$/i.test(f)).sort();
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to read folder: ' + err.message });
+  }
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO location_backgrounds (location_id, filename) VALUES (?, ?)'
+  );
+  for (const filename of files) {
+    insert.run(row.id, filename);
+  }
+  const hasDefault = db.prepare(
+    'SELECT id FROM location_backgrounds WHERE location_id = ? AND is_default = 1'
+  ).get(row.id);
+  if (!hasDefault && files.length) {
+    db.prepare(
+      'UPDATE location_backgrounds SET is_default = 1 WHERE location_id = ? AND filename = ?'
+    ).run(row.id, files[0]);
+  }
+  const allRows = db.prepare(
+    'SELECT * FROM location_backgrounds WHERE location_id = ? ORDER BY is_default DESC, id ASC'
+  ).all(row.id);
+  res.json({ ok: true, scanned: files.length, backgrounds: allRows });
 });
 
 export default router;

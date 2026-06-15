@@ -183,7 +183,11 @@
 
       '<div class="form-group">' +
         '<label class="form-label">Background Folder <span class="form-hint">(subfolder name inside backgrounds dir)</span></label>' +
-        '<input type="text" class="form-input" id="lf-background_folder" value="' + esc(l.background_folder || '') + '" placeholder="e.g. Campsite">' +
+        '<div style="display:flex;gap:8px;align-items:center">' +
+          '<input type="text" class="form-input" id="lf-background_folder" value="' + esc(l.background_folder || '') + '" placeholder="e.g. Campsite" style="flex:1">' +
+          (!isNew ? '<button type="button" class="btn btn-secondary btn-sm" id="lf-scan-btn" style="white-space:nowrap">Scan Folder</button>' : '') +
+        '</div>' +
+        '<div id="lf-scan-result" style="font-size:12px;margin-top:4px;color:var(--text-muted)"></div>' +
       '</div>' +
 
       '<div class="form-group">' +
@@ -333,6 +337,32 @@
 
     _wireLocationDayNightTabs();
     if (loc) renderLocationBackgrounds(loc);
+
+    var scanBtn = document.getElementById('lf-scan-btn');
+    var scanResult = document.getElementById('lf-scan-result');
+    if (scanBtn && loc) {
+      scanBtn.onclick = function () {
+        var folderVal = (document.getElementById('lf-background_folder').value || '').trim();
+        if (!folderVal) { if (scanResult) { scanResult.style.color = 'var(--color-danger,#ef4444)'; scanResult.textContent = 'Set a folder name first.'; } return; }
+        setLoading2(scanBtn, true, 'Scanning...');
+        if (scanResult) { scanResult.style.color = 'var(--text-muted)'; scanResult.textContent = ''; }
+        fetch('/api/locations/' + loc.id + '/scan-backgrounds', { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            setLoading2(scanBtn, false, 'Scan Folder');
+            if (data.error) {
+              if (scanResult) { scanResult.style.color = 'var(--color-danger,#ef4444)'; scanResult.textContent = data.error; }
+              return;
+            }
+            if (scanResult) { scanResult.style.color = 'var(--color-success,#22c55e)'; scanResult.textContent = 'Found ' + data.scanned + ' image' + (data.scanned !== 1 ? 's' : '') + '.'; }
+            renderLocationBackgrounds(loc);
+          })
+          .catch(function (err) {
+            setLoading2(scanBtn, false, 'Scan Folder');
+            if (scanResult) { scanResult.style.color = 'var(--color-danger,#ef4444)'; scanResult.textContent = 'Error: ' + err.message; }
+          });
+      };
+    }
 
     document.getElementById('lf-save').onclick = function () {
       var data = collectLocationForm();
