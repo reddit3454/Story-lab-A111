@@ -12,7 +12,6 @@ router.get('/', function (req, res) {
 
   let rows;
   if (limit) {
-    // Fetch last N turns, then sort ASC for chronological order
     rows = db.prepare(`
       SELECT * FROM (
         SELECT * FROM turns WHERE scenario_id = ? ORDER BY turn_number DESC LIMIT ?
@@ -21,6 +20,26 @@ router.get('/', function (req, res) {
   } else {
     rows = db.prepare('SELECT * FROM turns WHERE scenario_id = ? ORDER BY turn_number ASC').all(scenarioId);
   }
+
+  const getLatestImage = db.prepare(`
+    SELECT id, filename, prompt_used, user_rating, accepted
+    FROM scene_images WHERE turn_id = ? ORDER BY created_at DESC LIMIT 1
+  `);
+
+  rows = rows.map(function (turn) {
+    const img = getLatestImage.get(turn.id);
+    if (img) {
+      return Object.assign({}, turn, {
+        image_id:            img.id,
+        image_filename:      img.filename,
+        image_visual_prompt: img.prompt_used,
+        user_rating:         img.user_rating,
+        image_accepted:      img.accepted,
+      });
+    }
+    return turn;
+  });
+
   res.json(rows);
 });
 

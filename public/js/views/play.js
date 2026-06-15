@@ -607,7 +607,7 @@ function setupPlayInteractions(scenarioId) {
         state.characterStates[c.characterId].current_clothing = c.current_clothing || null;
       });
       var charsHtml = chars.map(function (c) {
-        var imgSrc = '';
+        var imgSrc = c.reference_image_path ? imageSrc(c.reference_image_path) : '';
         var initial = escapeHtml((c.name || '?')[0].toUpperCase());
         var isNpc = !c.is_user_character;
         return '<div class="portrait-card" data-char-name="' + escapeHtml(c.name) + '" data-char-id="' + c.id + '" title="Generate image of ' + escapeHtml(c.name) + '">' +
@@ -1420,19 +1420,20 @@ function generateSceneImage(scenarioId, turnId) {
 function _populateSceneImageHistory() {
   if (!state._sceneImageCache) state._sceneImageCache = {};
   var imageTurns = state.turns.filter(function (t) { return t.image_filename; });
-  // Iterate forward (oldest first) and prepend each — newest ends up on top
+  // Build the in-memory cache only — images are already shown inline in the thread.
+  // Calling displayImage here would also render them in #scene-image-history (below the
+  // thread in the layout), which takes up flex space and leaves only a sliver of story visible.
   imageTurns.forEach(function (t) {
-    var imgObj = {
-      id:                 t.image_id            || null,
-      filename: t.image_filename,
-      visual_prompt_sent: t.image_visual_prompt  || '',
-      videostatus:        t.image_videostatus    || null,
+    if (!t.image_id) return;
+    state._sceneImageCache[t.image_id] = {
+      id:                 t.image_id,
+      filename:           t.image_filename,
+      visual_prompt_sent: t.image_visual_prompt     || '',
+      videostatus:        t.image_videostatus       || null,
       videoclipfilename:  t.image_videoclipfilename || null,
       turn_number:        t.turn_number,
-      turn_id:            t.id
+      turn_id:            t.id,
     };
-    if (imgObj.id) state._sceneImageCache[imgObj.id] = imgObj;
-    displayImage(imgObj);
   });
 }
 
@@ -2568,14 +2569,23 @@ function renderCastTab(container, scenarioId) {
    RELATIONSHIPS SIDEBAR TAB
    ============================================================ */
 function renderRelationshipsTab(container, scenarioId) {
-  var REL_TYPES = ['friend', 'romantic', 'enemy', 'sibling', 'parent', 'rival', 'colleague', 'mentor', 'nemesis', 'other'];
+  var REL_TYPES = [
+    'friend', 'romantic partner', 'rival', 'enemy', 'colleague',
+    'mentor', 'student', 'cousin', 'mother', 'father', 'brother',
+    'sister', 'neighbor',
+  ];
 
   Promise.all([
-    API.getRelationships(scenarioId),
+    API.getRelationships(),
     API.getScenarioCharacters(scenarioId),
   ]).then(function (results) {
-    var rels  = Array.isArray(results[0]) ? results[0] : [];
-    var chars = Array.isArray(results[1]) ? results[1] : [];
+    var allRels = Array.isArray(results[0]) ? results[0] : [];
+    var chars   = Array.isArray(results[1]) ? results[1] : [];
+    var charIds = new Set(chars.map(function (c) { return c.id; }));
+    // Filter to relationships where BOTH characters are in this scenario's cast
+    var rels = allRels.filter(function (r) {
+      return charIds.has(r.from_character_id) && charIds.has(r.to_character_id);
+    });
 
     var charOpts = chars.map(function (c) {
       return '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>';
@@ -2653,7 +2663,7 @@ function renderRelationshipsTab(container, scenarioId) {
         if (!from || !to)  { showToast('Select both characters.', 'error'); return; }
         if (from === to)   { showToast('A character cannot have a relationship with themselves.', 'error'); return; }
         saveBtn.disabled = true;
-        API.createRelationship(scenarioId, {
+        API.createRelationship({
           from_character_id: Number(from),
           to_character_id:   Number(to),
           relationship_type: typeEl ? typeEl.value : 'friend',
@@ -2672,7 +2682,7 @@ function renderRelationshipsTab(container, scenarioId) {
       btn.onclick = function () {
         if (!confirm('Delete this relationship?')) return;
         btn.disabled = true;
-        API.deleteRelationship(scenarioId, btn.dataset.relId)
+        API.deleteRelationship(Number(btn.dataset.relId))
           .then(function () {
             var entry = btn.closest('.rel-entry');
             if (entry) entry.parentNode.removeChild(entry);
@@ -3024,7 +3034,7 @@ export function connectWs() {
   if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) return;
 
   try {
-    _ws = new WebSocket('ws://localhost:4090');
+    _ws = new WebSocket('ws://' + location.host + '/ws');
   } catch (e) {
     setTimeout(connectWs, _wsRetryDelay);
     return;

@@ -401,4 +401,20 @@ try {
   `);
 } catch (_) {}
 
+// Globalize character_relationships: deduplicate same char pair across scenarios (keep latest),
+// set scenario_id = 0 as global sentinel, add global unique index on (from, to).
+try {
+  db.exec(`
+    DELETE FROM character_relationships
+    WHERE id NOT IN (
+      SELECT MAX(id) FROM character_relationships GROUP BY from_character_id, to_character_id
+    )
+  `);
+} catch (_) {}
+try { db.exec("UPDATE character_relationships SET scenario_id = 0"); } catch (_) {}
+try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_char_rel_global ON character_relationships(from_character_id, to_character_id)"); } catch (_) {}
+
+// Fix existing scene_images: prepend scenario_id/ to bare basenames (no path separator means old format)
+try { db.exec("UPDATE scene_images SET filename = CAST(scenario_id AS TEXT) || '/' || filename WHERE instr(filename, '/') = 0"); } catch (_) {}
+
 export default db;

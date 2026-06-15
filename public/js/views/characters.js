@@ -1,6 +1,12 @@
 import { state } from '../state.js';
 import { escapeHtml, avatarHtml, traitSelect, imageSrc } from '../utils.js';
 import { showToast, showConfirm, setLoading, openLightbox } from '../ui.js';
+
+var RELATIONSHIP_TYPES = [
+  'friend', 'romantic partner', 'rival', 'enemy', 'colleague',
+  'mentor', 'student', 'cousin', 'mother', 'father', 'brother',
+  'sister', 'neighbor',
+];
 import {
   GENDER_OPTS, AGE_RANGE_OPTS, BODY_TYPE_OPTS, HEIGHT_OPTS, BUTT_SIZE_OPTS,
   BREAST_SIZE_OPTS, PENIS_STATE_OPTS, SKIN_TONE_OPTS, EYE_COLOR_OPTS, EYE_SHAPE_OPTS,
@@ -536,10 +542,13 @@ function renderCharacterForm(char) {
           '</div>' +
           '<p class="form-hint" style="margin-bottom:8px">Describe how this character relates to others. The narrator uses these in every scenario both characters appear in.</p>' +
           '<div id="bond-add-form" style="display:none;margin-bottom:10px">' +
-            '<div class="rel-add-row" style="margin-bottom:6px">' +
+            '<div style="display:flex;gap:6px;margin-bottom:6px">' +
               '<select class="form-select" id="bond-related-char" style="flex:1"><option value="">Select character...</option></select>' +
+              '<select class="form-select" id="bond-rel-type" style="flex:1">' +
+                RELATIONSHIP_TYPES.map(function (t) { return '<option value="' + t + '">' + t + '</option>'; }).join('') +
+              '</select>' +
             '</div>' +
-            '<textarea class="form-input" id="bond-description" rows="3" placeholder="Describe the relationship (e.g. childhood friends, rivals who respect each other, estranged siblings reunited after years apart)..." style="width:100%;margin-bottom:6px"></textarea>' +
+            '<textarea class="form-input" id="bond-description" rows="2" placeholder="Optional notes (e.g. estranged for years, secretly in love)..." style="width:100%;margin-bottom:6px"></textarea>' +
             '<div style="display:flex;gap:6px">' +
               '<button type="button" class="btn btn-primary btn-sm" id="btn-bond-save">Save</button>' +
               '<button type="button" class="btn btn-ghost btn-sm" id="btn-bond-cancel">Cancel</button>' +
@@ -1334,15 +1343,17 @@ function renderCharacterForm(char) {
     if (bondSave) {
       bondSave.onclick = function () {
         var relCharSel  = document.getElementById('bond-related-char');
+        var relTypeSel  = document.getElementById('bond-rel-type');
         var descEl      = document.getElementById('bond-description');
         var relCharId   = relCharSel ? Number(relCharSel.value) : 0;
+        var relType     = relTypeSel ? relTypeSel.value : 'friend';
         var description = descEl ? descEl.value.trim() : '';
-        if (!relCharId || !description) {
-          showToast('Select a character and add a description.', 'error');
+        if (!relCharId) {
+          showToast('Select a character.', 'error');
           return;
         }
         setLoading(bondSave, true, 'Saving...');
-        API.createCharacterBond(char.id, { related_character_id: relCharId, description: description }).then(function () {
+        API.createCharacterBond(char.id, { to_character_id: relCharId, relationship_type: relType, description: description }).then(function () {
           showToast('Relationship saved.', 'success');
           if (bondAddForm) bondAddForm.style.display = 'none';
           loadCharacterBonds(char.id);
@@ -1361,18 +1372,19 @@ function loadCharacterBonds(charId) {
   var list = document.getElementById('bond-list');
   if (!list) return;
   list.innerHTML = '<div class="loading-state small">Loading...</div>';
-  API.getCharacterBonds(charId).then(function (data) {
-    var bonds = data.bonds || [];
-    if (!bonds.length) {
+  API.getCharacterBonds(charId).then(function (bonds) {
+    if (!Array.isArray(bonds) || !bonds.length) {
       list.innerHTML = '<div class="empty-state small" style="margin-top:6px">No relationships defined yet.</div>';
       return;
     }
     list.innerHTML = bonds.map(function (b) {
+      var otherName = Number(b.from_character_id) === Number(charId) ? b.to_name : b.from_name;
       return '<div class="bond-row" data-bond-id="' + b.id + '">' +
-        '<div class="bond-row-meta">' +
-          '<span class="bond-name">' + escapeHtml(b.related_character_name || 'Unknown') + '</span>' +
+        '<div class="bond-row-meta" style="display:flex;align-items:center;gap:6px;margin-bottom:2px">' +
+          '<span class="bond-name" style="font-weight:600">' + escapeHtml(otherName || 'Unknown') + '</span>' +
+          '<span style="font-size:11px;color:var(--text-muted);background:var(--bg-secondary);padding:1px 6px;border-radius:10px">' + escapeHtml(b.relationship_type || 'friend') + '</span>' +
         '</div>' +
-        '<div class="bond-row-desc">' + escapeHtml(b.description) + '</div>' +
+        (b.description ? '<div class="bond-row-desc" style="font-size:12px;color:var(--text-muted);margin-bottom:4px">' + escapeHtml(b.description) + '</div>' : '') +
         '<button class="btn btn-danger btn-xs bond-delete-btn" data-bond-id="' + b.id + '">Remove</button>' +
       '</div>';
     }).join('');
@@ -1387,7 +1399,7 @@ function loadCharacterBonds(charId) {
         });
       };
     });
-  }).catch(function (err) {
+  }).catch(function () {
     list.innerHTML = '<div class="empty-state small">Failed to load relationships.</div>';
   });
 }
@@ -1519,13 +1531,131 @@ function loadFullbodies(charId) {
 }
 
 /* ============================================================
-   CHARACTER RELATIONSHIPS PANEL — not yet implemented in A1111 version
+   CHARACTER RELATIONSHIPS PANEL
    ============================================================ */
 function renderRelationshipsPanel() {
   var panel = document.getElementById('char-detail-panel');
   if (!panel) return;
+
+  var relTypeOpts = RELATIONSHIP_TYPES.map(function (t) {
+    return '<option value="' + t + '">' + t + '</option>';
+  }).join('');
+
   panel.innerHTML =
-    '<div class="empty-state" style="padding:32px 24px">' +
-      '<p class="empty-state-text">Relationships are not yet implemented in this version.</p>' +
+    '<div style="padding:20px 24px;max-width:700px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">' +
+        '<h2 style="margin:0;font-size:18px">All Relationships</h2>' +
+        '<button class="btn btn-primary btn-sm" id="rp-btn-add-toggle">+ Add</button>' +
+      '</div>' +
+
+      '<div id="rp-add-form" style="display:none;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:16px">' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">' +
+          '<div>' +
+            '<label class="form-label">From character</label>' +
+            '<select class="form-select" id="rp-from"><option value="">Select...</option></select>' +
+          '</div>' +
+          '<div>' +
+            '<label class="form-label">To character</label>' +
+            '<select class="form-select" id="rp-to"><option value="">Select...</option></select>' +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-bottom:8px">' +
+          '<label class="form-label">Relationship type</label>' +
+          '<select class="form-select" id="rp-type">' + relTypeOpts + '</select>' +
+        '</div>' +
+        '<div style="margin-bottom:10px">' +
+          '<label class="form-label">Notes (optional)</label>' +
+          '<textarea class="form-input" id="rp-desc" rows="2" placeholder="e.g. estranged for years, childhood sweethearts..." style="width:100%"></textarea>' +
+        '</div>' +
+        '<div style="display:flex;gap:6px">' +
+          '<button class="btn btn-primary btn-sm" id="rp-btn-save">Save</button>' +
+          '<button class="btn btn-ghost btn-sm" id="rp-btn-cancel">Cancel</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div id="rp-list"><div class="loading-state small">Loading...</div></div>' +
     '</div>';
+
+  function loadRelPanel() {
+    var listEl = document.getElementById('rp-list');
+    if (!listEl) return;
+    API.getRelationships().then(function (rows) {
+      if (!rows.length) {
+        listEl.innerHTML = '<div class="empty-state small">No relationships defined yet.</div>';
+        return;
+      }
+      listEl.innerHTML = rows.map(function (r) {
+        return '<div class="bond-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">' +
+          '<div style="flex:1">' +
+            '<span style="font-weight:600">' + escapeHtml(r.from_name) + '</span>' +
+            ' <span style="color:var(--text-muted);font-size:12px">→</span> ' +
+            '<span style="font-weight:600">' + escapeHtml(r.to_name) + '</span>' +
+            '<span style="margin-left:8px;font-size:11px;color:var(--text-muted);background:var(--bg-secondary);padding:1px 7px;border-radius:10px;border:1px solid var(--border)">' + escapeHtml(r.relationship_type) + '</span>' +
+            (r.description ? '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">' + escapeHtml(r.description) + '</div>' : '') +
+          '</div>' +
+          '<button class="btn btn-danger btn-xs rp-del-btn" data-id="' + r.id + '">Remove</button>' +
+        '</div>';
+      }).join('');
+      listEl.querySelectorAll('.rp-del-btn').forEach(function (btn) {
+        btn.onclick = function () {
+          API.deleteRelationship(Number(btn.dataset.id)).then(function () {
+            showToast('Relationship removed.', 'success');
+            loadRelPanel();
+          }).catch(function (e) { showToast(e.message, 'error'); });
+        };
+      });
+    }).catch(function () {
+      listEl.innerHTML = '<div class="empty-state small">Failed to load.</div>';
+    });
+  }
+
+  // Populate from/to character dropdowns
+  API.getCharacters().then(function (chars) {
+    var opts = (Array.isArray(chars) ? chars : []).map(function (c) {
+      return '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>';
+    }).join('');
+    var fromSel = document.getElementById('rp-from');
+    var toSel   = document.getElementById('rp-to');
+    if (fromSel) fromSel.innerHTML = '<option value="">Select...</option>' + opts;
+    if (toSel)   toSel.innerHTML   = '<option value="">Select...</option>' + opts;
+  }).catch(function () {});
+
+  loadRelPanel();
+
+  var addToggle = document.getElementById('rp-btn-add-toggle');
+  var addForm   = document.getElementById('rp-add-form');
+  var saveBtn   = document.getElementById('rp-btn-save');
+  var cancelBtn = document.getElementById('rp-btn-cancel');
+
+  if (addToggle && addForm) {
+    addToggle.onclick = function () {
+      addForm.style.display = addForm.style.display === 'none' ? '' : 'none';
+    };
+  }
+  if (cancelBtn && addForm) {
+    cancelBtn.onclick = function () { addForm.style.display = 'none'; };
+  }
+  if (saveBtn) {
+    saveBtn.onclick = function () {
+      var fromId = Number(document.getElementById('rp-from').value);
+      var toId   = Number(document.getElementById('rp-to').value);
+      var type   = document.getElementById('rp-type').value;
+      var desc   = document.getElementById('rp-desc').value.trim();
+      if (!fromId || !toId) { showToast('Select both characters.', 'error'); return; }
+      if (fromId === toId)  { showToast('A character cannot relate to themselves.', 'error'); return; }
+      setLoading(saveBtn, true, 'Saving...');
+      API.createRelationship({ from_character_id: fromId, to_character_id: toId, relationship_type: type, description: desc })
+        .then(function () {
+          showToast('Relationship saved.', 'success');
+          if (addForm) addForm.style.display = 'none';
+          document.getElementById('rp-desc').value = '';
+          loadRelPanel();
+        })
+        .catch(function (e) { showToast(e.message || 'Save failed.', 'error'); })
+        .finally(function () {
+          var b = document.getElementById('rp-btn-save');
+          if (b) setLoading(b, false);
+        });
+    };
+  }
 }

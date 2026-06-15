@@ -95,11 +95,17 @@
     /* Background generation — still scenario-scoped */
     generateLocationBackground: function (sid, locId) { return request('POST', '/api/scenarios/' + sid + '/locations/' + locId + '/generate-background'); },
 
-    /* Character Relationships — scenario-scoped */
-    getRelationships:   function (sid)         { return request('GET',    '/api/scenarios/' + sid + '/relationships'); },
-    createRelationship: function (sid, data)   { return request('POST',   '/api/scenarios/' + sid + '/relationships', data); },
-    updateRelationship: function (sid, id, d)  { return request('PUT',    '/api/scenarios/' + sid + '/relationships/' + id, d); },
-    deleteRelationship: function (sid, id)     { return request('DELETE', '/api/scenarios/' + sid + '/relationships/' + id); },
+    /* Character Relationships — global */
+    getRelationshipTypes:    function ()       { return request('GET',    '/api/relationships/types'); },
+    getRelationships:        function ()       { return request('GET',    '/api/relationships'); },
+    createRelationship:      function (data)   { return request('POST',   '/api/relationships', data); },
+    updateRelationship:      function (id, d)  { return request('PUT',    '/api/relationships/' + id, d); },
+    deleteRelationship:      function (id)     { return request('DELETE', '/api/relationships/' + id); },
+
+    /* Character bonds (per-character view of global relationships) */
+    getCharacterBonds:   function (charId)       { return request('GET',    '/api/characters/' + charId + '/relationships'); },
+    createCharacterBond: function (charId, data) { return request('POST',   '/api/relationships', Object.assign({ from_character_id: charId }, data)); },
+    deleteCharacterBond: function (charId, id)   { return request('DELETE', '/api/relationships/' + id); },
 
     /* Turns — scenario-scoped */
     getTurns:   function (sid)                { return request('GET',    '/api/scenarios/' + sid + '/turns'); },

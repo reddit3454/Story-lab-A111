@@ -194,9 +194,10 @@ export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
     FROM character_relationships cr
     JOIN characters cf ON cf.id = cr.from_character_id
     JOIN characters ct ON ct.id = cr.to_character_id
-    WHERE cr.scenario_id = ?
+    JOIN scenario_characters sc1 ON sc1.character_id = cr.from_character_id AND sc1.scenario_id = ?
+    JOIN scenario_characters sc2 ON sc2.character_id = cr.to_character_id   AND sc2.scenario_id = ?
     ORDER BY cf.name
-  `).all(scenario.id);
+  `).all(scenario.id, scenario.id);
   const lastTurn     = db.prepare(
     'SELECT scene_card_json FROM turns WHERE scenario_id = ? ORDER BY turn_number DESC LIMIT 1'
   ).get(scenario.id);

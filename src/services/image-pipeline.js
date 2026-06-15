@@ -111,6 +111,21 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
       location = db.prepare('SELECT * FROM locations WHERE id = ?').get(opts.locationId);
     }
 
+    // When no specific turn is targeted (Scene button, character cards), or the turn's
+    // scene card has no image_prompt, fall back to the latest narrator turn so the
+    // generated image always reflects the current story beat rather than just char appearances.
+    if (!isBackground && (!sceneCard || !sceneCard.image_prompt)) {
+      const latestNarTurn = db.prepare(
+        `SELECT * FROM turns WHERE scenario_id = ? AND role = 'narrator' ORDER BY turn_number DESC LIMIT 1`
+      ).get(scenarioId);
+      if (latestNarTurn?.scene_card_json) {
+        try { sceneCard = JSON.parse(latestNarTurn.scene_card_json); } catch (_) {}
+      }
+      if (latestNarTurn?.location_id && !location) {
+        location = db.prepare('SELECT * FROM locations WHERE id = ?').get(latestNarTurn.location_id);
+      }
+    }
+
     characters = db.prepare(`
       SELECT c.* FROM characters c
       JOIN scenario_characters sc ON c.id = sc.character_id
@@ -197,7 +212,8 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
       throw new Error('Image file missing after generation: ' + savePath);
     }
 
-    const filename = path.basename(savePath);
+    const basename = path.basename(savePath);
+    const filename = isBackground ? basename : `${scenarioId}/${basename}`;
 
     audit({ pipeline_run_id: runId, service: 'image-pipeline', stage: 'file_verify',
             status: 'success', message: `file verified: ${filename}`,

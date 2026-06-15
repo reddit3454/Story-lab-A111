@@ -703,3 +703,106 @@ src/routes/prompt-lab.js
 - [ ] At least one SDXL checkpoint visible in A1111 (realcartoonXL_v7 recommended first)
 - [ ] Ollama running at http://localhost:11434 with narrator model loaded
 - [ ] node --version >= 22.5.0
+
+---
+
+## Implementation Log — Post-Design Changes
+
+Changes that deviate from or extend the original design spec, recorded in session order.
+
+---
+
+### 2026-06-12 — WebSocket path fix
+**File:** `public/js/views/play.js`
+
+Server creates `WebSocketServer({ server, path: '/ws' })` so the client must connect to
+`ws://host/ws`, not bare `ws://host`. Fixed client to use:
+```js
+_ws = new WebSocket('ws://' + location.host + '/ws');
+```
+Images now arrive live and the status pill clears correctly.
+
+---
+
+### 2026-06-12 — ControlNet mediapipe reinstall loop
+**File:** `K:\stable-diffusion-webui\extensions\sd-webui-controlnet\requirements.txt`
+
+ControlNet pinned `mediapipe==0.10.9`; A1111's venv required `>=0.10.13`. Every startup
+it downgraded then upgraded. Fixed by relaxing the pin to `mediapipe>=0.10.9`.
+
+---
+
+### 2026-06-12 — Global character relationships
+**New file:** `src/routes/global-relationships.js`
+**Modified:** `src/db.js`, `src/routes/characters.js`, `src/server.js`,
+             `src/services/narrator.js`, `public/js/api.js`,
+             `public/js/views/characters.js`, `public/js/views/play.js`
+
+Relationships moved from scenario-scoped to global (same pattern as characters/locations).
+
+- `character_relationships.scenario_id` repurposed as sentinel `0` (global) — SQLite cannot
+  easily drop NOT NULL, so 0 is the global marker.
+- `CREATE UNIQUE INDEX idx_char_rel_global ON character_relationships(from_char, to_char)` —
+  enforces one relationship per pair globally.
+- DB migration on startup: deduplicates existing pairs (keep MAX id), sets all scenario_id = 0.
+- New route: `GET|POST|PUT|DELETE /api/relationships` (global CRUD).
+- Per-character bonds view: `GET /api/characters/:id/relationships`.
+- Narrator filters relationships by joining via `scenario_characters` (both sides) instead of
+  `WHERE scenario_id = ?`.
+
+Relationship types (13 total):
+`friend, romantic partner, rival, enemy, colleague, mentor, student,
+cousin, mother, father, brother, sister, neighbor`
+
+---
+
+### 2026-06-13 — Scene images: path storage fix + historical image display on reload
+**Modified:** `src/services/image-pipeline.js`, `src/db.js`, `src/routes/turns.js`
+
+**Root cause:** `image-pipeline.js` stored only `path.basename(savePath)` in
+`scene_images.filename`. Files saved to `IMAGES_DIR/{scenarioId}/{basename}.png`, so
+`imageSrc(basename)` produced a 404 (`{scenarioId}/` prefix missing).
+
+**Fixes:**
+1. `image-pipeline.js` — filename stored as `${scenarioId}/${basename}` for scene images
+   (background mode keeps bare basename — caller uses `savePath` directly).
+2. `db.js` — one-time migration:
+   `UPDATE scene_images SET filename = CAST(scenario_id AS TEXT) || '/' || filename WHERE instr(filename, '/') = 0`
+3. `src/routes/turns.js GET /` — enriches turn rows with latest `scene_images` data via
+   a prepared-statement loop (correlated SELECT per turn). Returns `image_id`,
+   `image_filename`, `image_visual_prompt`, `user_rating`, `image_accepted` alongside each
+   turn — so historical images load on page reload, not only in the current WS session.
+
+---
+
+### 2026-06-13 — Portrait panel: show character reference images
+**Modified:** `public/js/views/play.js` (line ~610 in `loadPortraitPanel`)
+
+`var imgSrc = ''` was never populated. Fixed to:
+```js
+var imgSrc = c.reference_image_path ? imageSrc(c.reference_image_path) : '';
+```
+Character cards now show the accepted reference image with initial-letter fallback.
+The "SCENE" card is unchanged.
+
+---
+
+### 2026-06-15 — Image generation: scene-card fallback + scene-image-history layout fix
+**Modified:** `src/services/image-pipeline.js`, `public/js/views/play.js`
+
+**Issue 1 — wrong/irrelevant image content:**
+When no `turnId` is supplied (Scene button, character portrait cards with no narrator history),
+`sceneCard` was null and the prompt was built purely from character appearance prompts +
+config prefix/suffix, producing unrelated imagery. Fix: if `sceneCard` is null or has an
+empty `image_prompt`, the pipeline now queries for the latest narrator turn for the scenario
+and uses its scene card. Every generation now anchors to the current story beat.
+
+**Issue 2 — full-screen blocking image, cannot be removed:**
+`_populateSceneImageHistory` called `displayImage()` for every historical turn that had
+an image. `#scene-image-history` sits in the flex column between the story thread and the
+input area — it's not a sidebar. With images inside it, the div consumed most of the flex
+space, leaving only a thin sliver of thread visible and no way to dismiss the images.
+
+Fix: `_populateSceneImageHistory` now only builds `state._sceneImageCache` without calling
+`displayImage`. Images are already shown inline in the thread (via `buildTurnImageHtml` in
+the `handleImageReady` WS handler), so the `#scene-image-history` section stays empty.

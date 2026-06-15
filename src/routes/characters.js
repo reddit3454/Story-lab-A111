@@ -503,4 +503,18 @@ router.post('/:id/fullbody/:fbId/use-as-ref', function (req, res) {
   res.json({ ok: true, character: char });
 });
 
+router.get('/:id/relationships', function (req, res) {
+  const rows = db.prepare(`
+    SELECT cr.*,
+      cf.name AS from_name,
+      ct.name AS to_name
+    FROM character_relationships cr
+    JOIN characters cf ON cf.id = cr.from_character_id
+    JOIN characters ct ON ct.id = cr.to_character_id
+    WHERE cr.from_character_id = ? OR cr.to_character_id = ?
+    ORDER BY cf.name, ct.name
+  `).all(req.params.id, req.params.id);
+  res.json(rows);
+});
+
 export default router;
