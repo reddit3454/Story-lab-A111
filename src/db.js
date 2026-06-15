@@ -201,9 +201,10 @@ const _defaults = [
   ['lora_enabled',       'true'],
   ['nsfw_enabled',       'false'],
   ['master_negative',    'bad anatomy, bad hands, missing fingers, extra fingers, deformed, ugly, blurry, watermark'],
-  ['narrator_model',     ''],
-  ['narrator_context_turns', '20'],
-  ['narrator_max_tokens',    '1200'],
+  ['narrator_model',          ''],
+  ['narrator_context_turns',  '20'],
+  ['narrator_max_tokens',     '1200'],
+  ['prompt_extractor_model',  ''],
 ];
 
 for (const [key, value] of _defaults) {

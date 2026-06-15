@@ -964,6 +964,16 @@ function wireMasterSettings() {
         '</div>' +
       '</div>' +
 
+      // ---- Prompt Extractor ----
+      '<div style="margin-bottom:24px">' +
+        '<h3 class="imggen-section-head">Prompt Extractor</h3>' +
+        '<div class="form-group">' +
+          '<label class="form-label">Prompt Extractor Model</label>' +
+          '<input class="form-input" id="ms-extractor-model" type="text" value="' + escapeHtml(v('prompt_extractor_model', '')) + '" placeholder="e.g. llama3 — falls back to narrator model if blank">' +
+          '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Reads each story paragraph and writes the Stable Diffusion image prompt. Use a small fast uncensored model (e.g. llama3, mistral, qwen2). Must be pulled in Ollama.</p>' +
+        '</div>' +
+      '</div>' +
+
       // ---- Save bar ----
       '<div style="display:flex;align-items:center;gap:12px;padding-top:8px;border-top:1px solid var(--border)">' +
         '<button class="btn btn-primary" id="ms-save-btn">Save Settings</button>' +
@@ -1090,9 +1100,10 @@ function wireMasterSettings() {
           hr_steps:            tv('ms-hr-steps') || '20',
           hr_denoising:        tv('ms-hr-denoising') || '0.4',
           hr_upscaler:         (tv('ms-hr-upscaler') || '').trim() || '4x-UltraSharp',
-          ad_enabled:          adOn ? 'true' : 'false',
-          ad_model:            (tv('ms-ad-model') || '').trim() || 'face_yolov8n.pt',
-          ad_strength:         tv('ms-ad-strength') || '0.4',
+          ad_enabled:             adOn ? 'true' : 'false',
+          ad_model:               (tv('ms-ad-model') || '').trim() || 'face_yolov8n.pt',
+          ad_strength:            tv('ms-ad-strength') || '0.4',
+          prompt_extractor_model: (tv('ms-extractor-model') || '').trim(),
         };
         saveBtn.disabled = true;
         if (statusEl) statusEl.textContent = 'Saving...';

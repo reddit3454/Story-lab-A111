@@ -3,6 +3,8 @@ import db from '../db.js';
 import * as narrator from '../services/narrator.js';
 import * as memory from '../services/memory.js';
 import broadcast from '../broadcast.js';
+import { extractImagePrompt } from '../services/prompt-extractor.js';
+import { resolveMasterConfig } from '../services/config-resolver.js';
 
 const router = Router({ mergeParams: true });
 
@@ -102,6 +104,29 @@ router.post('/', async function (req, res) {
       result.token_estimate,
     );
     const narratorTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(narratorIns.lastInsertRowid);
+
+    // Extract image prompt via dedicated model
+    try {
+      const characters = db.prepare(`
+        SELECT c.* FROM characters c
+        JOIN scenario_characters sc ON c.id = sc.character_id
+        WHERE sc.scenario_id = ?
+      `).all(scenarioId);
+      const config = resolveMasterConfig(db);
+      const extractedPrompt = await extractImagePrompt({
+        storyText: result.story_text,
+        characters,
+        config,
+      });
+      if (extractedPrompt) {
+        const updatedCard = Object.assign({}, result.scene_card, { image_prompt: extractedPrompt });
+        db.prepare('UPDATE turns SET scene_card_json = ? WHERE id = ?')
+          .run(JSON.stringify(updatedCard), narratorIns.lastInsertRowid);
+        result.scene_card.image_prompt = extractedPrompt;
+      }
+    } catch (err) {
+      console.error('[prompt-extractor] non-fatal:', err.message);
+    }
 
     // Apply clothing changes declared in scene card
     const clothingChanges = result.scene_card?.clothing_changes;
