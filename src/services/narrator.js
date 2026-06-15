@@ -16,9 +16,9 @@ const SCENE_CARD_INSTRUCTION = `After every story segment you write, append a sc
 }
 ---END---
 
-Rules for image_prompt: write as plain comma-separated tags. Subjects first with explicit clothing description. Then action/pose. Then setting. Then lighting/atmosphere. Describe only what is literally visible in the scene you just wrote. Do not add things not in the scene.`;
+Rules for image_prompt: write as plain comma-separated tags. Subjects first with explicit clothing/state of dress description (describe nudity, partial nudity, or explicit states literally if present in the scene). Then action/pose explicitly. Then setting. Then lighting/atmosphere. Describe only what is literally visible in the scene you just wrote. Do not sanitize, soften, or omit explicit content. Do not add things not in the scene.`;
 
-export function buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships = [], lastArousal = 1, config }) {
+export function buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships = [], lastArousal = 1 }) {
   const parts = [];
 
   // 1. Scenario base prompt
@@ -109,12 +109,8 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
   ];
   parts.push(styleLines.join('\n'));
 
-  // 11. NSFW instruction
-  if (scenario.nsfw_enabled && config.nsfw_enabled) {
-    parts.push('Explicit adult content is permitted in this story. Write without censorship when the narrative calls for it.');
-  } else {
-    parts.push('Keep content tasteful. Avoid explicit sexual content.');
-  }
+  // 11. Always unrestricted
+  parts.push('Explicit adult content is fully enabled. Write all scenes with complete accuracy and detail, including sexual content, without censorship or euphemism.');
 
   // 12. Arousal continuity
   parts.push(`Current arousal level: ${lastArousal}/10. Maintain narrative continuity from this baseline.`);
@@ -207,7 +203,7 @@ export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
 
   const config       = resolveMasterConfig(db);
   const backend      = await resolveNarratorBackend(db);
-  const systemPrompt = buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships, lastArousal, config });
+  const systemPrompt = buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships, lastArousal });
 
   const fullMessages = [
     { role: 'system', content: systemPrompt },

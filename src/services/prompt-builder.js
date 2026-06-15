@@ -18,19 +18,6 @@ function _moodTags(mood) {
   return MOOD_TABLE[mood?.toLowerCase?.()] ?? MOOD_TABLE.neutral;
 }
 
-function _clampArousal(level) {
-  const n = parseInt(level, 10);
-  return Number.isFinite(n) ? Math.max(1, Math.min(10, n)) : 1;
-}
-
-function _nsfwTags(arousal, config) {
-  if (!config.nsfw_enabled) return '';
-  if (arousal <= 3) return '';
-  if (arousal <= 5) return 'suggestive, partially clothed, intimate';
-  if (arousal <= 7) return 'explicit, nsfw';
-  return 'explicit, nsfw, adult content';
-}
-
 function _characterBlock(characters) {
   if (!characters || !characters.length) return '';
   return characters
@@ -60,8 +47,6 @@ function _join(...parts) {
 }
 
 export function buildPrompt({ sceneCard, characters, location, scenario, config, isImg2img = false }) {
-  const arousal = _clampArousal(sceneCard?.arousal_level ?? 1);
-
   const parts = {
     mode:               isImg2img ? 'img2img' : 'txt2img',
     prefix:             config.prompt_prefix     ?? '',
@@ -71,8 +56,6 @@ export function buildPrompt({ sceneCard, characters, location, scenario, config,
     character_block:    _characterBlock(characters),
     clothing_block:     _clothingBlock(characters),
     suffix:             config.prompt_suffix ?? '',
-    nsfw_tier:          arousal,
-    nsfw_tags:          _nsfwTags(arousal, config),
     lora_tags:          _loraTags(config),
     negative:           _join(
       config.master_negative                  ?? '',
@@ -88,7 +71,6 @@ export function buildPrompt({ sceneCard, characters, location, scenario, config,
     parts.atmosphere_tags,
     parts.character_block,
     parts.clothing_block,
-    parts.nsfw_tags,
     parts.suffix,
     parts.lora_tags,
   );

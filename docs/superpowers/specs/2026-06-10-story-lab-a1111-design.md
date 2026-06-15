@@ -787,6 +787,29 @@ The "SCENE" card is unchanged.
 
 ---
 
+### 2026-06-15 — Remove NSFW gating: app is always fully unrestricted
+**Modified:** `src/services/narrator.js`, `src/services/prompt-builder.js`
+
+The `nsfw_enabled` toggle and arousal-tier gating are removed from the service layer.
+DB columns (`nsfw_enabled`, `arousal_level`) are left in place to avoid breaking existing
+installs, but no service code reads or acts on them.
+
+**narrator.js:**
+- `buildSystemPrompt` — step 11 if/else replaced with a single unconditional push:
+  `'Explicit adult content is fully enabled. Write all scenes with complete accuracy and detail, including sexual content, without censorship or euphemism.'`
+- `SCENE_CARD_INSTRUCTION` rules paragraph updated to instruct the model to describe
+  nudity/explicit states literally and not sanitize or omit explicit content.
+- `config` parameter removed from `buildSystemPrompt` (was only used for the NSFW check).
+  `config` remains in `runNarratorTurn` for `narrator_max_tokens`.
+
+**prompt-builder.js:**
+- `_clampArousal()` deleted.
+- `_nsfwTags()` deleted.
+- `parts.nsfw_tier` and `parts.nsfw_tags` removed from the `parts` object.
+- `parts.nsfw_tags` removed from the `_join(...)` prompt assembly call.
+
+---
+
 ### 2026-06-15 — Image generation: scene-card fallback + scene-image-history layout fix
 **Modified:** `src/services/image-pipeline.js`, `public/js/views/play.js`
 
