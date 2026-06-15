@@ -884,12 +884,19 @@ function wireMasterSettings() {
       // ---- Active Model ----
       '<div style="margin-bottom:24px">' +
         '<h3 class="imggen-section-head">Model</h3>' +
-        '<div style="display:flex;gap:10px;align-items:center">' +
+        '<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">' +
           '<div style="flex:1">' +
             '<div class="form-label" style="margin-bottom:4px">Active Checkpoint</div>' +
-            '<div id="ms-model-display" style="font-size:14px;font-weight:500;color:var(--text)">' + escapeHtml(v('a1111_model','(loading...)')) + '</div>' +
+            '<div id="ms-model-display" style="font-size:14px;font-weight:500;color:var(--text)">' + escapeHtml(v('a1111_model','(none)')) + '</div>' +
           '</div>' +
           '<button class="btn btn-secondary btn-sm" id="ms-change-model">Change Model</button>' +
+        '</div>' +
+        '<div id="ms-model-picker-wrap" style="display:none;margin-top:6px">' +
+          '<select class="form-input" id="ms-model-select" style="width:100%;margin-bottom:8px"><option>Loading...</option></select>' +
+          '<div style="display:flex;gap:8px">' +
+            '<button class="btn btn-primary btn-sm" id="ms-model-set-btn">Set Model</button>' +
+            '<button class="btn btn-ghost btn-sm" id="ms-model-cancel-btn">Cancel</button>' +
+          '</div>' +
         '</div>' +
       '</div>' +
 
@@ -997,25 +1004,69 @@ function wireMasterSettings() {
           .catch(function () { if (connStatus) connStatus.textContent = 'Offline'; });
       };
     }
-    // Change Model button
-    var changeModelBtn = g('ms-change-model');
-    if (changeModelBtn) {
+    // Change Model — inline dropdown picker
+    var changeModelBtn   = g('ms-change-model');
+    var modelPickerWrap  = g('ms-model-picker-wrap');
+    var modelSelect      = g('ms-model-select');
+    var modelSetBtn      = g('ms-model-set-btn');
+    var modelCancelBtn   = g('ms-model-cancel-btn');
+
+    function _closeModelPicker() {
+      if (modelPickerWrap) modelPickerWrap.style.display = 'none';
+      if (changeModelBtn)  changeModelBtn.textContent = 'Change Model';
+    }
+
+    if (changeModelBtn && modelPickerWrap) {
       changeModelBtn.onclick = function () {
-        var display = g('ms-model-display');
+        if (modelPickerWrap.style.display !== 'none') { _closeModelPicker(); return; }
+        if (modelSelect) modelSelect.innerHTML = '<option>Loading...</option>';
+        modelPickerWrap.style.display = '';
+        changeModelBtn.textContent = 'Cancel';
         API.getA1111Models()
           .then(function (data) {
-            var raw = Array.isArray(data) ? data : (data.models || []);
+            var raw    = Array.isArray(data) ? data : (data.models || []);
             var models = raw.map(function (m) { return m.title || m.model_name || m; });
-            if (!models.length) { showToast('No models returned from A1111.'); return; }
-            var selected = prompt('Enter model name:\n\n' + models.join('\n'));
-            if (!selected || !selected.trim()) return;
-            return API.setA1111Model(selected.trim()).then(function () {
-              if (display) display.textContent = selected.trim();
-              showToast('Model changed to ' + selected.trim(), 'success');
-            });
+            if (!models.length) {
+              showToast('No models returned from A1111. Is it running?', 'error');
+              _closeModelPicker();
+              return;
+            }
+            if (modelSelect) {
+              modelSelect.innerHTML = models.map(function (m) {
+                return '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>';
+              }).join('');
+              var cur = (g('ms-model-display') || {}).textContent || '';
+              if (cur) modelSelect.value = cur;
+            }
           })
-          .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
+          .catch(function (e) { showToast('Failed to load models: ' + e.message, 'error'); _closeModelPicker(); });
       };
+    }
+
+    if (modelSetBtn) {
+      modelSetBtn.onclick = function () {
+        var sel = g('ms-model-select');
+        var selected = sel ? sel.value.trim() : '';
+        if (!selected || selected === 'Loading...') return;
+        modelSetBtn.disabled = true;
+        modelSetBtn.textContent = 'Switching...';
+        API.setA1111Model(selected)
+          .then(function () {
+            var display = g('ms-model-display');
+            if (display) display.textContent = selected;
+            showToast('Model changed to ' + selected, 'success');
+            _closeModelPicker();
+          })
+          .catch(function (err) { showToast('Failed: ' + err.message, 'error'); })
+          .finally(function () {
+            var b = g('ms-model-set-btn');
+            if (b) { b.disabled = false; b.textContent = 'Set Model'; }
+          });
+      };
+    }
+
+    if (modelCancelBtn) {
+      modelCancelBtn.onclick = _closeModelPicker;
     }
     // Save
     var saveBtn  = g('ms-save-btn');
