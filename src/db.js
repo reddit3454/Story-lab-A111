@@ -330,4 +330,75 @@ try {
   db.exec("INSERT OR IGNORE INTO scenario_locations (scenario_id, location_id) SELECT scenario_id, id FROM locations WHERE scenario_id IS NOT NULL");
 } catch (_) {}
 
+// DB-driven location backgrounds table
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS location_backgrounds (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      filename    TEXT NOT NULL,
+      is_default  INTEGER DEFAULT 0,
+      created_at  TEXT DEFAULT (datetime('now')),
+      UNIQUE(location_id, filename)
+    )
+  `);
+} catch (_) {}
+
+// Unique index on locations.name so INSERT OR IGNORE can seed by name idempotently
+try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_name ON locations(name)"); } catch (_) {}
+
+// Seed 8 known locations (INSERT OR IGNORE skips existing by name)
+try {
+  db.exec(`
+    INSERT OR IGNORE INTO locations (name, background_folder) VALUES
+      ('Campsite',           'Campsite'),
+      ('Car',                'Car'),
+      ('Sarah''s Apartment', 'Jib_Sarah_Apartment'),
+      ('Motel',              'Motel'),
+      ('Park at Night',      'Park_night'),
+      ('Sarah''s Room',      'Sarahs_room'),
+      ('Bathroom',           'Bathroom'),
+      ('Beach',              'Beach')
+  `);
+} catch (_) {}
+
+// Backfill background_folder on any pre-existing location rows that matched by name but have empty folder
+try {
+  db.exec(`
+    UPDATE locations SET background_folder = 'Campsite'            WHERE name = 'Campsite'           AND (background_folder IS NULL OR background_folder = '');
+    UPDATE locations SET background_folder = 'Car'                 WHERE name = 'Car'                AND (background_folder IS NULL OR background_folder = '');
+    UPDATE locations SET background_folder = 'Jib_Sarah_Apartment' WHERE name = 'Sarah''s Apartment' AND (background_folder IS NULL OR background_folder = '');
+    UPDATE locations SET background_folder = 'Motel'               WHERE name = 'Motel'              AND (background_folder IS NULL OR background_folder = '');
+    UPDATE locations SET background_folder = 'Park_night'          WHERE name = 'Park at Night'      AND (background_folder IS NULL OR background_folder = '');
+    UPDATE locations SET background_folder = 'Sarahs_room'         WHERE name = 'Sarah''s Room'      AND (background_folder IS NULL OR background_folder = '');
+    UPDATE locations SET background_folder = 'Bathroom'            WHERE name = 'Bathroom'           AND (background_folder IS NULL OR background_folder = '');
+    UPDATE locations SET background_folder = 'Beach'               WHERE name = 'Beach'              AND (background_folder IS NULL OR background_folder = '')
+  `);
+} catch (_) {}
+
+// Seed location_backgrounds using subquery to look up location id by name
+try {
+  db.exec(`
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00026_.png', 1 FROM locations WHERE name = 'Campsite';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00028_.png', 0 FROM locations WHERE name = 'Campsite';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00044_.png', 1 FROM locations WHERE name = 'Car';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00045_.png', 0 FROM locations WHERE name = 'Car';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00023_.png', 1 FROM locations WHERE name = 'Sarah''s Apartment';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00025_.png', 0 FROM locations WHERE name = 'Sarah''s Apartment';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00048_.png', 1 FROM locations WHERE name = 'Motel';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00020_.png', 1 FROM locations WHERE name = 'Park at Night';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00021_.png', 0 FROM locations WHERE name = 'Park at Night';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00022_.png', 0 FROM locations WHERE name = 'Park at Night';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00001_.png', 1 FROM locations WHERE name = 'Sarah''s Room';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00003_.png', 0 FROM locations WHERE name = 'Sarah''s Room';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00006_.png', 0 FROM locations WHERE name = 'Sarah''s Room';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00038_.png', 1 FROM locations WHERE name = 'Bathroom';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00039_.png', 0 FROM locations WHERE name = 'Bathroom';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00040_.png', 0 FROM locations WHERE name = 'Bathroom';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00013_.png', 1 FROM locations WHERE name = 'Beach';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00017_.png', 0 FROM locations WHERE name = 'Beach';
+    INSERT OR IGNORE INTO location_backgrounds (location_id, filename, is_default) SELECT id, 'ComfyUI_temp_akhfb_00018_.png', 0 FROM locations WHERE name = 'Beach'
+  `);
+} catch (_) {}
+
 export default db;

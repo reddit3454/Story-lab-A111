@@ -1,11 +1,16 @@
 import { state } from './state.js';
-import { openLightbox, closeLightbox, startStatusPolling } from './ui.js';
+import { openLightbox, closeLightbox, startStatusPolling, showToast, showConfirm, setLoading } from './ui.js';
 import { initDashboard } from './views/dashboard.js';
 import { initCharacters } from './views/characters.js';
 import { initScenarioSetup } from './views/scenario-setup.js';
 import { initPlay } from './views/play.js';
 import { connectWs } from './views/play.js';
 import { initSettings } from './views/settings.js';
+
+// Expose UI helpers so non-module scripts (locations-init.js, styles-init.js) can use them
+window.showToast   = showToast;
+window.showConfirm = showConfirm;
+window.setLoading  = setLoading;
 
 export function router() {
   state.cleanupFns.forEach(function (fn) { try { fn(); } catch (e) {} });
@@ -26,6 +31,7 @@ export function router() {
   else if (view === 'scenario-setup') { activate('view-scenario-setup'); initScenarioSetup(params.get('id')); }
   else if (view === 'play')           { activate('view-play');           initPlay(params.get('scenario')); }
   else if (view === 'settings')       { activate('view-settings');       initSettings(); }
+  else if (view === 'locations')      { activate('view-locations');      if (typeof window.initLocations === 'function') window.initLocations(); }
   else    { location.hash = '#dashboard'; }
 }
 

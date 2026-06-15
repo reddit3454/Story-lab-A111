@@ -58,29 +58,18 @@ function _buildA1111Payload(config, prompt, negative) {
 
 function _resolveBackground(location) {
   if (!location) return null;
-
   const folder = location.background_folder || '';
   if (!folder) return null;
 
-  const folderPath = path.join(BACKGROUNDS_DIR, folder);
+  const rows = db.prepare(
+    'SELECT filename, is_default FROM location_backgrounds WHERE location_id = ?'
+  ).all(location.id);
+  if (!rows.length) return null;
 
-  // Prefer pinned default_background if it exists on disk
-  const defaultFile = location.default_background || '';
-  if (defaultFile) {
-    const defaultPath = path.join(folderPath, defaultFile);
-    if (fs.existsSync(defaultPath)) return defaultPath;
-  }
-
-  // Otherwise list folder and pick at random
-  if (!fs.existsSync(folderPath)) return null;
-  let files;
-  try {
-    files = fs.readdirSync(folderPath).filter(f => IMAGE_EXT.test(f));
-  } catch (_) {
-    return null;
-  }
-  if (!files.length) return null;
-  return path.join(folderPath, files[Math.floor(Math.random() * files.length)]);
+  // Prefer the row marked is_default; fall back to a random pick
+  const defaultRow = rows.find(r => r.is_default === 1);
+  const chosen = defaultRow || rows[Math.floor(Math.random() * rows.length)];
+  return path.join(BACKGROUNDS_DIR, folder, chosen.filename);
 }
 
 export async function generate({ mode, scenarioId, turnId = null, characterId = null, opts = {} }) {

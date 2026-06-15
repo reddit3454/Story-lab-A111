@@ -75,22 +75,25 @@
     useFullbodyAsRef:   function (charId, fbId)  { return request('POST',   '/api/characters/' + charId + '/fullbody/' + fbId + '/use-as-ref'); },
 
     /* Locations — global */
-    getLocations:    function ()           { return request('GET',    '/api/locations'); },
-    getLocation:     function (sid, id)    { return request('GET',    '/api/scenarios/' + sid + '/locations/' + id); },
-    createLocation:  function (sid, data)  { return request('POST',   '/api/locations', data); },
-    updateLocation:  function (sid, id, d) { return request('PUT',    '/api/locations/' + id, d); },
-    deleteLocation:  function (sid, id)    { return request('DELETE', '/api/locations/' + id); },
+    getLocations:    function ()       { return request('GET',    '/api/locations'); },
+    getLocation:     function (sid, id){ return request('GET',    '/api/scenarios/' + sid + '/locations/' + id); },
+    createLocation:  function (data)   { return request('POST',   '/api/locations', data); },
+    updateLocation:  function (id, d)  { return request('PUT',    '/api/locations/' + id, d); },
+    deleteLocation:  function (id)     { return request('DELETE', '/api/locations/' + id); },
 
     /* Locations — scenario membership */
     getScenarioLocations:       function (sid)        { return request('GET',    '/api/scenarios/' + sid + '/locations'); },
     addLocationToScenario:      function (sid, locId) { return request('POST',   '/api/scenarios/' + sid + '/locations/' + locId + '/add'); },
     removeLocationFromScenario: function (sid, locId) { return request('DELETE', '/api/scenarios/' + sid + '/locations/' + locId + '/remove'); },
 
-    /* Background routes — still scenario-scoped */
-    getLocationBackgrounds:     function (sid, locId)       { return request('GET',    '/api/scenarios/' + sid + '/locations/' + locId + '/backgrounds'); },
-    generateLocationBackground: function (sid, locId)       { return request('POST',   '/api/scenarios/' + sid + '/locations/' + locId + '/generate-background'); },
-    setDefaultBackground:       function (sid, locId, file) { return request('POST',   '/api/scenarios/' + sid + '/locations/' + locId + '/backgrounds/' + encodeURIComponent(file) + '/set-default'); },
-    deleteBackground:           function (sid, locId, file) { return request('DELETE', '/api/scenarios/' + sid + '/locations/' + locId + '/backgrounds/' + encodeURIComponent(file)); },
+    /* Location backgrounds — global DB-driven */
+    getLocationBackgrounds:       function (locId)           { return request('GET',    '/api/locations/' + locId + '/backgrounds'); },
+    addLocationBackground:        function (locId, filename) { return request('POST',   '/api/locations/' + locId + '/backgrounds', { filename: filename }); },
+    deleteLocationBackground:     function (locId, bgId)     { return request('DELETE', '/api/locations/' + locId + '/backgrounds/' + bgId); },
+    setDefaultLocationBackground: function (locId, bgId)     { return request('POST',   '/api/locations/' + locId + '/backgrounds/' + bgId + '/set-default'); },
+
+    /* Background generation — still scenario-scoped */
+    generateLocationBackground: function (sid, locId) { return request('POST', '/api/scenarios/' + sid + '/locations/' + locId + '/generate-background'); },
 
     /* Character Relationships — scenario-scoped */
     getRelationships:   function (sid)         { return request('GET',    '/api/scenarios/' + sid + '/relationships'); },
