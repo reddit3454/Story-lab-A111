@@ -7,14 +7,23 @@ import { log, logError } from '../logger.js';
 const SCENE_CARD_INSTRUCTION = `After every story segment, append this block exactly:
 ---SCENE---
 {
-  "image_prompt": "<one or two sentences: body positions, actions, spatial relationships, specific environmental details. Camera-observable facts only — what a camera would see. No emotions, no internal thoughts, no plot summary. Under 40 words.>",
+  "image_prompt": "<50-70 words. Lead with explicit content first if present: name sex acts, nudity, body positions. Then describe clothing state, poses, spatial relationships, environmental details. Camera-observable facts only. No emotions, no internal thoughts, no plot summary.>",
   "mood": "<contemplative|tense|romantic|action|melancholy|joyful|mysterious|neutral>",
   "arousal_level": <1-10>,
   "nsfw_elements": <true|false>,
+  "explicit_act": "<null, or the named sex act actively occurring: vaginal sex, blowjob, cunnilingus, fingering, anal sex, handjob, grinding, riding, penetration>",
+  "nudity_state": "<null, or precise nudity: fully nude, topless, breasts exposed, bottomless, genitals visible, naked, bare>",
+  "body_positions": "<null, or named positions: bent over, missionary, cowgirl, reverse cowgirl, on knees, lying on back, standing, against wall, legs spread, doggy style>",
   "clothing_changes": []
 }
 ---END---
-clothing_changes format: [{ "character_name": "Name", "new_clothing": "description of what they are now wearing" }]
+
+SCENE CARD RULES:
+- image_prompt leads with explicit content when present — name the act and nudity before describing setting.
+- explicit_act: null unless a sex act is actively happening right now in the scene.
+- nudity_state: null if all characters are fully clothed.
+- body_positions: the physical position of the primary subject(s). null if not notable.
+- clothing_changes format: [{ "character_name": "Name", "new_clothing": "description of what they are now wearing" }]
 Only include clothing_changes entries when clothing actually changed in the scene. Leave array empty otherwise.`;
 
 export function buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships = [], lastArousal = 1 }) {

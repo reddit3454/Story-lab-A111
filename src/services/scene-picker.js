@@ -53,7 +53,7 @@ function buildPickerPrompt(contextTurns, activeCharacters, recentImageCards, nsf
   const charNames   = activeCharacters.map(c => c.name).filter(Boolean).join(', ');
   const recentBlock = buildRecentImagesBlock(recentImageCards);
 
-  const schema = JSON.stringify({
+  const baseSchema = {
     summary:           'one sentence describing the visual moment',
     mainSubject:       'primary character(s) or subject',
     visibleAction:     'what is physically happening right now',
@@ -61,7 +61,14 @@ function buildPickerPrompt(contextTurns, activeCharacters, recentImageCards, nsf
     shotType:          'close-up | medium | wide | establishing',
     imageabilityScore: 'number 1-10',
     penaltyReason:     'string or null',
-  }, null, 2);
+  };
+  const nsfwSchema = nsfwEnabled ? {
+    bodyPosition:  'exact body position — e.g. bent over, missionary, cowgirl, on knees, standing, lying on back — or null',
+    explicitAct:   'named sex act if actively occurring — e.g. vaginal sex, blowjob, cunnilingus, fingering, anal sex — or null',
+    nudityState:   'precise nudity description — e.g. fully nude, topless, breasts exposed, bottomless, genitals visible — or null if clothed',
+    clothingState: 'precise clothing state — e.g. dress hiked up, shirt removed, panties around ankles, fully clothed, bra unclasped',
+  } : {};
+  const schema = JSON.stringify({ ...baseSchema, ...nsfwSchema }, null, 2);
 
   const lines = [
     'You are selecting the single most visually compelling moment from a story excerpt for image generation.',
@@ -84,6 +91,13 @@ function buildPickerPrompt(contextTurns, activeCharacters, recentImageCards, nsf
 
   if (nsfwEnabled) {
     lines.push(
+      'NSFW FIELD EXTRACTION — for the selected moment, extract these precisely from the story text:',
+      '- bodyPosition: the exact named physical position of the primary subject(s). Use standard terms: bent over, missionary, cowgirl, reverse cowgirl, on knees, lying on back, standing, against wall, legs spread, doggy style, riding.',
+      '- explicitAct: the named sex act only if it is actively occurring right now in the text. Use: vaginal sex, blowjob, cunnilingus, fingering, anal sex, handjob, grinding, riding, penetration. null if no act is happening.',
+      '- nudityState: describe nudity only if present. Use: fully nude, topless, breasts exposed, bottomless, genitals visible, naked, bare. null if clothed.',
+      '- clothingState: describe the clothing precisely as it appears. Include partial removal: dress hiked up, shirt removed, bra unclasped and hanging, panties around ankles, fully clothed.',
+      'Extract ONLY what is explicitly stated in the text. Do not invent or imply.',
+      '',
       'NSFW SCORING BONUSES — this scenario has adult content enabled. Explicit moments score highest:',
       '+6 if the moment contains active penetration, oral sex, or explicit intercourse',
       '+5 if the moment contains full nudity — genitals, breasts, or buttocks fully exposed',

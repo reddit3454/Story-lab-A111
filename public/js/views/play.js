@@ -473,6 +473,27 @@ function setupPlayInteractions(scenarioId) {
     if (cancelBtn) {
       var wrap = cancelBtn.closest('.clothing-state-wrap');
       if (wrap) { _cancelClothingEdit(wrap); e.stopPropagation(); }
+      return;
+    }
+    var resetBtn = e.target.closest && e.target.closest('.clothing-reset-btn');
+    if (resetBtn) {
+      var wrap = resetBtn.closest('.clothing-state-wrap');
+      if (!wrap) return;
+      var charId  = parseInt(wrap.getAttribute('data-char-id'), 10);
+      var baseVal = (wrap.getAttribute('data-base-clothing') || '').trim();
+      if (!charId || !baseVal) return;
+      e.stopPropagation();
+      resetBtn.disabled = true;
+      API.updateCharacterClothing(charId, { current_clothing: baseVal })
+        .then(function () {
+          if (!state.characterStates[charId]) state.characterStates[charId] = {};
+          state.characterStates[charId].current_clothing = baseVal;
+          _restoreClothingWrap(wrap, charId, baseVal);
+        })
+        .catch(function (err) {
+          resetBtn.disabled = false;
+          console.error('clothing reset failed', err);
+        });
     }
   });
 
@@ -596,6 +617,7 @@ function setupPlayInteractions(scenarioId) {
       chars.forEach(function (c) {
         if (!state.characterStates[c.id]) state.characterStates[c.id] = {};
         if (c.current_clothing) state.characterStates[c.id].current_clothing = c.current_clothing;
+        state.characterStates[c.id].base_clothing = c.base_clothing || '';
       });
       states.forEach(function (s) {
         if (!state.characterStates[s.characterId]) state.characterStates[s.characterId] = {};
@@ -2414,6 +2436,7 @@ function renderCastTab(container, scenarioId) {
     chars.forEach(function (c) {
       if (!state.characterStates[c.id]) state.characterStates[c.id] = {};
       if (c.current_clothing) state.characterStates[c.id].current_clothing = c.current_clothing;
+      state.characterStates[c.id].base_clothing = c.base_clothing || '';
     });
 
     var rosterIds = chars.map(function (c) { return c.id; });
@@ -2754,16 +2777,19 @@ function _buildMoodBarsHtml(charId) {
   '</div>';
 }
 
-// Builds a compact clothing line with an inline edit button per NPC card.
+// Builds a compact clothing line with inline edit and reset buttons per NPC card.
 // Returns empty string when no clothing is stored — hidden gracefully.
 function _buildClothingHtml(charId) {
   var cs       = state.characterStates && state.characterStates[charId];
   var clothing = cs && cs.current_clothing ? String(cs.current_clothing).trim() : '';
-  return '<div class="clothing-state-wrap" data-char-id="' + charId + '"' +
+  var base     = cs && cs.base_clothing   ? String(cs.base_clothing).trim()    : '';
+  var canReset = base && clothing && base !== clothing;
+  return '<div class="clothing-state-wrap" data-char-id="' + charId + '" data-base-clothing="' + escapeHtml(base) + '"' +
     (clothing ? '' : ' style="display:none"') + '>' +
     '<span class="clothing-state-text" title="' + (clothing ? 'Current clothing: ' + escapeHtml(clothing) : '') + '">' +
     escapeHtml(clothing) + '</span>' +
     '<button class="clothing-edit-btn" title="Override clothing" type="button">&#9998;</button>' +
+    (canReset ? '<button class="clothing-reset-btn" title="Reset to base outfit" type="button">&#8635;</button>' : '') +
     '</div>';
 }
 
@@ -2833,10 +2859,14 @@ function _cancelClothingEdit(wrap) {
 }
 
 function _restoreClothingWrap(wrap, charId, clothing) {
+  var base     = wrap.getAttribute('data-base-clothing') || '';
+  var canReset = base && clothing && base !== clothing;
+  wrap.setAttribute('data-base-clothing', base);
   wrap.innerHTML =
     '<span class="clothing-state-text" title="' + (clothing ? 'Current clothing: ' + escapeHtml(clothing) : '') + '">' +
     escapeHtml(clothing) + '</span>' +
-    '<button class="clothing-edit-btn" title="Override clothing" type="button">&#9998;</button>';
+    '<button class="clothing-edit-btn" title="Override clothing" type="button">&#9998;</button>' +
+    (canReset ? '<button class="clothing-reset-btn" title="Reset to base outfit" type="button">&#8635;</button>' : '');
   wrap.style.display = clothing ? '' : 'none';
 }
 

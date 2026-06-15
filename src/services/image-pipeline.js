@@ -7,6 +7,7 @@ import { log, logError } from '../logger.js';
 import broadcast from '../broadcast.js';
 import { resolveEffectiveConfig } from './config-resolver.js';
 import { buildPrompt, buildCharacterPrompt } from './prompt-builder.js';
+import { resolveClothing } from './clothing.js';
 import { audit } from './audit.js';
 import * as a1111 from './a1111.js';
 import { pickBestMoment } from './scene-picker.js';
@@ -170,6 +171,20 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
     }
     let bgPath = isBackground ? null : _resolveBackground(location);
     let prompt, negative, parts;
+    // Resolve clothing state for each character from this scene card's clothing_changes.
+    // turns.js already applied these synchronously, but we re-resolve here to build
+    // resolvedClothingMap so buildPrompt gets authoritative per-character strings.
+    const resolvedClothingMap = {};
+    if (!isBackground && mode !== 'character') {
+      for (const char of characters) {
+        const { clothingString, changed, newState } = await resolveClothing(db, char, sceneCard);
+        resolvedClothingMap[char.id] = clothingString;
+        if (changed) {
+          log('image-pipeline', 'clothing_applied', null, `${char.name} clothing updated: ${newState}`);
+        }
+      }
+    }
+
     if (mode === 'character' && characterId) {
       const char = characters.find(c => c.id === characterId) || characters;
       let actionContext = '';
@@ -191,22 +206,43 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
       ({ prompt, negative, parts } = buildPrompt({
         sceneCard, characters, location, scenario, config,
         isImg2img: bgPath != null,
+        resolvedClothingMap,
       }));
     }
 
     // Stage 2b: story_enhancer — advisory only, rewrites prompt if model is configured
     // and output passes validation. Falls back to buildPrompt values silently.
     if (!isBackground && mode !== 'character' && mode !== 'background') {
-      const sceneDescription = pickedMoment
-        ? [
-            pickedMoment.visibleAction,
-            pickedMoment.setting,
-            pickedMoment.shotType ? pickedMoment.shotType + ' shot' : null,
-          ].filter(Boolean).join(', ')
-        : (sceneCard?.image_prompt || prompt);
+      const nsfwOn = config.nsfw_enabled === true;
+
+      // Prefer picker fields; fall back to scene card fields from narrator.
+      // Build sceneDescription with explicit content leading when present.
+      let sceneDescription;
+      if (pickedMoment) {
+        const descParts = [
+          pickedMoment.visibleAction,
+          pickedMoment.bodyPosition  || null,
+          pickedMoment.explicitAct   || null,
+          pickedMoment.nudityState   || null,
+          pickedMoment.clothingState || null,
+          pickedMoment.setting,
+          pickedMoment.shotType ? pickedMoment.shotType + ' shot' : null,
+        ];
+        // Also blend narrator's image_prompt as supplementary context
+        if (sceneCard?.image_prompt) descParts.push(sceneCard.image_prompt);
+        sceneDescription = descParts.filter(Boolean).join(', ');
+      } else {
+        sceneDescription = sceneCard?.image_prompt || prompt;
+      }
+
+      // Extract structured explicit fields for the enhancer (picker preferred, scene card fallback)
+      const explicitAct   = pickedMoment?.explicitAct   || sceneCard?.explicit_act   || null;
+      const nudityState   = pickedMoment?.nudityState   || sceneCard?.nudity_state   || null;
+      const bodyPosition  = pickedMoment?.bodyPosition  || sceneCard?.body_positions || null;
+      const clothingState = pickedMoment?.clothingState || null;
+      const arousalLevel  = sceneCard?.arousal_level ?? 1;
 
       const mainChar = characters.find(c => c.role !== 'player') || characters[0] || null;
-      const nsfwOn   = config.nsfw_enabled === true;
       const enhModel = config.enhancer_model || config.narrator_model || '';
 
       try {
@@ -215,6 +251,11 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
           scene:         sceneDescription,
           physicalTraits: null,
           nsfw:          nsfwOn,
+          arousalLevel,
+          explicitAct,
+          nudityState,
+          bodyPosition,
+          clothingState,
           prefix:        config.prompt_prefix  || null,
           suffix:        config.prompt_suffix  || null,
           nsfwElements:  [],

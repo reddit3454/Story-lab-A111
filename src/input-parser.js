@@ -8,6 +8,9 @@ function defaultSceneCard() {
     mood:                      'neutral',
     arousal_level:             1,
     nsfw_elements:             false,
+    explicit_act:              null,
+    nudity_state:              null,
+    body_positions:            null,
     clothing_changes:          [],
   };
 }
@@ -44,6 +47,12 @@ export function parseNarratorResponse(rawResponse) {
     card.nsfw_elements = parsed.nsfw_elements;
   if (Array.isArray(parsed.clothing_changes))
     card.clothing_changes = parsed.clothing_changes;
+  if (typeof parsed.explicit_act === 'string' && parsed.explicit_act.trim())
+    card.explicit_act = parsed.explicit_act.trim();
+  if (typeof parsed.nudity_state === 'string' && parsed.nudity_state.trim())
+    card.nudity_state = parsed.nudity_state.trim();
+  if (typeof parsed.body_positions === 'string' && parsed.body_positions.trim())
+    card.body_positions = parsed.body_positions.trim();
 
   return { story_text, scene_card: card };
 }

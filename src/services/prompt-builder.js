@@ -14,6 +14,26 @@ const MOOD_TABLE = {
   angry:         'harsh lighting, deep red tones, high contrast',
 };
 
+// Arousal tier tag injection — ALL gated behind config.nsfw_enabled
+// Levels 1-3: SFW always
+// Levels 4-5: mild suggestive (nsfw_enabled required)
+// Levels 6-7: moderate explicit (nsfw_enabled required)
+// Levels 8-10: hardcore explicit (nsfw_enabled + explicit_mode required)
+const AROUSAL_TAGS = {
+  '1-3': [],
+  '4-5': ['partially clothed', 'suggestive pose', 'intimate scene'],
+  '6-7': ['revealing clothing', 'explicit scene', 'nude', 'topless'],
+  '8-10': ['fully nude', 'explicit sexual content', 'hardcore'],
+};
+
+function getArousalTags(level, config) {
+  const l = Math.max(1, Math.min(10, Number(level) || 1));
+  if (l <= 3) return [];
+  if (l <= 5) return config.nsfw_enabled ? AROUSAL_TAGS['4-5'] : [];
+  if (l <= 7) return config.nsfw_enabled ? AROUSAL_TAGS['6-7'] : [];
+  return (config.nsfw_enabled && config.explicit_mode) ? AROUSAL_TAGS['8-10'] : [];
+}
+
 function _moodTags(mood) {
   return MOOD_TABLE[mood?.toLowerCase?.()] ?? MOOD_TABLE.neutral;
 }
@@ -36,10 +56,10 @@ function _characterBlock(characters) {
   }).filter(Boolean).join(', ');
 }
 
-function _clothingBlock(characters) {
+function _clothingBlock(characters, resolvedClothingMap) {
   if (!characters || !characters.length) return '';
   return characters
-    .map(c => c.current_clothing || c.base_clothing || '')
+    .map(c => (resolvedClothingMap && resolvedClothingMap[c.id]) || c.current_clothing || c.base_clothing || '')
     .filter(Boolean)
     .join(', ');
 }
@@ -56,11 +76,15 @@ function _join(...parts) {
   return parts.filter(s => s && s.trim()).join(', ');
 }
 
-export function buildPrompt({ sceneCard, characters, location, scenario, config, isImg2img = false }) {
+export function buildPrompt({ sceneCard, characters, location, scenario, config, isImg2img = false, resolvedClothingMap = {} }) {
   const scene_image_prompt = sceneCard?.image_prompt ?? '';
   const location_tags = (isImg2img || !scene_image_prompt)
     ? (location?.image_tags || '')
     : '';
+
+  const arousalTags  = getArousalTags(sceneCard?.arousal_level ?? 1, config);
+  const arousal_tags = arousalTags.join(', ');
+
   const parts = {
     mode:               isImg2img ? 'img2img' : 'txt2img',
     prefix:             config.prompt_prefix     ?? '',
@@ -68,7 +92,8 @@ export function buildPrompt({ sceneCard, characters, location, scenario, config,
     location_tags,
     atmosphere_tags:    _moodTags(sceneCard?.mood),
     character_block:    _characterBlock(characters),
-    clothing_block:     _clothingBlock(characters),
+    clothing_block:     _clothingBlock(characters, resolvedClothingMap),
+    arousal_tags,
     suffix:             config.prompt_suffix ?? '',
     lora_tags:          _loraTags(config),
     negative:           _join(
@@ -85,6 +110,7 @@ export function buildPrompt({ sceneCard, characters, location, scenario, config,
     parts.atmosphere_tags,
     parts.character_block,
     parts.clothing_block,
+    parts.arousal_tags,
     parts.suffix,
     parts.lora_tags,
   );

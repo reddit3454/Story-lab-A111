@@ -205,6 +205,7 @@ const _defaults = [
   ['narrator_context_turns',  '20'],
   ['narrator_max_tokens',     '1200'],
   ['prompt_extractor_model',  ''],
+  ['explicit_mode',           'false'],
 ];
 
 for (const [key, value] of _defaults) {
@@ -229,11 +230,17 @@ try { db.exec('ALTER TABLE scene_images ADD COLUMN accepted   INTEGER DEFAULT 0'
 try { db.exec('ALTER TABLE scene_images ADD COLUMN user_rating INTEGER DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE scene_images ADD COLUMN model_hash  TEXT DEFAULT \'\''); } catch (_) {}
 try { db.exec('ALTER TABLE scene_images ADD COLUMN loras_json  TEXT DEFAULT \'[]\''); } catch (_) {}
+try { db.exec('ALTER TABLE scene_images ADD COLUMN scene_card_json TEXT DEFAULT NULL'); } catch (_) {}
 
 // audit_events context columns
 try { db.exec('ALTER TABLE audit_events ADD COLUMN scenario_id INTEGER'); } catch (_) {}
 try { db.exec('ALTER TABLE audit_events ADD COLUMN turn_id     INTEGER'); } catch (_) {}
 try { db.exec('ALTER TABLE audit_events ADD COLUMN duration_ms INTEGER'); } catch (_) {}
+
+// turns table missing columns
+try { db.exec("ALTER TABLE turns ADD COLUMN scene_card_json TEXT DEFAULT '{}'"); } catch (_) {}
+try { db.exec("ALTER TABLE turns ADD COLUMN token_estimate INTEGER DEFAULT 0"); } catch (_) {}
+try { db.exec("ALTER TABLE turns ADD COLUMN location_id INTEGER REFERENCES locations(id)"); } catch (_) {}
 
 // scenario extended wizard fields
 try { db.exec("ALTER TABLE scenarios ADD COLUMN tone                        TEXT    DEFAULT 'Dramatic'"); } catch (_) {}

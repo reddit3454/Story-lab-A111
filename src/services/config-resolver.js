@@ -3,7 +3,7 @@ const NUMERIC_KEYS = new Set([
   'hr_steps', 'hr_scale', 'hr_denoising', 'ad_strength',
 ]);
 
-const BOOLEAN_KEYS = new Set(['hr_enabled', 'ad_enabled', 'lora_enabled', 'nsfw_enabled']);
+const BOOLEAN_KEYS = new Set(['hr_enabled', 'ad_enabled', 'lora_enabled', 'nsfw_enabled', 'explicit_mode']);
 
 // Profile cannot override these master constraints
 const STRUCTURAL_KEYS = new Set([
