@@ -7,6 +7,7 @@ import { log, logError } from '../logger.js';
 const SCENE_CARD_INSTRUCTION = `After every story segment, append this block exactly:
 ---SCENE---
 {
+  "image_prompt": "<one or two sentences: body positions, actions, spatial relationships, specific environmental details. Camera-observable facts only — what a camera would see. No emotions, no internal thoughts, no plot summary. Under 40 words.>",
   "mood": "<contemplative|tense|romantic|action|melancholy|joyful|mysterious|neutral>",
   "arousal_level": <1-10>,
   "nsfw_elements": <true|false>,
