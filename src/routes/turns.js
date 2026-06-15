@@ -157,8 +157,9 @@ router.post('/', async function (req, res) {
       });
     }
 
-    broadcast.send('turn_complete', { scenarioId: parseInt(scenarioId, 10), turn: narratorTurn });
-    return res.json({ user_turn: userTurn, narrator_turn: narratorTurn });
+    const finalNarratorTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(narratorIns.lastInsertRowid);
+    broadcast.send('turn_complete', { scenarioId: parseInt(scenarioId, 10), turn: finalNarratorTurn });
+    return res.json({ user_turn: userTurn, narrator_turn: finalNarratorTurn });
   }
 
   // Manual turn injection (any other role)

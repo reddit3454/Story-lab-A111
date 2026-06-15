@@ -61,7 +61,9 @@ export async function extractImagePrompt({ storyText, characters = [], config = 
       },
     });
     const raw = (result.response || '').trim();
-    const cleaned = raw.replace(/^[^,\w]*?([\w\s"'()\-]+,)/i, '$1').trim();
+    const cleaned = raw
+      .replace(/^(here are the (image )?tags[:\s]*|image prompt[:\s]*|tags[:\s]*|prompt[:\s]*)/i, '')
+      .trim();
     log('prompt-extractor', 'result', { tags: cleaned });
     return cleaned || raw;
   } catch (err) {
