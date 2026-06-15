@@ -114,7 +114,7 @@ export function buildCharacterPrompt({ character, actionContext = '', config }) 
     appearance.join(', '),
     clothing,
     action,
-    'solo, single person, not looking at camera',
+    'not looking at camera, averted gaze',
     config.prompt_suffix ?? '',
     _loraTags(config),
   );

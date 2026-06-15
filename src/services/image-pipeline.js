@@ -147,13 +147,15 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
       if (sceneCard?.image_prompt) {
         actionContext = sceneCard.image_prompt;
       } else {
+        const locTags = location?.image_tags || '';
         const locName = (location?.name || '').toLowerCase();
-        if      (locName.includes('bed') || locName.includes('room')) actionContext = 'lying on bed, relaxed';
-        else if (locName.includes('bath'))                            actionContext = 'in bathroom, standing';
-        else if (locName.includes('car'))                             actionContext = 'sitting in car seat';
-        else if (locName.includes('beach'))                           actionContext = 'standing on beach, looking away';
-        else if (locName.includes('park') || locName.includes('outdoor')) actionContext = 'standing outdoors, natural pose';
-        else                                                          actionContext = 'standing, natural candid pose';
+        let poseFallback = 'standing, natural candid pose, not looking at camera';
+        if      (locName.includes('bed') || locName.includes('room')) poseFallback = 'lying on bed, relaxed, not looking at camera';
+        else if (locName.includes('bath'))                            poseFallback = 'standing in bathroom, not looking at camera';
+        else if (locName.includes('car'))                             poseFallback = 'sitting in car seat, looking out window';
+        else if (locName.includes('beach'))                           poseFallback = 'standing on beach, looking at horizon';
+        else if (locName.includes('park') || locName.includes('outdoor')) poseFallback = 'standing outdoors, looking away into distance';
+        actionContext = [poseFallback, locTags].filter(Boolean).join(', ');
       }
       ({ prompt, negative, parts } = buildCharacterPrompt({ character: char, actionContext, config }));
     } else {
@@ -161,6 +163,17 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
         sceneCard, characters, location, scenario, config,
         isImg2img: bgPath != null,
       }));
+    }
+
+    // Inject location environment into txt2img prompts (no background image selected)
+    if (!bgPath && location) {
+      const locEnv = [
+        location.image_tags || '',
+        location.time_of_day && location.time_of_day !== 'any' ? location.time_of_day + ' lighting' : '',
+      ].filter(s => s && s.trim()).join(', ');
+      if (locEnv.trim()) {
+        prompt = prompt ? prompt + ', ' + locEnv : locEnv;
+      }
     }
 
     audit({ pipeline_run_id: runId, service: 'prompt-builder', stage: 'build_prompt',

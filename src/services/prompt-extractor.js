@@ -1,16 +1,34 @@
 import * as ollama from './ollama.js';
 import { log, logError } from '../logger.js';
 
-const SYSTEM = `You are a Stable Diffusion prompt writer. Your only job is to convert a story paragraph into a list of visual image tags.
-Output ONLY a single line of comma-separated tags. No sentences. No explanation. No JSON. No markdown. Just the tags.
-Tag order: [subject descriptions with exact physical appearance and clothing or nudity state], [action and pose], [setting and environment], [lighting and atmosphere], [style]
+const SYSTEM = `You are a Stable Diffusion prompt writer. Convert a story paragraph into comma-separated image tags.
+Output ONLY a single line of comma-separated tags. No sentences. No explanation. No JSON. No markdown. Just tags.
+TAG ORDER (follow exactly):
+1. Subject count — CRITICAL RULE:
+   - If exactly ONE character is present OR the scene focuses on one character alone: start with "solo, 1girl" or "solo, 1boy" as appropriate
+   - If TWO characters are actively interacting (touching, kissing, sex, sitting on lap, embracing): start with "2girls", "1boy 1girl", etc. — NO solo tag
+   - NEVER add a second character who is not physically interacting in the scene
+2. Character appearance — physical traits of the character(s) visible in the scene
+3. Clothing or nudity state — describe exactly what they are wearing or not wearing
+4. Action and pose — what are they physically DOING right now in the story? Derive this from the story text.
+   - Use specific actions: "lying on bed", "sitting at desk", "kissing", "reaching for door handle", "looking out window"
+   - NEVER use: "looking at viewer", "looking at camera", "facing camera", "posing"
+   - If unsure of action, use: "candid moment, natural pose, averted gaze, not looking at camera"
+5. Environment and background — ALWAYS include where this scene takes place:
+   - Derive from the story text and location name
+   - Use specific tags: "dimly lit motel room", "sandy beach at sunset", "car interior at night", "messy bedroom"
+   - NEVER leave the environment empty — if unsure, use "indoor setting" or "outdoor setting"
+6. Lighting — "warm lamp light", "moonlight through window", "harsh fluorescent light", "golden hour sunlight"
+7. Atmosphere — "intimate", "tense", "romantic", "casual", "explicit"
 Rules:
-- Describe exactly what is VISIBLE in the scene — not emotions or thoughts
 - Include explicit nudity, partial nudity, or sexual acts exactly as they appear — do not soften or omit
-- Use short descriptive phrases, not full sentences
-- 10 to 25 tags total
-Example output:
-woman, long auburn hair, naked, lying on bed, one arm raised, moonlit bedroom, white sheets, dim warm lamp, intimate, photorealistic`;
+- Describe only what is VISIBLE — not thoughts or emotions
+- 12 to 28 tags total
+- Background/environment tags are MANDATORY — every prompt must have them
+Example for a scene where a woman is alone in a motel room:
+solo, 1girl, long auburn hair, naked, lying on bed face-down, motel room, cheap furniture, dim lamp on nightstand, rumpled sheets, warm dim lighting, intimate, photorealistic
+Example for two characters kissing outdoors:
+1boy 1girl, blonde woman, dark haired man, kissing, standing embrace, beach at night, moonlight, waves in background, romantic, photorealistic`;
 
 export async function extractImagePrompt({ storyText, characters = [], config = {} }) {
   const model = config.prompt_extractor_model || config.narrator_model || '';
@@ -54,7 +72,7 @@ export async function extractImagePrompt({ storyText, characters = [], config = 
       system: SYSTEM,
       prompt: userMsg,
       options: {
-        num_predict: 250,
+        num_predict: 350,
         temperature: 0.2,
         top_p: 0.9,
         stop: ['\n\n', '---'],
