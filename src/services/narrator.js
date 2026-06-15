@@ -9,7 +9,7 @@ const SCENE_CARD_INSTRUCTION = `After every story segment you write, append a sc
 {
   "image_prompt": "<plain descriptive tags: subjects with clothing, action, setting, lighting>",
   "negative_prompt_additions": "",
-  "mood": "<tense|romantic|happy|sad|fearful|angry|neutral>",
+  "mood": "<contemplative|tense|romantic|action|melancholy|joyful|mysterious|neutral>",
   "arousal_level": <1-10>,
   "nsfw_elements": <true|false>,
   "clothing_changes": []
