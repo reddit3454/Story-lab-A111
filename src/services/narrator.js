@@ -7,7 +7,7 @@ import { log, logError } from '../logger.js';
 const SCENE_CARD_INSTRUCTION = `After every story segment you write, append a scene description block using this exact format:
 ---SCENE---
 {
-  "image_prompt": "<plain descriptive tags: subjects with clothing, action, setting, lighting>",
+  "image_prompt": "REQUIRED. Describe exactly what is visually happening in the scene you just wrote as plain comma-separated Stable Diffusion tags. You MUST fill this in — never leave it blank. Format: subjects with explicit physical description and clothing/nudity state, then action/pose, then setting/environment, then lighting. Example: 'woman, red hair, white blouse unbuttoned, sitting on desk, leaning forward, office interior, warm evening light, bokeh background'. Describe ONLY what is literally visible in the scene. Be specific and detailed.",
   "negative_prompt_additions": "",
   "mood": "<contemplative|tense|romantic|action|melancholy|joyful|mysterious|neutral>",
   "arousal_level": <1-10>,
@@ -16,7 +16,9 @@ const SCENE_CARD_INSTRUCTION = `After every story segment you write, append a sc
 }
 ---END---
 
-Rules for image_prompt: write as plain comma-separated tags. Subjects first with explicit clothing/state of dress description (describe nudity, partial nudity, or explicit states literally if present in the scene). Then action/pose explicitly. Then setting. Then lighting/atmosphere. Describe only what is literally visible in the scene you just wrote. Do not sanitize, soften, or omit explicit content. Do not add things not in the scene.`;
+Rules for image_prompt: write as plain comma-separated tags. Subjects first with explicit clothing/state of dress description (describe nudity, partial nudity, or explicit states literally if present in the scene). Then action/pose explicitly. Then setting. Then lighting/atmosphere. Describe only what is literally visible in the scene you just wrote. Do not sanitize, soften, or omit explicit content. Do not add things not in the scene.
+
+IMPORTANT: image_prompt is the most critical field. It drives the image generator. If you leave it empty, the wrong image will be generated. Always fill it with 10-20 comma-separated visual tags describing the scene you just wrote.`;
 
 export function buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships = [], lastArousal = 1 }) {
   const parts = [];
