@@ -13,6 +13,7 @@ import scenariosRouter  from './routes/scenarios.js';
 import turnsRouter      from './routes/turns.js';
 import charactersRouter         from './routes/characters.js';
 import scenarioCharactersRouter from './routes/scenario-characters.js';
+import globalLocationsRouter from './routes/global-locations.js';
 import locationsRouter  from './routes/locations.js';
 import memoriesRouter   from './routes/memories.js';
 import worldRouter      from './routes/world.js';
@@ -53,6 +54,9 @@ app.use('/api/scenarios', scenariosRouter);
 
 // Global character CRUD
 app.use('/api/characters', charactersRouter);
+
+// Global location CRUD
+app.use('/api/locations', globalLocationsRouter);
 
 // Nested sub-routers (mergeParams: true on each so :scenarioId is accessible)
 app.use('/api/scenarios/:scenarioId/turns',      turnsRouter);

@@ -100,7 +100,12 @@ router.get('/:id', function (req, res) {
     WHERE sc.scenario_id = ?
     ORDER BY c.name
   `).all(req.params.id);
-  const locations    = db.prepare('SELECT * FROM locations WHERE scenario_id = ?').all(req.params.id);
+  const locations    = db.prepare(`
+    SELECT l.* FROM locations l
+    JOIN scenario_locations sl ON l.id = sl.location_id
+    WHERE sl.scenario_id = ?
+    ORDER BY l.name ASC
+  `).all(req.params.id);
   const rules        = db.prepare('SELECT * FROM rules WHERE scenario_id = ? ORDER BY priority DESC').all(req.params.id);
   const world_entries = db.prepare('SELECT * FROM world_entries WHERE scenario_id = ?').all(req.params.id);
 

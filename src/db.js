@@ -310,4 +310,24 @@ try { db.exec("ALTER TABLE characters ADD COLUMN faceid_ref_order     TEXT    DE
 try { db.exec("ALTER TABLE characters ADD COLUMN unique_trait         TEXT    DEFAULT NULL"); } catch (_) {}
 try { db.exec('ALTER TABLE character_fullbodies ADD COLUMN is_default INTEGER DEFAULT 0'); } catch (_) {}
 
+// Global locations: add background_folder column to existing scenario-scoped table
+try { db.exec("ALTER TABLE locations ADD COLUMN background_folder TEXT DEFAULT ''"); } catch (_) {}
+
+// scenario_locations join table (mirrors scenario_characters pattern)
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scenario_locations (
+      scenario_id INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
+      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      added_at    TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (scenario_id, location_id)
+    )
+  `);
+} catch (_) {}
+
+// Populate scenario_locations from legacy locations.scenario_id (one-time migration)
+try {
+  db.exec("INSERT OR IGNORE INTO scenario_locations (scenario_id, location_id) SELECT scenario_id, id FROM locations WHERE scenario_id IS NOT NULL");
+} catch (_) {}
+
 export default db;

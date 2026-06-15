@@ -7,71 +7,46 @@ import * as pipeline from '../services/image-pipeline.js';
 
 const router = Router({ mergeParams: true });
 
+/* ── Scenario membership ──────────────────────────────────────────── */
+
 router.get('/', function (req, res) {
-  res.json(db.prepare('SELECT * FROM locations WHERE scenario_id = ?').all(req.params.scenarioId));
+  const rows = db.prepare(`
+    SELECT l.* FROM locations l
+    JOIN scenario_locations sl ON l.id = sl.location_id
+    WHERE sl.scenario_id = ?
+    ORDER BY l.name ASC
+  `).all(req.params.scenarioId);
+  res.json(rows);
 });
 
-router.post('/', function (req, res) {
-  const { name, description, image_tags, time_of_day, background_folder, default_background } = req.body;
-  if (!name) return res.status(400).json({ error: 'name is required' });
-
-  const result = db.prepare(`
-    INSERT INTO locations (scenario_id, name, description, image_tags, time_of_day, background_folder, default_background)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    req.params.scenarioId, name,
-    description        ?? '',
-    image_tags         ?? '',
-    time_of_day        ?? 'any',
-    background_folder  ?? '',
-    default_background ?? '',
+router.post('/:locationId/add', function (req, res) {
+  const loc = db.prepare('SELECT id FROM locations WHERE id = ?').get(req.params.locationId);
+  if (!loc) return res.status(404).json({ error: 'Location not found' });
+  db.prepare('INSERT OR IGNORE INTO scenario_locations (scenario_id, location_id) VALUES (?, ?)').run(
+    req.params.scenarioId, req.params.locationId
   );
-
-  res.status(201).json(db.prepare('SELECT * FROM locations WHERE id = ?').get(result.lastInsertRowid));
+  res.status(201).json({ ok: true });
 });
 
-router.get('/:id', function (req, res) {
-  const row = db.prepare('SELECT * FROM locations WHERE id = ? AND scenario_id = ?').get(req.params.id, req.params.scenarioId);
-  if (!row) return res.status(404).json({ error: 'Location not found' });
-  res.json(row);
-});
-
-router.put('/:id', function (req, res) {
-  const { name, description, image_tags, time_of_day, background_folder, default_background } = req.body;
-
-  db.prepare(`
-    UPDATE locations SET
-      name               = COALESCE(?, name),
-      description        = COALESCE(?, description),
-      image_tags         = COALESCE(?, image_tags),
-      time_of_day        = COALESCE(?, time_of_day),
-      background_folder  = COALESCE(?, background_folder),
-      default_background = COALESCE(?, default_background)
-    WHERE id = ? AND scenario_id = ?
-  `).run(
-    name               ?? null,
-    description        ?? null,
-    image_tags         ?? null,
-    time_of_day        ?? null,
-    background_folder  ?? null,
-    default_background ?? null,
-    req.params.id, req.params.scenarioId,
+router.delete('/:locationId/remove', function (req, res) {
+  db.prepare('DELETE FROM scenario_locations WHERE scenario_id = ? AND location_id = ?').run(
+    req.params.scenarioId, req.params.locationId
   );
-
-  const row = db.prepare('SELECT * FROM locations WHERE id = ? AND scenario_id = ?').get(req.params.id, req.params.scenarioId);
-  if (!row) return res.status(404).json({ error: 'Location not found' });
-  res.json(row);
-});
-
-router.delete('/:id', function (req, res) {
-  db.prepare('DELETE FROM locations WHERE id = ? AND scenario_id = ?').run(req.params.id, req.params.scenarioId);
   res.json({ ok: true });
 });
 
-/* ── Background routes ──────────────────────────────────────────────── */
+/* ── Single location fetch ────────────────────────────────────────── */
+
+router.get('/:id', function (req, res) {
+  const row = db.prepare('SELECT * FROM locations WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Location not found' });
+  res.json(row);
+});
+
+/* ── Background routes ────────────────────────────────────────────── */
 
 router.get('/:id/backgrounds', function (req, res) {
-  const row = db.prepare('SELECT * FROM locations WHERE id = ? AND scenario_id = ?').get(req.params.id, req.params.scenarioId);
+  const row = db.prepare('SELECT * FROM locations WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Location not found' });
 
   const folder = row.background_folder || '';
@@ -93,17 +68,15 @@ router.get('/:id/backgrounds', function (req, res) {
 });
 
 router.post('/:id/generate-background', async function (req, res) {
-  const { scenarioId } = req.params;
   const locId = parseInt(req.params.id, 10);
-
-  const row = db.prepare('SELECT * FROM locations WHERE id = ? AND scenario_id = ?').get(locId, scenarioId);
+  const row = db.prepare('SELECT * FROM locations WHERE id = ?').get(locId);
   if (!row) return res.status(404).json({ error: 'Location not found' });
 
   let result;
   try {
     result = await pipeline.generate({
       mode:       'background',
-      scenarioId: parseInt(scenarioId, 10),
+      scenarioId: parseInt(req.params.scenarioId, 10),
       opts:       { locationId: locId },
     });
   } catch (err) {
@@ -114,7 +87,7 @@ router.post('/:id/generate-background', async function (req, res) {
 });
 
 router.post('/:id/backgrounds/:filename/set-default', function (req, res) {
-  const row = db.prepare('SELECT * FROM locations WHERE id = ? AND scenario_id = ?').get(req.params.id, req.params.scenarioId);
+  const row = db.prepare('SELECT id FROM locations WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Location not found' });
 
   db.prepare('UPDATE locations SET default_background = ? WHERE id = ?').run(
@@ -124,7 +97,7 @@ router.post('/:id/backgrounds/:filename/set-default', function (req, res) {
 });
 
 router.delete('/:id/backgrounds/:filename', function (req, res) {
-  const row = db.prepare('SELECT * FROM locations WHERE id = ? AND scenario_id = ?').get(req.params.id, req.params.scenarioId);
+  const row = db.prepare('SELECT * FROM locations WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Location not found' });
 
   const folder = row.background_folder || '';

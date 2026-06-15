@@ -61,8 +61,7 @@ export function initScenarioSetup(editId) {
   var loadPromises = [
     API.getCharacters().catch(function () { return []; }),
     API.getA1111Loras().catch(function () { return { loras: [] }; }),
-    editId ? API.getLocations(editId).catch(function () { return { locations: [] }; })
-           : Promise.resolve({ locations: [] }),
+    API.getLocations().catch(function () { return []; }),
   ];
   if (editId) {
     loadPromises.push(API.getScenario(editId));
@@ -72,7 +71,7 @@ export function initScenarioSetup(editId) {
   Promise.all(loadPromises).then(function (results) {
     state.allCharacters = Array.isArray(results[0]) ? results[0] : [];
     state.availableLoRAs = (results[1].loras || []);
-    state.allLocations   = (results[2].locations || []);
+    state.allLocations   = Array.isArray(results[2]) ? results[2] : [];
     if (editId && results[3]) {
       var s = results[3].scenario || results[3];
       Object.assign(state.wizardData, {

@@ -74,12 +74,19 @@
     saveFaceIdConfig:   function (charId, data)  { return request('PATCH',  '/api/characters/' + charId + '/faceid-config', data); },
     useFullbodyAsRef:   function (charId, fbId)  { return request('POST',   '/api/characters/' + charId + '/fullbody/' + fbId + '/use-as-ref'); },
 
-    /* Locations — scenario-scoped */
-    getLocations:   function (sid)         { return request('GET',    '/api/scenarios/' + sid + '/locations'); },
-    getLocation:    function (sid, id)     { return request('GET',    '/api/scenarios/' + sid + '/locations/' + id); },
-    createLocation: function (sid, data)   { return request('POST',   '/api/scenarios/' + sid + '/locations', data); },
-    updateLocation: function (sid, id, d)  { return request('PUT',    '/api/scenarios/' + sid + '/locations/' + id, d); },
-    deleteLocation: function (sid, id)     { return request('DELETE', '/api/scenarios/' + sid + '/locations/' + id); },
+    /* Locations — global */
+    getLocations:    function ()           { return request('GET',    '/api/locations'); },
+    getLocation:     function (sid, id)    { return request('GET',    '/api/scenarios/' + sid + '/locations/' + id); },
+    createLocation:  function (sid, data)  { return request('POST',   '/api/locations', data); },
+    updateLocation:  function (sid, id, d) { return request('PUT',    '/api/locations/' + id, d); },
+    deleteLocation:  function (sid, id)    { return request('DELETE', '/api/locations/' + id); },
+
+    /* Locations — scenario membership */
+    getScenarioLocations:       function (sid)        { return request('GET',    '/api/scenarios/' + sid + '/locations'); },
+    addLocationToScenario:      function (sid, locId) { return request('POST',   '/api/scenarios/' + sid + '/locations/' + locId + '/add'); },
+    removeLocationFromScenario: function (sid, locId) { return request('DELETE', '/api/scenarios/' + sid + '/locations/' + locId + '/remove'); },
+
+    /* Background routes — still scenario-scoped */
     getLocationBackgrounds:     function (sid, locId)       { return request('GET',    '/api/scenarios/' + sid + '/locations/' + locId + '/backgrounds'); },
     generateLocationBackground: function (sid, locId)       { return request('POST',   '/api/scenarios/' + sid + '/locations/' + locId + '/generate-background'); },
     setDefaultBackground:       function (sid, locId, file) { return request('POST',   '/api/scenarios/' + sid + '/locations/' + locId + '/backgrounds/' + encodeURIComponent(file) + '/set-default'); },
