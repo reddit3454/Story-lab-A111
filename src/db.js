@@ -234,4 +234,41 @@ try { db.exec('ALTER TABLE audit_events ADD COLUMN scenario_id INTEGER'); } catc
 try { db.exec('ALTER TABLE audit_events ADD COLUMN turn_id     INTEGER'); } catch (_) {}
 try { db.exec('ALTER TABLE audit_events ADD COLUMN duration_ms INTEGER'); } catch (_) {}
 
+// character extended profile columns
+try { db.exec("ALTER TABLE characters ADD COLUMN description          TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN image_description    TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN appearance_notes     TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN gender               TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN age_range            TEXT    DEFAULT 'adult'"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN height               TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN body_type            TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN breast_size          TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN butt_size            TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN penis_state          TEXT    DEFAULT 'soft'"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN skin_tone            TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN skin_extras          TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN eye_color            TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN eye_shape            TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN nose_shape           TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN lip_shape            TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN face_shape           TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN hair_color           TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN hair_style           TEXT    DEFAULT ''"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN hair_extras          TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN default_outfit       TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN outfit_style         TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN outfit_sets          TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN default_outfit_name  TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN is_user_character    INTEGER DEFAULT 0"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN moodbaseline         INTEGER DEFAULT 3"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN arousalthreshold     TEXT    DEFAULT 'medium'"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN arousallockeduntil   INTEGER DEFAULT 2"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN arousalmax           INTEGER DEFAULT 5"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN moodtriggerspos      TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN moodtriggersneg      TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN arousaltriggers      TEXT    DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN image_prompt_override TEXT   DEFAULT NULL"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN faceid_ref_count     INTEGER DEFAULT 5"); } catch (_) {}
+try { db.exec("ALTER TABLE characters ADD COLUMN faceid_ref_order     TEXT    DEFAULT NULL"); } catch (_) {}
+
 export default db;

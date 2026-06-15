@@ -61,15 +61,17 @@
     removeCharacterFromScenario: function (sid, charId) { return request('DELETE', '/api/scenarios/' + sid + '/characters/' + charId); },
 
     /* Character References & Full-Body Images */
-    getReferences:      function (charId)       { return request('GET',    '/api/characters/' + charId + '/references'); },
-    generateReference:  function (charId, body) { return request('POST',   '/api/characters/' + charId + '/references/generate', body || {}); },
-    uploadReference:    function (charId, file) { var fd = new FormData(); fd.append('file', file); return upload('/api/characters/' + charId + '/references/upload', fd); },
-    acceptReference:    function (charId, ref)  { return request('POST',   '/api/characters/' + charId + '/references/' + encodeURIComponent(ref) + '/accept'); },
-    clearFaceId:        function (charId)       { return request('DELETE', '/api/characters/' + charId + '/references/faceid'); },
-    getFullbodies:      function (charId)       { return request('GET',    '/api/characters/' + charId + '/fullbody'); },
-    generateFullbody:   function (charId, body) { return request('POST',   '/api/characters/' + charId + '/fullbody/generate', body || {}); },
-    deleteFullbody:     function (charId, fbId) { return request('DELETE', '/api/characters/' + charId + '/fullbody/' + fbId); },
-    setDefaultFullbody: function (charId, fbId) { return request('POST',   '/api/characters/' + charId + '/fullbody/' + fbId + '/set-default'); },
+    getReferences:      function (charId)        { return request('GET',    '/api/characters/' + charId + '/references'); },
+    generateReference:  function (charId, body)  { return request('POST',   '/api/characters/' + charId + '/references/generate', body || {}); },
+    uploadReference:    function (charId, file)  { var fd = new FormData(); fd.append('file', file); return upload('/api/characters/' + charId + '/references/upload', fd); },
+    acceptReference:    function (charId, ref)   { return request('POST',   '/api/characters/' + charId + '/references/' + encodeURIComponent(ref) + '/accept'); },
+    deleteReference:    function (charId, refId) { return request('DELETE', '/api/characters/' + charId + '/references/' + refId); },
+    clearFaceId:        function (charId)        { return request('DELETE', '/api/characters/' + charId + '/references/faceid'); },
+    getFullbodies:      function (charId)        { return request('GET',    '/api/characters/' + charId + '/fullbody'); },
+    generateFullbody:   function (charId, body)  { return request('POST',   '/api/characters/' + charId + '/fullbody/generate', body || {}); },
+    deleteFullbody:     function (charId, fbId)  { return request('DELETE', '/api/characters/' + charId + '/fullbody/' + fbId); },
+    setDefaultFullbody: function (charId, fbId)  { return request('POST',   '/api/characters/' + charId + '/fullbody/' + fbId + '/set-default'); },
+    saveFaceIdConfig:   function (charId, data)  { return request('PATCH',  '/api/characters/' + charId + '/faceid-config', data); },
 
     /* Locations — scenario-scoped */
     getLocations:   function (sid)         { return request('GET',    '/api/scenarios/' + sid + '/locations'); },

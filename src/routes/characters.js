@@ -62,6 +62,37 @@ async function _readMultipart(req) {
   });
 }
 
+// Assemble the best available image prompt from a character row.
+// Priority: image_prompt_override → image_description → trait columns → appearance_prompt → name
+function _assembleCharacterPrompt(char) {
+  if (char.image_prompt_override?.trim()) return char.image_prompt_override.trim();
+  if (char.image_description?.trim())     return char.image_description.trim();
+  const parts = [];
+  if (char.gender)    parts.push(char.gender);
+  if (char.age_range && char.age_range !== 'adult') parts.push(char.age_range);
+  if (char.height)    parts.push(char.height);
+  if (char.body_type) parts.push(char.body_type + ' build');
+  const hair = [char.hair_color, char.hair_style, char.hair_extras].filter(Boolean);
+  if (hair.length)    parts.push(hair.join(' ') + ' hair');
+  const eyes = [char.eye_color, char.eye_shape].filter(Boolean);
+  if (eyes.length)    parts.push(eyes.join(' ') + ' eyes');
+  if (char.skin_tone) parts.push(char.skin_tone + ' skin');
+  if (char.face_shape) parts.push(char.face_shape + ' face shape');
+  if (char.nose_shape) parts.push(char.nose_shape + ' nose');
+  if (char.lip_shape)  parts.push(char.lip_shape + ' lips');
+  const gL = (char.gender || '').toLowerCase();
+  if (char.breast_size && (gL === 'female' || gL === 'non-binary')) parts.push(char.breast_size + ' breasts');
+  if (char.butt_size)  parts.push(char.butt_size + ' butt');
+  const outfit = char.current_clothing || char.base_clothing || char.default_outfit;
+  if (outfit) parts.push(outfit);
+  if (char.appearance_notes) {
+    const clipped = char.appearance_notes.split(/\.\s+[A-Z]/)[0].slice(0, 120).trim().replace(/[,\s]+$/, '');
+    if (clipped) parts.push(clipped);
+  }
+  if (parts.length) return parts.join(', ');
+  return (char.appearance_prompt?.trim()) || char.name;
+}
+
 function _buildPayload(config, prompt, negative) {
   return {
     prompt,
@@ -86,21 +117,67 @@ router.get('/', function (req, res) {
 });
 
 router.post('/', function (req, res) {
-  const { name, role, appearance_prompt, base_clothing, current_clothing, personality, is_user } = req.body;
-  if (!name) return res.status(400).json({ error: 'name is required' });
+  const b = req.body;
+  if (!b.name) return res.status(400).json({ error: 'name is required' });
 
   const result = db.prepare(`
-    INSERT INTO characters
-      (name, role, appearance_prompt, base_clothing, current_clothing, personality, is_user)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO characters (
+      name, role, description, image_description, appearance_notes,
+      gender, age_range, height, body_type,
+      breast_size, butt_size, penis_state,
+      skin_tone, skin_extras,
+      eye_color, eye_shape, nose_shape, lip_shape, face_shape,
+      hair_color, hair_style, hair_extras,
+      appearance_prompt, base_clothing, current_clothing,
+      default_outfit, outfit_style, outfit_sets, default_outfit_name,
+      personality, is_user, is_user_character,
+      moodbaseline, arousalthreshold, arousallockeduntil, arousalmax,
+      moodtriggerspos, moodtriggersneg, arousaltriggers,
+      image_prompt_override
+    ) VALUES (
+      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+    )
   `).run(
-    name,
-    role              ?? 'character',
-    appearance_prompt ?? '',
-    base_clothing     ?? '',
-    current_clothing  ?? '',
-    personality       ?? '',
-    is_user           ? 1 : 0,
+    b.name                ?? '',
+    b.role                ?? 'character',
+    b.description         ?? '',
+    b.image_description   ?? null,
+    b.appearance_notes    ?? '',
+    b.gender              ?? '',
+    b.age_range           ?? 'adult',
+    b.height              ?? '',
+    b.body_type           ?? '',
+    b.breast_size         ?? '',
+    b.butt_size           ?? null,
+    b.penis_state         ?? 'soft',
+    b.skin_tone           ?? '',
+    b.skin_extras         ?? null,
+    b.eye_color           ?? '',
+    b.eye_shape           ?? null,
+    b.nose_shape          ?? null,
+    b.lip_shape           ?? null,
+    b.face_shape          ?? null,
+    b.hair_color          ?? '',
+    b.hair_style          ?? '',
+    b.hair_extras         ?? null,
+    b.appearance_prompt   ?? '',
+    b.base_clothing       ?? '',
+    b.current_clothing    ?? '',
+    b.default_outfit      ?? null,
+    b.outfit_style        ?? null,
+    b.outfit_sets         ?? null,
+    b.default_outfit_name ?? null,
+    b.personality         ?? '',
+    (b.is_user_character ?? b.is_user) ? 1 : 0,
+    (b.is_user_character ?? b.is_user) ? 1 : 0,
+    b.moodbaseline        ?? 3,
+    b.arousalthreshold    ?? 'medium',
+    b.arousallockeduntil  ?? 2,
+    b.arousalmax          ?? 5,
+    b.moodtriggerspos     ?? null,
+    b.moodtriggersneg     ?? null,
+    b.arousaltriggers     ?? null,
+    b.image_prompt_override ?? null,
   );
 
   res.status(201).json(db.prepare('SELECT * FROM characters WHERE id = ?').get(result.lastInsertRowid));
@@ -113,24 +190,92 @@ router.get('/:id', function (req, res) {
 });
 
 router.put('/:id', function (req, res) {
-  const { name, role, appearance_prompt, base_clothing, current_clothing, personality } = req.body;
+  const b = req.body;
 
   db.prepare(`
     UPDATE characters SET
-      name              = COALESCE(?, name),
-      role              = COALESCE(?, role),
-      appearance_prompt = COALESCE(?, appearance_prompt),
-      base_clothing     = COALESCE(?, base_clothing),
-      current_clothing  = COALESCE(?, current_clothing),
-      personality       = COALESCE(?, personality)
+      name                 = COALESCE(?, name),
+      role                 = ?,
+      description          = ?,
+      image_description    = ?,
+      appearance_notes     = ?,
+      gender               = ?,
+      age_range            = ?,
+      height               = ?,
+      body_type            = ?,
+      breast_size          = ?,
+      butt_size            = ?,
+      penis_state          = ?,
+      skin_tone            = ?,
+      skin_extras          = ?,
+      eye_color            = ?,
+      eye_shape            = ?,
+      nose_shape           = ?,
+      lip_shape            = ?,
+      face_shape           = ?,
+      hair_color           = ?,
+      hair_style           = ?,
+      hair_extras          = ?,
+      appearance_prompt    = ?,
+      base_clothing        = ?,
+      current_clothing     = ?,
+      default_outfit       = ?,
+      outfit_style         = ?,
+      outfit_sets          = ?,
+      default_outfit_name  = ?,
+      personality          = ?,
+      is_user              = ?,
+      is_user_character    = ?,
+      moodbaseline         = ?,
+      arousalthreshold     = ?,
+      arousallockeduntil   = ?,
+      arousalmax           = ?,
+      moodtriggerspos      = ?,
+      moodtriggersneg      = ?,
+      arousaltriggers      = ?,
+      image_prompt_override = ?
     WHERE id = ?
   `).run(
-    name              ?? null,
-    role              ?? null,
-    appearance_prompt ?? null,
-    base_clothing     ?? null,
-    current_clothing  ?? null,
-    personality       ?? null,
+    b.name                ?? null,
+    b.role                ?? 'character',
+    b.description         ?? '',
+    b.image_description   ?? null,
+    b.appearance_notes    ?? '',
+    b.gender              ?? '',
+    b.age_range           ?? 'adult',
+    b.height              ?? '',
+    b.body_type           ?? '',
+    b.breast_size         ?? '',
+    b.butt_size           ?? null,
+    b.penis_state         ?? 'soft',
+    b.skin_tone           ?? '',
+    b.skin_extras         ?? null,
+    b.eye_color           ?? '',
+    b.eye_shape           ?? null,
+    b.nose_shape          ?? null,
+    b.lip_shape           ?? null,
+    b.face_shape          ?? null,
+    b.hair_color          ?? '',
+    b.hair_style          ?? '',
+    b.hair_extras         ?? null,
+    b.appearance_prompt   ?? '',
+    b.base_clothing       ?? '',
+    b.current_clothing    ?? '',
+    b.default_outfit      ?? null,
+    b.outfit_style        ?? null,
+    b.outfit_sets         ?? null,
+    b.default_outfit_name ?? null,
+    b.personality         ?? '',
+    (b.is_user_character ?? b.is_user) ? 1 : 0,
+    (b.is_user_character ?? b.is_user) ? 1 : 0,
+    b.moodbaseline        ?? 3,
+    b.arousalthreshold    ?? 'medium',
+    b.arousallockeduntil  ?? 2,
+    b.arousalmax          ?? 5,
+    b.moodtriggerspos     ?? null,
+    b.moodtriggersneg     ?? null,
+    b.arousaltriggers     ?? null,
+    b.image_prompt_override ?? null,
     req.params.id,
   );
 
@@ -162,6 +307,20 @@ router.get('/:id/references', function (req, res) {
   res.json({ references: refs });
 });
 
+router.delete('/:id/references/:refId', function (req, res) {
+  const ref = db.prepare('SELECT * FROM character_references WHERE id = ? AND character_id = ?')
+    .get(req.params.refId, req.params.id);
+  if (!ref) return res.status(404).json({ error: 'Reference not found' });
+
+  try {
+    const diskPath = path.join(IMAGES_DIR, ref.filename);
+    if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
+  } catch (_) {}
+
+  db.prepare('DELETE FROM character_references WHERE id = ?').run(req.params.refId);
+  res.json({ ok: true });
+});
+
 router.post('/:id/references/generate', async function (req, res) {
   const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
@@ -169,7 +328,7 @@ router.post('/:id/references/generate', async function (req, res) {
   try {
     const config  = resolveEffectiveConfig(db);
     const baseUrl = config.a1111_url || 'http://127.0.0.1:7860';
-    const prompt  = (req.body && req.body.prompt_override) || char.appearance_prompt || char.name;
+    const prompt  = (req.body && req.body.prompt_override) || _assembleCharacterPrompt(char);
     const negative = config.master_negative || '';
 
     const refDir   = path.join(_charDir(req.params.id), 'references');
@@ -258,6 +417,18 @@ router.get('/:id/fullbody', function (req, res) {
   res.json({ fullbodies: fbs });
 });
 
+router.patch('/:id/faceid-config', function (req, res) {
+  const { faceid_ref_count, faceid_ref_order } = req.body;
+  db.prepare(`UPDATE characters SET faceid_ref_count = ?, faceid_ref_order = ? WHERE id = ?`).run(
+    faceid_ref_count ?? 5,
+    faceid_ref_order ? JSON.stringify(faceid_ref_order) : null,
+    req.params.id,
+  );
+  const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Character not found' });
+  res.json(row);
+});
+
 router.post('/:id/fullbody/generate', async function (req, res) {
   const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
@@ -265,7 +436,7 @@ router.post('/:id/fullbody/generate', async function (req, res) {
   try {
     const config  = resolveEffectiveConfig(db);
     const baseUrl = config.a1111_url || 'http://127.0.0.1:7860';
-    const prompt  = (req.body && req.body.prompt_override) || char.appearance_prompt || char.name;
+    const prompt  = (req.body && req.body.prompt_override) || _assembleCharacterPrompt(char);
     const negative = config.master_negative || '';
 
     const fbDir    = path.join(_charDir(req.params.id), 'fullbody');
