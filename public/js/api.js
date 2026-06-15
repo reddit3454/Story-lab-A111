@@ -144,10 +144,12 @@
     clearActiveProfile: function ()         { return request('DELETE', '/api/profiles/active'); },
 
     /* A1111 */
-    getA1111Status: function ()     { return request('GET',  '/api/a1111/status'); },
-    getA1111Models: function ()     { return request('GET',  '/api/a1111/models'); },
-    getA1111Loras:  function ()     { return request('GET',  '/api/a1111/loras'); },
-    setA1111Model:  function (name) { return request('POST', '/api/a1111/model', { model_name: name }); },
+    getA1111Status:     function ()     { return request('GET',  '/api/a1111/status'); },
+    getA1111Models:     function ()     { return request('GET',  '/api/a1111/models'); },
+    getA1111Loras:      function ()     { return request('GET',  '/api/a1111/loras'); },
+    getA1111Samplers:   function ()     { return request('GET',  '/api/a1111/samplers'); },
+    getA1111Schedulers: function ()     { return request('GET',  '/api/a1111/schedulers'); },
+    setA1111Model:      function (name) { return request('POST', '/api/a1111/model', { model_name: name }); },
 
     /* Audit log */
     getAuditLog: function (filters) {

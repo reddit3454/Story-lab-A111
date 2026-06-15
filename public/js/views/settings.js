@@ -835,11 +835,14 @@ function wirePromptLab() {
 var _masterSettingsWired = false;
 
 var A1111_SAMPLERS = [
-  'DPM++ 2M', 'DPM++ 2M SDE', 'DPM++ 2M SDE Heun', 'DPM++ 3M SDE',
-  'Euler', 'Euler a', 'Heun', 'LMS', 'DPM2', 'DPM2 a', 'DDIM', 'PLMS', 'UniPC'
+  'Euler', 'Euler a', 'Heun', 'Heun pp2',
+  'DPM2', 'DPM2 a', 'DPM++ 2S a', 'DPM++ 2M', 'DPM++ SDE', 'DPM++ 2M SDE',
+  'DPM++ 2M SDE Heun', 'DPM++ 3M SDE', 'DPM fast', 'DPM adaptive',
+  'LMS', 'DDIM', 'DDIM CFG++', 'PLMS', 'UniPC', 'LCM', 'DDPM', 'DEIS', 'Restart',
 ];
 var A1111_SCHEDULERS = [
-  'Automatic', 'Karras', 'Exponential', 'SGM Uniform', 'Simple', 'DDIM', 'Beta'
+  'Automatic', 'Uniform', 'Karras', 'Exponential', 'Polyexponential',
+  'SGM Uniform', 'KL Optimal', 'Align Your Steps', 'Simple', 'Normal', 'DDIM', 'Beta',
 ];
 
 function wireMasterSettings() {
@@ -852,15 +855,15 @@ function wireMasterSettings() {
   function g(id) { return document.getElementById(id); }
   function tv(id) { var el = g(id); return el ? (el.type === 'checkbox' ? el.checked : el.value) : ''; }
 
-  function buildMasterForm(cfg) {
+  function buildMasterForm(cfg, samplerList, schedulerList) {
     cfg = cfg || {};
     function v(key, def) { return cfg[key] != null ? cfg[key] : def; }
     function boolCfg(key, def) { var val = v(key, def); return val === true || val === 'true' || val === 1 || val === '1'; }
 
-    var samplerOpts = A1111_SAMPLERS.map(function (s) {
+    var samplerOpts = (samplerList || A1111_SAMPLERS).map(function (s) {
       return '<option value="' + escapeHtml(s) + '"' + (v('a1111_sampler','DPM++ 2M SDE') === s ? ' selected' : '') + '>' + escapeHtml(s) + '</option>';
     }).join('');
-    var schedulerOpts = A1111_SCHEDULERS.map(function (s) {
+    var schedulerOpts = (schedulerList || A1111_SCHEDULERS).map(function (s) {
       return '<option value="' + escapeHtml(s) + '"' + (v('a1111_scheduler','Karras') === s ? ' selected' : '') + '>' + escapeHtml(s) + '</option>';
     }).join('');
 
@@ -1001,7 +1004,8 @@ function wireMasterSettings() {
         var display = g('ms-model-display');
         API.getA1111Models()
           .then(function (data) {
-            var models = (data.models || []).map(function (m) { return m.title || m.model_name || m; });
+            var raw = Array.isArray(data) ? data : (data.models || []);
+            var models = raw.map(function (m) { return m.title || m.model_name || m; });
             if (!models.length) { showToast('No models returned from A1111.'); return; }
             var selected = prompt('Enter model name:\n\n' + models.join('\n'));
             if (!selected || !selected.trim()) return;
@@ -1060,12 +1064,19 @@ function wireMasterSettings() {
     }
   }
 
-  API.getConfig()
-    .then(function (data) { buildMasterForm(data.config || data || {}); })
-    .catch(function (err) {
-      container.innerHTML = '<p style="color:var(--danger);font-size:13px">Failed to load config: ' + escapeHtml(err.message) + '</p>' +
-        '<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="(function(){var c=document.getElementById(\'imggen-master\');if(c){c.innerHTML=\'<div class=loading-state>Loading...</div>\';_masterSettingsWired=false;wireMasterSettings();}})()">Retry</button>';
-    });
+  Promise.all([
+    API.getConfig(),
+    API.getA1111Samplers().catch(function () { return []; }),
+    API.getA1111Schedulers().catch(function () { return []; }),
+  ]).then(function (results) {
+    var cfg        = results[0].config || results[0] || {};
+    var samplers   = Array.isArray(results[1]) && results[1].length ? results[1] : null;
+    var schedulers = Array.isArray(results[2]) && results[2].length ? results[2] : null;
+    buildMasterForm(cfg, samplers, schedulers);
+  }).catch(function (err) {
+    container.innerHTML = '<p style="color:var(--danger);font-size:13px">Failed to load config: ' + escapeHtml(err.message) + '</p>' +
+      '<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="(function(){var c=document.getElementById(\'imggen-master\');if(c){c.innerHTML=\'<div class=loading-state>Loading...</div>\';_masterSettingsWired=false;wireMasterSettings();}})()">Retry</button>';
+  });
 }
 
 // ---------------------------------------------------------------------------

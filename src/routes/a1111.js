@@ -28,6 +28,24 @@ router.get('/loras', async function (req, res) {
   }
 });
 
+router.get('/samplers', async function (req, res) {
+  try {
+    const samplers = await a1111.getSamplers(_getUrl());
+    res.json(samplers);
+  } catch (err) {
+    res.status(502).json({ error: 'A1111 unreachable: ' + err.message });
+  }
+});
+
+router.get('/schedulers', async function (req, res) {
+  try {
+    const schedulers = await a1111.getSchedulers(_getUrl());
+    res.json(schedulers);
+  } catch (err) {
+    res.status(502).json({ error: 'A1111 unreachable: ' + err.message });
+  }
+});
+
 router.get('/status', async function (req, res) {
   try {
     const progress = await a1111.getProgress(_getUrl());

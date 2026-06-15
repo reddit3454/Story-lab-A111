@@ -107,6 +107,16 @@ export async function setModel(baseUrl, modelName) {
   });
 }
 
+export async function getSamplers(baseUrl) {
+  const data = await _fetch(baseUrl, '/sdapi/v1/samplers', { _timeout: INFO_TIMEOUT_MS });
+  return Array.isArray(data) ? data.map(s => s.name).filter(Boolean) : [];
+}
+
+export async function getSchedulers(baseUrl) {
+  const data = await _fetch(baseUrl, '/sdapi/v1/schedulers', { _timeout: INFO_TIMEOUT_MS });
+  return Array.isArray(data) ? data.map(s => s.name || s.label).filter(Boolean) : [];
+}
+
 export async function getOptions(baseUrl) {
   return _fetch(baseUrl, '/sdapi/v1/options', { _timeout: INFO_TIMEOUT_MS });
 }
