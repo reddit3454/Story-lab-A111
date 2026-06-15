@@ -814,7 +814,7 @@ All nested routers use `mergeParams: true` so `:scenarioId` is accessible inside
 | `health.js` | /api/health | GET /, /ollama, /a1111 |
 | `config.js` | /api/config | GET /, POST /, POST /batch |
 | `profiles.js` | /api/profiles | GET /, POST /, PUT /:id, DELETE /:id, POST /:id/activate, DELETE /active |
-| `scenarios.js` | /api/scenarios | GET / (enriched: character_count, last_turn_at, characters[]), POST /, GET /:id, PUT /:id (dynamic SET), DELETE /:id |
+| `scenarios.js` | /api/scenarios | GET / (enriched: character_count, last_turn_at, characters[]), POST /, GET /:id, PUT /:id (dynamic SET), DELETE /:id, GET /:id/scene-card (debug), POST /:id/reset-scene (clear latest scene_card_json) |
 | `turns.js` | /api/scenarios/:id/turns | GET /, POST /, DELETE /:id |
 | `characters.js` | /api/characters | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, PATCH /:id/clothing, GET /:id/references, DELETE /:id/references/faceid, DELETE /:id/references/:refId, POST /:id/references/generate, POST /:id/references/upload, POST /:id/references/:ref/accept, PATCH /:id/faceid-config, GET /:id/fullbody, POST /:id/fullbody/generate, DELETE /:id/fullbody/:fbId, POST /:id/fullbody/:fbId/set-default, POST /:id/fullbody/:fbId/use-as-ref |
 | `scenario-characters.js` | /api/scenarios/:scenarioId/characters | GET / (roster list), POST /:charId (add), DELETE /:charId (remove) |
@@ -1803,6 +1803,22 @@ Added to api.js: `getLlamacppConfig()`, `saveLlamacppConfig(newCfg)` — used by
 3. Test full play loop: new scenario → global character → add to cast → turn → image gen → reference gen → fullbody gen
 4. Implement character portrait generation endpoint (`POST /api/scenarios/:id/characters/:id/portrait`)
 5. Implement styles CRUD backend (`src/routes/styles.js` — table exists in DB, route file absent)
+
+---
+
+---
+
+### Debug fixes (2026-06-15)
+
+**src/logger.js:**
+- `_toMsg` truncation limit raised from 2000 → 4000 characters — full LLM prompts now visible in debug console without truncation
+
+**src/routes/scenarios.js — two new endpoints:**
+- `GET /api/scenarios/:id/scene-card` — debug endpoint: returns the latest narrator turn that has a non-null `scene_card_json`, parsed to an object. Useful to verify the LLM is producing `image_prompt` content. Returns `{ found: false, message }` when no scene cards exist yet.
+- `POST /api/scenarios/:id/reset-scene` — clears `scene_card_json` on the latest narrator turn so the next image generation produces a fresh prompt (does NOT delete turns).
+
+**public/js/views/play.js:**
+- Reset Scene button: handler replaced. Previously deleted ALL turns in the scenario. Now calls `POST /api/scenarios/:id/reset-scene` (clears scene card only, turns preserved). Confirmation text updated to "Clear the current scene card? The next image will regenerate fresh."
 
 ---
 

@@ -140,4 +140,25 @@ router.delete('/:id', function (req, res) {
   res.json({ ok: true });
 });
 
+router.get('/:id/scene-card', function (req, res) {
+  const turn = db.prepare(
+    `SELECT id, turn_number, scene_card_json FROM turns
+     WHERE scenario_id = ? AND role = 'narrator' AND scene_card_json IS NOT NULL
+     ORDER BY turn_number DESC LIMIT 1`
+  ).get(req.params.id);
+  if (!turn) return res.json({ found: false, message: 'No narrator turns with scene cards yet' });
+  let parsed = null;
+  try { parsed = JSON.parse(turn.scene_card_json); } catch (e) { parsed = { parse_error: e.message, raw: turn.scene_card_json }; }
+  res.json({ found: true, turn_id: turn.id, turn_number: turn.turn_number, scene_card: parsed });
+});
+
+router.post('/:id/reset-scene', function (req, res) {
+  db.prepare(
+    `UPDATE turns SET scene_card_json = NULL
+     WHERE scenario_id = ? AND role = 'narrator'
+     AND turn_number = (SELECT MAX(turn_number) FROM turns WHERE scenario_id = ? AND role = 'narrator')`
+  ).run(req.params.id, req.params.id);
+  res.json({ ok: true });
+});
+
 export default router;

@@ -893,22 +893,11 @@ function setupPlayInteractions(scenarioId) {
   var resetSceneBtn = document.getElementById('btn-reset-scene');
   if (resetSceneBtn) {
     resetSceneBtn.onclick = function () {
-      showConfirm('Reset Scene', 'Reset scene? All story progress will be lost.', function () {
-        var pScenId = state.currentScenario && state.currentScenario.id;
-        var turnIds = (state.turns || []).map(function (t) { return t.id; });
-        var chain = Promise.resolve();
-        turnIds.forEach(function (tid) {
-          chain = chain.then(function () { return API.deleteTurn(pScenId, tid); });
-        });
-        chain.then(function () {
-          state.turns = [];
-          renderAllTurns();
-          showToast('Scene reset.', 'info');
-          var content = document.querySelector('.sidebar-content');
-          if (content && state.currentSidebarTab === 'memory') {
-            renderMemoryTab(content, scenarioId);
-          }
-        }).catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
+      showConfirm('Reset Scene', 'Clear the current scene card? The next image will regenerate fresh.', function () {
+        fetch('/api/scenarios/' + scenarioId + '/reset-scene', { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function () { showToast('Scene card cleared.', 'info'); })
+          .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
       }, 'btn-danger');
     };
   }

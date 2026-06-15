@@ -15,7 +15,7 @@ function _toMsg(event, data) {
   if (typeof data === 'string') return event + ' ' + data;
   try {
     const s = JSON.stringify(data);
-    return event + ' ' + (s.length > 2000 ? s.slice(0, 2000) + '…' : s);
+    return event + ' ' + (s.length > 4000 ? s.slice(0, 4000) + '…' : s);
   } catch (_) { return event; }
 }
 
