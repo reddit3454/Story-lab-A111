@@ -4,7 +4,10 @@
 > Hand this document to any coding model with codebase access to establish full
 > project context before any task.
 >
-> **Status:** Phases 1–5 complete (as of 2026-06-11). All backend and frontend wiring done.
+> **Status:** Phases 1–5 complete (as of 2026-06-14). Full stale-API audit done (2026-06-14);
+> all ImageCore/ComfyUI references removed. llamacpp narrator support added.
+> Characters decoupled from scenarios (2026-06-14): global `/api/characters` CRUD +
+> `scenario_characters` join table + live cast management UI in wizard and play view.
 > Server runs at port 4090.
 > The source code is the ground truth for what is built. The Implementation Status
 > section at the bottom tracks completed phases with exact API surface and notes.
@@ -44,10 +47,20 @@ directly to A1111's simple REST API.
 - Location background images — pre-generated backgrounds enable img2img mode (denoising 0.45), improving environment consistency and reducing prompt complexity
 
 **What's unchanged from the original:**
-- All `public/` frontend (HTML, CSS, JS views) — UI preserved as-is
-- API surface compatibility — same endpoint paths and response shapes
+- `public/` overall structure — same HTML skeleton, CSS, view routing
+- API surface compatibility — same endpoint paths and response shapes where features overlap
 - Ollama for narration, extraction, summarization, enhancement
 - Port 4090
+
+**What changed in `public/` (Phase 5 targeted modifications):**
+- api.js: fully rewritten — all methods now scenario-scoped and A1111-compatible
+- play.js: stale API calls fixed, Cast tab wired, image field names corrected
+- state.js / ui.js: status dots changed to A1111 + Ollama only
+- dashboard.js: Locations section removed
+- scenario-setup.js: wizard no longer requires location; character sync removed
+- characters.js: global list replaced with guidance; relationships panel stubbed
+- settings.js: stale LoRA/style/rules calls stubbed or corrected
+- index.html: styles-init.js, locations-init.js, and inline hash routing removed
 
 ---
 
@@ -60,7 +73,8 @@ directly to A1111's simple REST API.
 | Database | `node:sqlite` DatabaseSync (built-in, NOT better-sqlite3) |
 | HTTP | Express 4.x |
 | WebSocket | `ws` 8.x (singleton broadcaster) |
-| LLM | Ollama at `http://localhost:11434` |
+| LLM (primary) | Ollama at `http://localhost:11434` via `/api/chat` |
+| LLM (alt) | llama.cpp / llama-server at `http://127.0.0.1:8080` via `/v1/chat/completions` (OpenAI-compatible) — optional narrator backend, configured via Settings > Model Backends |
 | Image gen | A1111 at `http://127.0.0.1:7860` |
 | Dependencies | cors, express, ws — nothing else |
 
@@ -125,7 +139,10 @@ Key ones for story content:
 | 4090 | story-lab-a1111 (this project) |
 | 7860 | A1111 (http://127.0.0.1:7860) |
 | 11434 | Ollama |
-| 4060 | asset-library (optional — status dot in top bar) |
+| 8080 | llama-server (optional alternative narrator — see start-llamacpp.bat) |
+
+Port 4060 (asset-library) has been removed from status monitoring. The status bar now shows
+A1111 and Ollama only.
 
 ---
 
@@ -160,8 +177,9 @@ story-lab-a1111/
       character.js               [PLANNED] character appearance block builder
     routes/
       health.js                  /health, /health/a1111, /health/ollama
-      scenarios.js               Scenario CRUD; GET /:id returns characters + locations + rules + world
-      characters.js              Character CRUD + PATCH /:id/clothing
+      scenarios.js               Scenario CRUD
+      characters.js              Global character CRUD + references + fullbody (no scenario_id)
+      scenario-characters.js     Roster: GET/POST/:charId/DELETE/:charId at /api/scenarios/:id/characters
       turns.js                   GET + POST (role=user triggers narrator pipeline) + DELETE /:id
       images.js                  GET, POST /generate, PUT /:id/accept, PUT /:id/rate, DELETE /:id
       memories.js                GET + POST (manual) + DELETE /:id
@@ -184,9 +202,22 @@ story-lab-a1111/
     superpowers/
       specs/
         2026-06-10-story-lab-a1111-design.md    Full design spec
+  start-llamacpp.bat               Launches llama-server (port 8080, ctx 32768, MN-12B-Mag-Mell-R1 Q4)
   package.json
   module.json
 ```
+
+### Dead files (on disk, no longer executed)
+
+These files exist on disk but are not loaded by `index.html` and are not imported anywhere in active code. Do not delete without confirming — they may be referenced by the design spec.
+
+| File | Why dead |
+|---|---|
+| `public/js/styles-init.js` | Removed from index.html; called stale `/api/styles` |
+| `public/js/locations-init.js` | Removed from index.html; called stale global `/api/locations` |
+| `public/js/style-picker-patch.js` | Not loaded; patched a UI that no longer exists |
+| `public/js/style-creator.js` | Import removed from play.js; called `/api/styles` which has no backend route |
+| `public/js/views/styles.js` | View file; not routed to; styles backend not yet implemented |
 
 ---
 
@@ -218,12 +249,11 @@ Image config is NOT stored per-scenario. All image settings come from `global_co
 
 ### characters
 
-Characters are directly linked to a scenario via `scenario_id` — there is no
-`scenario_characters` join table.
+Characters are **global** — not scenario-scoped. They belong to no particular scenario.
+Scenarios pull characters via the `scenario_characters` join table.
 
 ```
 id INTEGER PK
-scenario_id INTEGER REFERENCES scenarios(id) ON DELETE CASCADE
 name TEXT NOT NULL
 role TEXT DEFAULT 'character'         -- 'character' | 'user' (free text)
 appearance_prompt TEXT DEFAULT ''     -- SDXL-style appearance tags for prompt building
@@ -233,6 +263,23 @@ personality TEXT DEFAULT ''
 is_user INTEGER DEFAULT 0             -- 1 if this is the player character
 created_at TEXT DEFAULT datetime('now')
 ```
+
+Character image files live at `H:\MEDIA\Story_Lab\images\characters\{charId}\references\`
+and `characters\{charId}\fullbody\`. The old `{scenarioId}/characters/{charId}/...` path
+is deprecated but not migrated (existing files stay in place).
+
+### scenario_characters
+
+Join table linking scenarios to their cast. Created in the main schema block.
+
+```
+scenario_id  INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE
+character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE
+added_at     TEXT DEFAULT (datetime('now'))
+PRIMARY KEY (scenario_id, character_id)
+```
+
+Migration populates it from existing `characters.scenario_id` values on first startup.
 
 ### locations
 
@@ -407,6 +454,16 @@ Key/value store seeded with defaults in `src/db.js`.
 | `narrator_model` | `''` | Empty = auto-select first Ollama model |
 | `narrator_context_turns` | `20` | |
 | `narrator_max_tokens` | `1200` | |
+| `llamacpp_config` | `'{}'` | JSON blob for per-role backend config; see narrator routing below |
+
+`llamacpp_config` JSON schema (stored as a string, parsed at runtime):
+```json
+{
+  "narrator":  { "backend": "llamacpp", "port": 8080, "model_path": "H:\\Models\\..." },
+  "extractor": { "backend": "ollama",   "ollama_model": "..." }
+}
+```
+Backend can be `"llamacpp"` or `"ollama"`. If unset or `{}`, narrator defaults to Ollama.
 
 `resolveMasterConfig(db)` casts keys in NUMERIC_KEYS to float and BOOLEAN_KEYS to bool.
 All other values are returned as strings.
@@ -415,7 +472,6 @@ All other values are returned as strings.
 
 - `character_states` — per-scenario clothing/emotion state; clothing currently stored on `characters.current_clothing`
 - `character_relationships` — relationship labels between character pairs
-- `scenario_characters` — join table; not needed since `characters.scenario_id` is a direct FK
 
 Indexed on: `pipeline_run_id`, `(scenario_id, created_at DESC)`, `status WHERE failed`.
 
@@ -527,10 +583,21 @@ buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, config 
 // 7 blocks: scenario system_prompt, characters (with clothing), rules, world entries,
 //   memories, NSFW gate, ---SCENE--- instruction
 
+resolveNarratorBackend(db)
+// → { backend: 'ollama'|'llamacpp', port?, model }
+// Reads 'llamacpp_config' JSON from global_config; checks narrator role's 'backend' field.
+// Falls back to resolveNarratorModel(db) (Ollama) if not set.
+
+llamacppChat({ port, messages, maxTokens })
+// → string — response content
+// POSTs to http://127.0.0.1:{port}/v1/chat/completions (OpenAI-compatible endpoint).
+
 runNarratorTurn({ db, scenario, messages, turnNumber })
 // → { story_text, scene_card, model_used, token_estimate }
-// Loads characters/rules/world/memories from DB, builds system prompt, calls Ollama chat,
-//   parses ---SCENE--- block. Never throws on parse failure — returns defaultSceneCard().
+// Loads characters/rules/world/memories from DB, builds system prompt.
+// Calls resolveNarratorBackend(); routes to llamacppChat() or ollama.chat() accordingly.
+// model_used = backend.model || `llamacpp:${backend.port}` (llamacpp) or ollama model name.
+// Parses ---SCENE--- block. Never throws on parse failure — returns defaultSceneCard().
 ```
 
 ### src/services/memory.js
@@ -628,7 +695,8 @@ All nested routers use `mergeParams: true` so `:scenarioId` is accessible inside
 | `profiles.js` | /api/profiles | GET /, POST /, PUT /:id, DELETE /:id, POST /:id/activate, DELETE /active |
 | `scenarios.js` | /api/scenarios | GET /, POST /, GET /:id, PUT /:id, DELETE /:id |
 | `turns.js` | /api/scenarios/:id/turns | GET /, POST /, DELETE /:id |
-| `characters.js` | /api/scenarios/:id/characters | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, PATCH /:id/clothing |
+| `characters.js` | /api/characters | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, PATCH /:id/clothing, GET /:id/references, POST /:id/references/generate, POST /:id/references/upload, POST /:id/references/:ref/accept, DELETE /:id/references/faceid, GET /:id/fullbody, POST /:id/fullbody/generate, DELETE /:id/fullbody/:fbId, POST /:id/fullbody/:fbId/set-default |
+| `scenario-characters.js` | /api/scenarios/:scenarioId/characters | GET / (roster list), POST /:charId (add), DELETE /:charId (remove) |
 | `locations.js` | /api/scenarios/:id/locations | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, GET /:id/backgrounds, POST /:id/generate-background, POST /:id/backgrounds/:f/set-default, DELETE /:id/backgrounds/:f |
 | `memories.js` | /api/scenarios/:id/memories | GET /, POST /, DELETE /:id |
 | `world.js` | /api/scenarios/:id/world | GET /, POST /, PUT /:id, DELETE /:id |
@@ -1009,21 +1077,130 @@ Accessible from Settings > Debug tab.
 - Stage timeline with duration + JSON detail
 - Replay Prompt button (copies visual_prompt_sent + params to clipboard)
 
-### api.js additions
+### api.js — complete method list (as of 2026-06-14)
 
+All methods return Promises. Frontend uses classic IIFE/globals via `window.API`.
+
+**Health:**
+```js
+API.getHealth()
+API.getHealthA1111()    // → { ok } — used by status dot polling (every 15s)
+API.getHealthOllama()   // → { ok } — used by status dot polling (every 30s)
+```
+
+**Config:**
+```js
+API.getConfig()
+API.setConfig(key, value)
+API.setConfigs(kvArray)         // batch upsert
+API.getLlamacppConfig()         // reads 'llamacpp_config' key from /api/config, JSON-parses it
+API.saveLlamacppConfig(newCfg)  // POSTs { key: 'llamacpp_config', value: JSON.stringify(newCfg) }
+```
+
+**Scenarios:**
+```js
+API.listScenarios()
+API.getScenario(id)
+API.createScenario(data)
+API.updateScenario(id, data)
+API.deleteScenario(id)
+```
+
+**Characters (global — no scenarioId):**
+```js
+API.getCharacters()                          // GET /api/characters — all characters
+API.getCharacter(id)                         // GET /api/characters/:id
+API.createCharacter(data)                    // POST /api/characters
+API.updateCharacter(id, data)               // PUT /api/characters/:id
+API.deleteCharacter(id)                     // DELETE /api/characters/:id (global delete)
+API.updateCharacterClothing(charId, data)   // PATCH /api/characters/:id/clothing
+```
+
+**Scenario roster (scenario-scoped — add/remove characters from a story's cast):**
+```js
+API.getScenarioCharacters(scenarioId)              // GET /api/scenarios/:id/characters
+API.addCharacterToScenario(scenarioId, charId)     // POST /api/scenarios/:id/characters/:charId
+API.removeCharacterFromScenario(scenarioId, charId) // DELETE /api/scenarios/:id/characters/:charId
+```
+
+**Character references and full-body images (global — charId only):**
+```js
+API.getReferences(charId)
+API.generateReference(charId, body)
+API.uploadReference(charId, file)         // multipart POST via upload() helper
+API.acceptReference(charId, ref)
+API.clearFaceId(charId)
+API.getFullbodies(charId)
+API.generateFullbody(charId, body)
+API.deleteFullbody(charId, fbId)
+API.setDefaultFullbody(charId, fbId)
+```
+
+**Turns:**
+```js
+API.getTurns(scenarioId)
+API.postTurn(scenarioId, contentText)   // → { user_turn, narrator_turn }
+API.deleteTurn(scenarioId, turnId)
+```
+
+**Images:**
+```js
+API.getImages(scenarioId, turnId?)
+API.generateSceneImage(scenarioId, turnId)
+API.acceptImage(scenarioId, imageId, data)
+API.rateImage(scenarioId, imageId, rating)
+API.deleteImage(scenarioId, imageId)
+```
+
+**Memories / World / Rules:**
+```js
+API.getMemories(scenarioId)
+API.createManualMemory(scenarioId, content)   // posts { memory_type: 'manual', content }
+API.deleteMemory(scenarioId, memId)
+API.getWorldEntries(scenarioId)
+API.createWorldEntry(scenarioId, data)
+API.updateWorldEntry(scenarioId, entryId, data)
+API.deleteWorldEntry(scenarioId, entryId)
+API.getRules(scenarioId)
+API.createRule(scenarioId, data)
+API.updateRule(scenarioId, ruleId, data)
+API.deleteRule(scenarioId, ruleId)
+```
+
+**Locations (scenario-scoped):**
+```js
+API.getLocations(scenarioId)
+API.createLocation(scenarioId, data)
+API.updateLocation(scenarioId, locId, data)
+API.deleteLocation(scenarioId, locId)
+API.getLocationBackgrounds(scenarioId, locId)
+API.generateLocationBackground(scenarioId, locId)
+API.setDefaultBackground(scenarioId, locId, filename)
+API.deleteBackground(scenarioId, locId, filename)
+```
+
+**A1111:**
 ```js
 API.getA1111Status()
 API.getA1111Models()
 API.getA1111Loras()
-API.setA1111Model(name)
-API.getAuditLog(filters)
-API.getAuditRun(runId)
+API.setA1111Model(name)   // POSTs { model_name: name } to /api/a1111/model
+```
+
+**Profiles:**
+```js
 API.getProfiles()
 API.createProfile(data)
 API.updateProfile(id, data)
 API.deleteProfile(id)
 API.activateProfile(id)
 API.clearActiveProfile()
+```
+
+**Audit:**
+```js
+API.getAuditLog(filters)
+API.getAuditRun(runId)
 ```
 
 ---
@@ -1055,6 +1232,19 @@ Never report a stub or an absent file as implemented.
 | --- | --- | --- |
 | Character portrait generation | POST /api/scenarios/:id/characters/:id/portrait | NOT STARTED |
 | Scenario relationships | GET/POST/DELETE /api/scenarios/:id/relationships | NOT STARTED |
+| Styles CRUD | GET/POST/PUT/DELETE /api/styles | NOT STARTED — `styles` table exists in DB, route file absent |
+
+### Frontend features — confirmed stubs (present in UI, not functional)
+
+| Feature | Location | Stub behavior |
+| --- | --- | --- |
+| Relationships panel | play.js `renderRelationshipsTab`, characters.js `renderRelationshipsPanel` | Renders "not yet implemented" empty state |
+| Styles / style creator | settings.js, play.js | Toast: "not available in this version" |
+| Full-body image management | characters.js `loadFullbodies` | Renders "not available in this version" empty state |
+| enhancePromptLab | settings.js | Pass-through only — copies raw prompt to enhanced textarea, no LLM call |
+| Prompt Lab → Send to A1111 | settings.js `pl-send-btn` | Toast: "not available from Prompt Lab in this version" |
+| Global rules | settings.js `loadGlobalRules` | Guidance message: "Rules are managed per-scenario" |
+| Scenario wizard Step 3 fields | scenario-setup.js `submitWizard` | Fields collected but backend silently discards `tone`, `premise`, `reply_length`, `lust_level`, `pacing`, etc. |
 
 ### Phases
 
@@ -1064,7 +1254,7 @@ Never report a stub or an absent file as implemented.
 | Phase 2 — LLM Clients and Config | **COMPLETE** |
 | Phase 3 — Story Engine | **COMPLETE** |
 | Phase 4 — Image Pipeline | **COMPLETE** |
-| Phase 5 — Frontend wiring | **COMPLETE** — api.js fully rewritten to match A1111 backend routes (2026-06-14); turn submission wired, image gen trigger and image_ready display wired |
+| Phase 5 — Frontend wiring | **COMPLETE** — api.js rewritten + full stale-API audit (2026-06-14); 22 issues fixed, -718 lines, all ImageCore/ComfyUI refs removed; llamacpp narrator added |
 
 ---
 
@@ -1172,45 +1362,136 @@ Key behaviors:
 - `image-pipeline.js` orchestrates 7 stages (resolve_config → build_prompt → resolve_background → a1111_call → file_verify → persist → broadcast), each audited with same `pipeline_run_id`; background mode saves to BACKGROUNDS_DIR and skips scene_images insert
 - `pipeline.generate` is always called fire-and-forget from routes with `.catch()`; background generation from locations route is blocking (awaited) to allow the route to update the location row immediately
 
+### Phase 6 — Characters decoupled from scenarios: COMPLETE (2026-06-14)
+
+**Architecture change:** Characters are now global entities. Scenarios pull characters
+from the global pool via a `scenario_characters` join table.
+
+**Backend changes:**
+- `src/db.js`: Added `scenario_characters` join table to main schema block. Migration populates it
+  from existing `characters.scenario_id` associations (`INSERT OR IGNORE INTO scenario_characters ... SELECT`).
+- `src/routes/characters.js`: Full rewrite — no `scenario_id` on character rows; all routes at `/api/characters`; image paths at `characters/{charId}/...`
+- `src/routes/scenario-characters.js`: New file — GET / (roster), POST /:charId (add), DELETE /:charId (remove)
+- `src/server.js`: Added `app.use('/api/characters', charactersRouter)` and new `app.use('/api/scenarios/:scenarioId/characters', scenarioCharactersRouter)`
+- `src/services/image-pipeline.js` + `src/services/narrator.js`: Character query updated from `WHERE scenario_id = ?` to JOIN via `scenario_characters`
+
+**Frontend changes:**
+- `public/js/api.js`: Characters block rewritten — no `scenarioId` args; new roster block (`getScenarioCharacters`, `addCharacterToScenario`, `removeCharacterFromScenario`); references/fullbody block all charId-only with `/api/characters/:id/...` URLs; `upload()` helper added for multipart
+- `public/js/views/characters.js`: All character CRUD, delete, FaceID, references, fullbody calls updated to global API (no scenario scoping); bond dropdown uses global `API.getCharacters()`
+- `public/js/views/scenario-setup.js`: Step 2 (Cast) fully rewritten — disabled for new scenarios ("save first"), live add/remove via `API.addCharacterToScenario`/`API.removeCharacterFromScenario` when editing, searchable available-chars panel
+- `public/js/views/play.js`:
+  - `loadPortraitPanel`: `API.getCharacters(sid)` → `API.getScenarioCharacters(sid)`; updates `state.currentScenario.characters` and calls `renderCharacterFocusButtons` on load
+  - `addBtn.onclick`: replaced "Add via Setup" toast with real picker — loads all chars minus roster, shows picker, calls `addCharacterToScenario`
+  - `removeBtn.onclick`: replaced `deleteCharacter` (permanent global delete — was a critical bug) with `removeCharacterFromScenario`; guards against removing last character
+  - `renderCastTab`: uses `getScenarioCharacters`; adds "× Remove" button per card (with `showConfirm` + last-character guard); adds inline "+ Add" panel with searchable character list
+
 ### Phase 5 — Frontend wiring: COMPLETE (2026-06-14)
 
-**api.js** — fully rewritten (2026-06-14) to match actual backend routes. All stale, global, and unimplemented routes removed. Key corrections:
+Phase 5 was completed in two stages: initial frontend wiring (early 2026-06-14) and a full stale-API audit (later 2026-06-14, 22 issues fixed, -718 lines net).
 
-- Characters, locations, rules, world entries all moved to scenario-scoped paths (e.g. `/api/scenarios/:id/characters`)
+---
+
+#### Phase 5a — Initial wiring
+
+**api.js** — fully rewritten to match actual backend routes. All stale, global, and unimplemented routes removed. Key corrections:
+
+- Characters, locations, rules, world entries all moved to scenario-scoped paths (`/api/scenarios/:id/...`)
 - `getCharacters(sid)`, `createCharacter(sid, data)` etc. now require `scenarioId` as first arg
-- `getWorldEntries(sid)` → `GET /api/scenarios/:id/world` (was global `/api/world-entries?scenarioId=`)
-- `getRules(sid)` → `GET /api/scenarios/:id/rules` (was global `/api/rules?scope=...`)
-- Images moved to scenario-scoped: `getImages(sid, turnId?)`, `acceptImage(sid, imgId, data)`, `rateImage(sid, imgId, rating)`, `deleteImage(sid, imgId)`
-- `deleteTurn(sid, turnId)` → `DELETE /api/scenarios/:id/turns/:id` (was global `/api/turns/:id`)
-- `createManualMemory(sid, content)` → `POST /api/scenarios/:id/memories` with `{ memory_type: 'manual' }` (was `/memories/manual`)
+- Images moved to scenario-scoped: `getImages(sid, turnId?)`, `acceptImage(sid, imgId, data)`, etc.
+- `deleteTurn(sid, turnId)` → `DELETE /api/scenarios/:id/turns/:id` (was global)
+- `createManualMemory(sid, content)` → `POST /api/scenarios/:id/memories` with `{ memory_type: 'manual' }`
 - `postTurn(scenarioId, contentText)` — correct turn submission
 - `setConfig` → POST, `setConfigs` → `POST /api/config/batch`
-- Location background routes added: `getLocationBackgrounds`, `generateLocationBackground`, `setDefaultBackground`, `deleteBackground`
+- Location background routes added
+- `setA1111Model(name)`: body key is `{ model_name: name }` (NOT `{ model: name }`) — matches `/api/a1111/model` route
 
-Removed entirely: global character CRUD, character bonds, character gallery, character references, relationships, styles, llamacpp config, `advanceTurn`, `nudgeTurn`, `extractScene`, `regenerateTurn`, `regenerateTurnImage`, `updateTurn`, `resetModels`, `resetScenarioTurns`, `getOllamaModels`, `getHealthLibrary`, `generateTurnImage` (duplicate of `generateSceneImage`), ImageCore upload, all character-state/clothing bulk routes.
+Removed entirely from api.js: global character CRUD, character bonds, character gallery, character references, relationships, styles, `advanceTurn`, `nudgeTurn`, `extractScene`, `regenerateTurn`, `regenerateTurnImage`, `updateTurn`, `resetModels`, `resetScenarioTurns`, `getOllamaModels`, `getHealthLibrary`, `generateTurnImage`, ImageCore upload, all character-state/clothing bulk routes.
 
-**app.js** — two targeted removals:
+Added to api.js: `getLlamacppConfig()`, `saveLlamacppConfig(newCfg)` — used by Settings > Model Backends UI; both use `/api/config` endpoint, storing config as JSON string under key `llamacpp_config`.
 
-- Removed `window.addEventListener('message', ...)` block that listened for ImageCore events from `localhost:4000` (service does not exist in this project)
-- Removed `styles` route branch from the router (`/api/styles` backend not yet implemented)
+**app.js** — targeted removals:
+- Removed `window.addEventListener('message', ...)` block for ImageCore events from `localhost:4000`
+- Removed `styles` route branch from router (`/api/styles` backend not yet implemented)
 - Removed `import { initStyles }` (unreachable after route removal)
 
-**play.js** — targeted fixes:
+**play.js** — initial turn/image wiring:
+- Initial load: normalizes `getScenario` wrapper response; normalizes `getTurns` array
+- `submitGuidanceTurn` + quick commands + end-story: use `API.postTurn` and handle `{user_turn, narrator_turn}` response
+- `handleImageReady`: reads `data.filename` (not `data.imageFilename`)
+- `_showImagePromptToast`: uses `API.generateSceneImage` (not stale `API.generateTurnImage`)
 
-- Initial load: normalizes `getScenario` wrapper response `{scenario,characters,...}` into flat `state.currentScenario`; normalizes `getTurns` array response (was expecting `{turns:[...]}`); maps `role` → `speaker` for frontend compat
-- `submitGuidanceTurn` + quick commands + end-story: use `API.postTurn(scenarioId, contentText)` and handle new `{user_turn, narrator_turn}` response shape
-- `createTurnElement`: narrator turn footer gets a permanent "Img" button (`.turn-gen-img-btn`) wired via event delegation in thread onclick
-- WS `turn_complete` handler: renders narrator turn if not yet in DOM (catch-all for WS-first arrival)
-- `handleImageReady`: reads `data.filename` (was `data.imageFilename`); handles null turnId gracefully
-- `_showImagePromptToast`: uses `API.generateSceneImage(scenarioId, turnId)` (was stale `API.generateTurnImage`)
+---
 
-**settings.js** — no changes needed; `API.setConfigs` name unchanged, URL fixed in api.js.
+#### Phase 5b — Full stale-API audit (2026-06-14)
 
-**scenario-setup.js** — no changes needed; no workflow selector exists in this project's version.
+22 issues fixed across 9 files. Critical field name facts confirmed during audit:
 
-**style-creator.js** — no changes needed; no workflow field exists in this project's version.
+- **`scene_images.filename`** — correct field name (NOT `imagecore_filename`)
+- **`characters` schema** — no `fullbody_image_filename` or `reference_image_path` columns
+- **`POST /api/a1111/model`** — body must be `{ model_name: name }` (NOT `{ model: name }`)
+- **`scenarios` schema** — only stores: `title, description, system_prompt, nsfw_enabled, narrator_model, context_turns`. Wizard fields (`tone`, `premise`, `reply_length`, `lust_level`, `pacing`, etc.) are silently discarded by the backend.
+- **No global character pool** — `GET /api/scenarios/:id/characters` only; no `/api/characters` global endpoint
+- **No global locations endpoint** — `GET /api/scenarios/:id/locations` only
+- **No `/api/styles` route** — backend route does not exist; table exists in DB but is unused
 
-**audit.js** — was already complete before Phase 5.
+**play.js** — additional fixes from audit:
+- `renderCastTab`: replaced `Promise.all([getScenarioCharacters, getScenarioCharacterStates, getCharacterClothing])` with single `API.getCharacters(scenarioId)`, clothing seeded from `char.base_clothing`
+- `_loadCharacterStates`: replaced `API.getScenarioCharacterStates` with `return Promise.resolve()` (state is session-local only)
+- `_commitClothingEdit`: `API.updateCharacterClothingById` → `API.updateCharacterClothing(scenarioId, charId, clothing)`
+- Image cache building: `imagecore_filename` → `filename` (3 locations: cache object, `imageSrc()` call, null check)
+- `renderRelationshipsTab`: replaced ~130-line implementation with 5-line stub ("not yet implemented")
+- `fullbody_image_filename`/`reference_image_path` references → `var imgSrc = ''`
+- Removed `import { openStyleCreatorModal } from './style-creator.js'`; replaced button handler with toast
+
+**state.js** — `imagecoreOk: null` → `a1111Ok: null`; removed `libraryOk: null`
+
+**ui.js** — status dots:
+- `statusDotsHtml()`: now renders A1111 dot + Ollama dot only (removed ImageCore + Library dots)
+- `updateStatusDots(svc, ok)`: handles `'a1111'` and `'ollama'` only
+- `startStatusPolling()`: A1111 via `API.getHealthA1111()` every 15s; Ollama via `API.getHealthOllama()` every 30s
+
+**dashboard.js** — removed entire Locations section:
+- Removed `<button id="btn-new-location">` from header
+- Removed `id="locations-section"` div
+- Removed `renderLocationCards()` (~50 lines)
+- Removed `openLocationModal()` (~75 lines)
+- Removed `btn-new-location` onclick and `API.listLocations()` call
+
+**scenario-setup.js** — wizard fixes:
+- Removed `API.listLocations()` from load promises (no global locations endpoint)
+- Removed `API.getScenarioCharacters()` calls (replaced with scenario-scoped `API.getCharacters(editId)`)
+- Removed `API.getLoRAs()` → replaced with `API.getA1111Loras()`
+- Removed "location is required" validation from `wizardNext` (would permanently block new scenario creation since `state.allLocations` is always empty)
+- `submitWizard`: removed entire character sync block (`removeScenarioCharacter`/`addScenarioCharacter`) and `setScenarioActiveLocation` call; now just calls `API.createScenario(data)` or `API.updateScenario(editId, data)`
+
+**characters.js** — stub out removed functionality (Phase 5); later updated in Phase 6:
+- `initCharacters`: Phase 5: replaced with guidance message. Phase 6: loads global `API.getCharacters()` — fully functional character list
+- `loadFullbodies()`: stub empty-state message (fullbody image management removed)
+- `listStyles()`: stub (styles endpoint not available)
+- `useFullbodyAsRef`/`deleteFullbodyById` button handlers: removed
+- `renderRelationshipsPanel()` + `renderRelGraph()` (~270 lines, 1477–1746): replaced with 8-line stub
+
+**settings.js** — stub out removed functionality:
+- `testFireStyle` button → stub toast
+- `API.getLoRAs()` → `API.getA1111Loras()` with normalization for both `Array.isArray(data)` and `data.loras`
+- `createStyle()` → stub toast
+- `_plLoadStyles()` → empty no-op
+- `getScenarioLastImagePrompt` → stub toast
+- `enhancePromptLab` → pass-through (copies raw prompt to enhanced textarea, no LLM call)
+- `pl-send-btn` → stub toast ("Send to A1111 not available from Prompt Lab in this version")
+- `pl-save-btn` createStyle → stub toast
+- `loadGlobalRules()` → replaced with guidance message ("Rules are managed per-scenario")
+
+**index.html** — removed dead script loads:
+- Removed `<script src="/js/styles-init.js"></script>`
+- Removed `<script src="/js/locations-init.js"></script>`
+- Removed inline `<script>` block (~40 lines) that patched `#styles` hash routing via `hashchange` and `load` event listeners
+
+**start-llamacpp.bat** (new file at project root):
+- Launches `llama-server.exe` on port 8080 with context 32768 (up from 16384 in original story-lab)
+- Model: `H:\Models\MN-12B-Mag-Mell-R1\MN-12B-Mag-Mell-R1-Q4_K_M.gguf`
+- Flags: `-ngl 99 --flash-attn --cache-type-k q8_0 --cache-type-v q8_0 --cont-batching --mlock --host 0.0.0.0`
+- Includes health check, port-clear, and startup reminder showing Settings > Model Backends config values
 
 ---
 
@@ -1219,12 +1500,13 @@ Removed entirely: global character CRUD, character bonds, character gallery, cha
 | Item | Status |
 |---|---|
 | Design spec | Complete — `docs/superpowers/specs/2026-06-10-story-lab-a1111-design.md` |
-| Implementation plan | Not yet written |
 | Phase 1 foundation | **COMPLETE** — server starts, DB schema live, config routes functional |
 | Phase 2 LLM clients + config | **COMPLETE** — ollama.js, config-resolver.js, all config + profile routes |
 | Phase 3 story engine | **COMPLETE** — narrator pipeline, turns, characters, locations, memories, world, rules |
 | Phase 4 image pipeline | **COMPLETE** — a1111.js, prompt-builder.js, image-pipeline.js, images + audit routes |
-| Phase 5 frontend wiring | **COMPLETE** — api.js, play.js turn/image wiring, audit.js |
+| Phase 5 frontend wiring | **COMPLETE** — full stale-API audit done (2026-06-14), all ImageCore/ComfyUI refs removed |
+| Phase 6 characters decoupled | **COMPLETE** — global characters, `scenario_characters` join table, live cast management UI (2026-06-14) |
+| llamacpp narrator support | **COMPLETE** — start-llamacpp.bat + narrator.js routing + api.js getLlamacppConfig/saveLlamacppConfig |
 | A1111 installation | Present at `K:\stable-diffusion-webui` (needs model path config in webui-user.bat) |
 | SDXL models | Available at `E:\ComfyUI\models\checkpoints` |
 | SDXL LoRAs | Available at `E:\ComfyUI\models\loras` |
@@ -1233,10 +1515,12 @@ Removed entirely: global character CRUD, character bonds, character gallery, cha
 
 ### Next steps
 
-1. Write implementation plan (`docs/superpowers/plans/`)
-2. Configure A1111 to point at E:\ComfyUI\models (webui-user.bat)
-3. Install ADetailer extension in A1111
-4. Implement: Phase 2 (clients) → Phase 3 (services) → Phase 4 (routes) → Phase 5 (frontend)
+1. Configure A1111 to point at E:\ComfyUI\models (webui-user.bat)
+2. Install ADetailer extension in A1111
+3. Test full play loop: new scenario → global character → add to cast → turn → image gen
+4. Implement character portrait generation endpoint
+5. Implement relationships (backend route + frontend panels)
+6. Implement scenario wizard → backend field persistence (backend schema change required)
 
 ---
 

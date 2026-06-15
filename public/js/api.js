@@ -3,6 +3,17 @@
 
   var BASE_URL = 'http://localhost:4090';
 
+  async function upload(path, formData) {
+    var res = await fetch(BASE_URL + path, { method: 'POST', body: formData });
+    if (!res.ok) {
+      var err;
+      try { err = await res.json(); } catch (e) { err = { error: res.statusText }; }
+      throw new Error(err.error || err.message || res.statusText || 'Upload failed');
+    }
+    if (res.status === 204) return null;
+    return res.json();
+  }
+
   async function request(method, path, body) {
     var opts = {
       method: method,
@@ -34,15 +45,31 @@
     updateScenario: function (id, d) { return request('PUT',    '/api/scenarios/' + id, d); },
     deleteScenario: function (id)    { return request('DELETE', '/api/scenarios/' + id); },
 
-    /* Characters — scenario-scoped */
-    getCharacters:   function (sid)         { return request('GET',    '/api/scenarios/' + sid + '/characters'); },
-    getCharacter:    function (sid, id)     { return request('GET',    '/api/scenarios/' + sid + '/characters/' + id); },
-    createCharacter: function (sid, data)   { return request('POST',   '/api/scenarios/' + sid + '/characters', data); },
-    updateCharacter: function (sid, id, d)  { return request('PUT',    '/api/scenarios/' + sid + '/characters/' + id, d); },
-    deleteCharacter: function (sid, id)     { return request('DELETE', '/api/scenarios/' + sid + '/characters/' + id); },
-    updateCharacterClothing: function (sid, charId, d) {
-      return request('PATCH', '/api/scenarios/' + sid + '/characters/' + charId + '/clothing', d);
+    /* Characters — global */
+    getCharacters:   function ()      { return request('GET',    '/api/characters'); },
+    getCharacter:    function (id)    { return request('GET',    '/api/characters/' + id); },
+    createCharacter: function (data)  { return request('POST',   '/api/characters', data); },
+    updateCharacter: function (id, d) { return request('PUT',    '/api/characters/' + id, d); },
+    deleteCharacter: function (id)    { return request('DELETE', '/api/characters/' + id); },
+    updateCharacterClothing: function (charId, d) {
+      return request('PATCH', '/api/characters/' + charId + '/clothing', d);
     },
+
+    /* Scenario ↔ Character roster */
+    getScenarioCharacters:       function (sid)         { return request('GET',    '/api/scenarios/' + sid + '/characters'); },
+    addCharacterToScenario:      function (sid, charId) { return request('POST',   '/api/scenarios/' + sid + '/characters/' + charId); },
+    removeCharacterFromScenario: function (sid, charId) { return request('DELETE', '/api/scenarios/' + sid + '/characters/' + charId); },
+
+    /* Character References & Full-Body Images */
+    getReferences:      function (charId)       { return request('GET',    '/api/characters/' + charId + '/references'); },
+    generateReference:  function (charId, body) { return request('POST',   '/api/characters/' + charId + '/references/generate', body || {}); },
+    uploadReference:    function (charId, file) { var fd = new FormData(); fd.append('file', file); return upload('/api/characters/' + charId + '/references/upload', fd); },
+    acceptReference:    function (charId, ref)  { return request('POST',   '/api/characters/' + charId + '/references/' + encodeURIComponent(ref) + '/accept'); },
+    clearFaceId:        function (charId)       { return request('DELETE', '/api/characters/' + charId + '/references/faceid'); },
+    getFullbodies:      function (charId)       { return request('GET',    '/api/characters/' + charId + '/fullbody'); },
+    generateFullbody:   function (charId, body) { return request('POST',   '/api/characters/' + charId + '/fullbody/generate', body || {}); },
+    deleteFullbody:     function (charId, fbId) { return request('DELETE', '/api/characters/' + charId + '/fullbody/' + fbId); },
+    setDefaultFullbody: function (charId, fbId) { return request('POST',   '/api/characters/' + charId + '/fullbody/' + fbId + '/set-default'); },
 
     /* Locations — scenario-scoped */
     getLocations:   function (sid)         { return request('GET',    '/api/scenarios/' + sid + '/locations'); },

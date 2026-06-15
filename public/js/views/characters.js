@@ -45,14 +45,12 @@ export function initCharacters() {
     renderRelationshipsPanel();
   };
 
-  // Characters are scenario-scoped — show guidance
   var list = document.getElementById('char-list');
-  if (list) {
-    list.innerHTML = '<div class="empty-state small" style="padding:12px 8px;line-height:1.5">' +
-      'Characters belong to individual scenarios.<br>' +
-      '<a href="#dashboard" style="color:var(--accent)">Open a scenario</a> and use the Cast tab to manage characters.' +
-      '</div>';
-  }
+  API.getCharacters().then(function (d) {
+    renderCharacterList(Array.isArray(d) ? d : []);
+  }).catch(function () {
+    if (list) list.innerHTML = '<div class="empty-state small">Failed to load characters.</div>';
+  });
 }
 
 function renderCharacterList(characters) {
@@ -789,7 +787,7 @@ function renderCharacterForm(char) {
         showToast('Character created!', 'success');
         state.currentCharacter = result;
         return API.getCharacters().then(function (d) {
-          renderCharacterList(d.characters || []);
+          renderCharacterList(Array.isArray(d) ? d : []);
           renderCharacterForm(result);
         });
       } else {
@@ -797,7 +795,7 @@ function renderCharacterForm(char) {
         state.currentCharacter = result;
         renderCharacterForm(result);
         return API.getCharacters().then(function (d) {
-          renderCharacterList(d.characters || []);
+          renderCharacterList(Array.isArray(d) ? d : []);
         });
       }
     }).catch(function (err) {
@@ -816,7 +814,7 @@ function renderCharacterForm(char) {
             showToast('Character deleted.', 'success');
             state.currentCharacter = null;
             panel.innerHTML = '<div class="empty-state"><p class="empty-state-text">Select a character to edit</p></div>';
-            return API.getCharacters().then(function (d) { renderCharacterList(d.characters || []); });
+            return API.getCharacters().then(function (d) { renderCharacterList(Array.isArray(d) ? d : []); });
           }).catch(function (err) {
             showToast('Delete failed: ' + err.message, 'error');
           });
@@ -1127,11 +1125,11 @@ function renderCharacterForm(char) {
       faceIdRemoveBtn.onclick = function () {
         showConfirm('Remove FaceID Reference', 'Clear the active FaceID reference for "' + char.name + '"? InstantID will be disabled for this character until a new reference is set.', function () {
           setLoading(faceIdRemoveBtn, true, 'Removing...');
-          API.clearReferenceImage(char.id).then(function (result) {
+          API.clearFaceId(char.id).then(function (result) {
             showToast('FaceID reference removed.', 'success');
             state.currentCharacter = result.character;
             renderCharacterForm(result.character);
-            return API.getCharacters().then(function (d) { renderCharacterList(d.characters || []); });
+            return API.getCharacters().then(function (d) { renderCharacterList(Array.isArray(d) ? d : []); });
           }).catch(function (err) {
             showToast('Remove failed: ' + err.message, 'error');
             var b = document.getElementById('btn-faceid-remove');
@@ -1152,7 +1150,7 @@ function renderCharacterForm(char) {
           var newChar = Object.assign({}, char, { reference_image_path: result.filename });
           state.currentCharacter = newChar;
           renderCharacterForm(newChar);
-          return API.getCharacters().then(function (d) { renderCharacterList(d.characters || []); });
+          return API.getCharacters().then(function (d) { renderCharacterList(Array.isArray(d) ? d : []); });
         }).catch(function (err) {
           showToast('Upload failed: ' + err.message, 'error');
           var b = document.getElementById('btn-faceid-upload');
@@ -1165,12 +1163,12 @@ function renderCharacterForm(char) {
         window.AssetLibrary.openPicker({ type: 'image' }).then(function (result) {
           if (!result || !result.basename) return;
           setLoading(faceIdUploadBtn, true, 'Setting...');
-          API.setReferenceImage(char.id, result.basename).then(function (res) {
+          API.acceptReference(char.id, result.basename).then(function (res) {
             showToast('FaceID reference set from library!', 'success');
             var newChar = res && res.character ? res.character : Object.assign({}, char, { reference_image_path: result.basename });
             state.currentCharacter = newChar;
             renderCharacterForm(newChar);
-            return API.getCharacters().then(function (d) { renderCharacterList(d.characters || []); });
+            return API.getCharacters().then(function (d) { renderCharacterList(Array.isArray(d) ? d : []); });
           }).catch(function (err) {
             showToast('Set failed: ' + err.message, 'error');
           }).finally(function () {
@@ -1251,7 +1249,7 @@ function renderCharacterForm(char) {
     API.getCharacters().then(function (d) {
       var sel = document.getElementById('bond-related-char');
       if (!sel) return;
-      var others = (d.characters || []).filter(function (c) { return c.id !== char.id; });
+      var others = (Array.isArray(d) ? d : []).filter(function (c) { return c.id !== char.id; });
       sel.innerHTML = '<option value="">Select character...</option>' +
         others.map(function (c) { return '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>'; }).join('');
     }).catch(function () {});
@@ -1351,7 +1349,7 @@ function loadReferences(charId) {
     }
     grid.innerHTML = refs.map(function (ref) {
       return '<div class="ref-thumb' + (ref.accepted ? ' accepted' : '') + '" data-ref-id="' + ref.id + '">' +
-        '<img src="' + imageSrc(ref.imagecore_filename) + '" alt="Ref" loading="lazy" onerror="this.style.display=\'none\'">' +
+        '<img src="' + imageSrc(ref.filename) + '" alt="Ref" loading="lazy" onerror="this.style.display=\'none\'">' +
         (ref.accepted ? '<div class="ref-badge-accepted">Active</div>' : '') +
         '<div class="ref-hover">' +
           (!ref.accepted ? '<button class="btn btn-success btn-xs ref-accept-btn" data-ref-id="' + ref.id + '">Accept</button>' : '') +
@@ -1430,7 +1428,13 @@ function renderFullbodyGrid(charId, fbs) {
 
 function loadFullbodies(charId) {
   var grid = document.getElementById('fullbody-grid');
-  if (grid) grid.innerHTML = '<div class="empty-state small">Full body image management not available in this version.</div>';
+  if (!grid) return;
+  grid.innerHTML = '<div class="loading-state small">Loading...</div>';
+  API.getFullbodies(charId).then(function (data) {
+    renderFullbodyGrid(charId, data.fullbodies || []);
+  }).catch(function () {
+    grid.innerHTML = '<div class="error-state">Failed to load full body images.</div>';
+  });
 }
 
 /* ============================================================

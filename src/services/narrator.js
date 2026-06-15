@@ -115,7 +115,12 @@ async function llamacppChat({ port, messages, maxTokens }) {
 }
 
 export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
-  const characters   = db.prepare('SELECT * FROM characters WHERE scenario_id = ?').all(scenario.id);
+  const characters   = db.prepare(`
+    SELECT c.* FROM characters c
+    JOIN scenario_characters sc ON c.id = sc.character_id
+    WHERE sc.scenario_id = ?
+    ORDER BY c.name
+  `).all(scenario.id);
   const rules        = db.prepare('SELECT * FROM rules WHERE scenario_id = ? ORDER BY priority DESC').all(scenario.id);
   const worldEntries = db.prepare('SELECT * FROM world_entries WHERE scenario_id = ?').all(scenario.id);
   const memories     = db.prepare('SELECT * FROM memories WHERE scenario_id = ? ORDER BY created_at DESC LIMIT 10').all(scenario.id);

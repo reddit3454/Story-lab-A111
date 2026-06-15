@@ -122,7 +122,12 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
       location = db.prepare('SELECT * FROM locations WHERE id = ?').get(opts.locationId);
     }
 
-    characters = db.prepare('SELECT * FROM characters WHERE scenario_id = ?').all(scenarioId);
+    characters = db.prepare(`
+      SELECT c.* FROM characters c
+      JOIN scenario_characters sc ON c.id = sc.character_id
+      WHERE sc.scenario_id = ?
+      ORDER BY c.name
+    `).all(scenarioId);
 
     const scenario = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(scenarioId);
 

@@ -584,11 +584,11 @@ function setupPlayInteractions(scenarioId) {
       '</div>';
 
     Promise.all([
-      API.getCharacters(scenarioId),
+      API.getScenarioCharacters(scenarioId),
       Promise.resolve({ states: [] }),
       Promise.resolve({ clothing: [] })
     ]).then(function (results) {
-      var chars    = results[0].characters || results[0] || [];
+      var chars    = Array.isArray(results[0]) ? results[0] : [];
       var states   = results[1].states || [];
       var clothing = results[2].clothing || [];
       // Seed clothing from character rows (current_clothing lives on the character record)
@@ -620,6 +620,10 @@ function setupPlayInteractions(scenarioId) {
         '</div>';
       }).join('');
       list.innerHTML = charsHtml + sceneCardHtml;
+
+      // Keep currentScenario.characters in sync so focus buttons stay populated
+      if (state.currentScenario) state.currentScenario.characters = chars;
+      renderCharacterFocusButtons(scenarioId);
 
       // Initialize scene presence tracking
       _loadScenePresent(chars.map(function(c){ return c.name; }));
@@ -760,26 +764,39 @@ function setupPlayInteractions(scenarioId) {
 
     addBtn.onclick = function () {
       if (pickerBar.style.display !== 'none') { closePicker(); return; }
-      showToast('Add characters via Scenario Setup.', 'info');
+      Promise.all([
+        API.getCharacters(),
+        API.getScenarioCharacters(scenarioId)
+      ]).then(function (results) {
+        var allChars  = Array.isArray(results[0]) ? results[0] : [];
+        var inRoster  = Array.isArray(results[1]) ? results[1] : [];
+        var rosterIds = inRoster.map(function (c) { return c.id; });
+        var available = allChars.filter(function (c) { return rosterIds.indexOf(c.id) < 0; });
+        showPicker(available, function (id, char) {
+          API.addCharacterToScenario(scenarioId, id)
+            .then(function () {
+              showToast((char ? char.name : 'Character') + ' added to story.', 'success');
+              loadPortraitPanel();
+            })
+            .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
+        });
+      }).catch(function (err) { showToast('Could not load characters: ' + err.message, 'error'); });
     };
 
     removeBtn.onclick = function () {
       if (pickerBar.style.display !== 'none') { closePicker(); return; }
-      API.getCharacters(scenarioId).then(function (data) {
-        var current = (data.characters || data || []);
+      API.getScenarioCharacters(scenarioId).then(function (data) {
+        var current = Array.isArray(data) ? data : [];
+        if (current.length <= 1) {
+          showToast('A scenario needs at least one character.', 'info');
+          return;
+        }
         showPicker(current, function (id, char) {
-          if (!confirm('Remove ' + (char ? char.name : 'this character') + ' from the scenario? This cannot be undone.')) return;
-          API.deleteCharacter(scenarioId, id)
+          if (!confirm('Remove ' + (char ? char.name : 'this character') + ' from the story?')) return;
+          API.removeCharacterFromScenario(scenarioId, id)
             .then(function () {
               showToast((char ? char.name : 'Character') + ' removed.', 'info');
               loadPortraitPanel();
-              return API.getScenario(scenarioId);
-            })
-            .then(function (updated) {
-              if (updated) {
-                state.currentScenario = Object.assign({ characters: [] }, updated.scenario || updated);
-              }
-              renderCharacterFocusButtons(scenarioId);
             })
             .catch(function (err) { showToast('Failed to remove: ' + err.message, 'error'); });
         });
@@ -2392,65 +2409,154 @@ function renderRulesTab(container, scenarioId) {
 }
 
 function renderCastTab(container, scenarioId) {
-  // Fetch characters, emotional states, and clothing in parallel
-  API.getCharacters(scenarioId).then(function (charData) {
-    var results = [charData, { states: [] }, { clothing: [] }];
-    var chars    = results[0].characters || results[0] || [];
-    // Seed clothing from character rows
+  API.getScenarioCharacters(scenarioId).then(function (data) {
+    var chars = Array.isArray(data) ? data : [];
     chars.forEach(function (c) {
       if (!state.characterStates[c.id]) state.characterStates[c.id] = {};
       if (c.current_clothing) state.characterStates[c.id].current_clothing = c.current_clothing;
     });
+
+    var rosterIds = chars.map(function (c) { return c.id; });
+
     container.innerHTML =
       '<div class="sidebar-tab-content">' +
-        '<div class="tab-header"><h4>Cast</h4></div>' +
+        '<div class="tab-header" style="display:flex;align-items:center;justify-content:space-between">' +
+          '<h4>Cast</h4>' +
+          '<button class="btn btn-ghost btn-xs" id="cast-tab-add-btn" title="Add a character to this story">+ Add</button>' +
+        '</div>' +
+        '<div id="cast-tab-add-panel" style="display:none;padding:6px 0 8px">' +
+          '<input type="text" class="form-input" id="cast-tab-search" placeholder="Search characters..." style="font-size:12px;margin-bottom:4px">' +
+          '<div id="cast-tab-avail-list" style="max-height:160px;overflow-y:auto"></div>' +
+          '<button class="btn btn-ghost btn-xs" id="cast-tab-add-close" style="margin-top:4px">Close</button>' +
+        '</div>' +
         '<div class="cast-cards">' +
           (chars.length
             ? chars.map(function (c) {
                 var isNpc = !c.is_user_character;
-                return '<div class="cast-card" data-char-id="' + c.id + '">' +
+                return '<div class="cast-card" data-char-id="' + c.id + '" style="align-items:flex-start">' +
                   avatarHtml(c) +
-                  '<div class="cast-card-info">' +
+                  '<div class="cast-card-info" style="flex:1;min-width:0">' +
                     '<div class="cast-card-name">' + escapeHtml(c.name) +
                       '<span class="badge ' + (c.is_user_character ? 'badge-accent' : 'badge-muted') + ' badge-xs">' +
                         (c.is_user_character ? 'You' : 'NPC') +
                       '</span>' +
                     '</div>' +
                     (c.appearance_notes
-                      ? '<div class="cast-card-notes">' + escapeHtml(c.appearance_notes.slice(0, 80)) + (c.appearance_notes.length > 80 ? '...' : '') + '</div>'
+                      ? '<div class="cast-card-notes">' + escapeHtml(c.appearance_notes.slice(0, 80)) + (c.appearance_notes.length > 80 ? '…' : '') + '</div>'
                       : '') +
                     (isNpc ? _buildMoodBarsHtml(c.id) + _buildClothingHtml(c.id) : '') +
                   '</div>' +
+                  '<button class="btn btn-ghost btn-xs cast-tab-remove-btn" ' +
+                    'data-char-id="' + c.id + '" data-char-name="' + escapeHtml(c.name) + '" ' +
+                    'style="flex-shrink:0;color:var(--text-muted)" title="Remove from story">&times;</button>' +
                 '</div>';
               }).join('')
             : '<div class="empty-state small">No characters in this story.</div>'
           ) +
         '</div>' +
       '</div>';
-    // Delegated click handler for mood +/- override buttons
+
+    // Delegated mood +/- handler
     container.addEventListener('click', function (e) {
       var btn = e.target.closest ? e.target.closest('.mood-adj-btn') : null;
       if (!btn || btn.disabled) return;
       var charId  = Number(btn.dataset.charId);
-      var field   = btn.dataset.field;        // 'mood' or 'arousal'
-      var dir     = Number(btn.dataset.dir);  // +1 or -1
+      var field   = btn.dataset.field;
+      var dir     = Number(btn.dataset.dir);
       var cs      = state.characterStates[charId];
       if (!cs) return;
       var current = field === 'mood' ? Number(cs.moodcurrent) : Number(cs.arousalcurrent);
       var ceiling = field === 'arousal' ? 10 : 5;
       var newVal  = Math.min(ceiling, Math.max(1, current + dir));
       if (newVal === current) return;
-
-      // Optimistic update — immediately reflect in state and bars
       var updated = { moodcurrent: cs.moodcurrent, arousalcurrent: cs.arousalcurrent };
       updated[field === 'mood' ? 'moodcurrent' : 'arousalcurrent'] = newVal;
       state.characterStates[charId] = updated;
       document.querySelectorAll('.mood-bars[data-char-id="' + charId + '"]').forEach(function (el) {
         el.outerHTML = _buildMoodBarsHtml(charId);
       });
-
-      // Mood/arousal state is session-local only in this version
     });
+
+    // Remove buttons
+    container.querySelectorAll('.cast-tab-remove-btn').forEach(function (btn) {
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        if (chars.length <= 1) {
+          showToast('A scenario needs at least one character.', 'info');
+          return;
+        }
+        var charId   = Number(btn.dataset.charId);
+        var charName = btn.dataset.charName || 'this character';
+        showConfirm('Remove from Story', 'Remove ' + charName + ' from this story?', function () {
+          API.removeCharacterFromScenario(scenarioId, charId)
+            .then(function () {
+              showToast(charName + ' removed.', 'info');
+              renderCastTab(container, scenarioId);
+              if (_reloadPortraitPanel) _reloadPortraitPanel();
+            })
+            .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
+        });
+      };
+    });
+
+    // Add character inline panel
+    var addBtn   = container.querySelector('#cast-tab-add-btn');
+    var addPanel = container.querySelector('#cast-tab-add-panel');
+    var searchEl = container.querySelector('#cast-tab-search');
+    var availEl  = container.querySelector('#cast-tab-avail-list');
+    var closeBtn = container.querySelector('#cast-tab-add-close');
+
+    function renderAvailList(filter) {
+      if (!availEl) return;
+      var f = (filter || '').toLowerCase().trim();
+      API.getCharacters().then(function (allData) {
+        var all = Array.isArray(allData) ? allData : [];
+        var filtered = all.filter(function (c) {
+          return rosterIds.indexOf(c.id) < 0 && (!f || c.name.toLowerCase().indexOf(f) !== -1);
+        });
+        if (!filtered.length) {
+          availEl.innerHTML = '<div class="empty-state small">' + (f ? 'No match.' : 'All characters in story.') + '</div>';
+          return;
+        }
+        availEl.innerHTML = filtered.map(function (c) {
+          return '<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--border)">' +
+            '<span style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(c.name) + '</span>' +
+            '<button class="btn btn-primary btn-xs cast-avail-add-btn" data-char-id="' + c.id + '" data-char-name="' + escapeHtml(c.name) + '">+</button>' +
+          '</div>';
+        }).join('');
+        availEl.querySelectorAll('.cast-avail-add-btn').forEach(function (b) {
+          b.onclick = function () {
+            b.disabled = true;
+            API.addCharacterToScenario(scenarioId, Number(b.dataset.charId))
+              .then(function () {
+                showToast(b.dataset.charName + ' added!', 'success');
+                renderCastTab(container, scenarioId);
+                if (_reloadPortraitPanel) _reloadPortraitPanel();
+              })
+              .catch(function (err) { b.disabled = false; showToast('Failed: ' + err.message, 'error'); });
+          };
+        });
+      }).catch(function () {
+        if (availEl) availEl.innerHTML = '<div class="error-state">Failed to load.</div>';
+      });
+    }
+
+    if (addBtn && addPanel) {
+      addBtn.onclick = function () {
+        var isOpen = addPanel.style.display !== 'none';
+        addPanel.style.display = isOpen ? 'none' : '';
+        if (!isOpen) {
+          renderAvailList('');
+          if (searchEl) searchEl.focus();
+        }
+      };
+    }
+    if (searchEl) {
+      searchEl.oninput = function () { renderAvailList(searchEl.value); };
+    }
+    if (closeBtn) {
+      closeBtn.onclick = function () { if (addPanel) addPanel.style.display = 'none'; };
+    }
 
   }).catch(function (e) {
     container.innerHTML = '<div class="error-state">Failed: ' + escapeHtml(e.message) + '</div>';

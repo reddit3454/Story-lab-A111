@@ -11,7 +11,8 @@ import configRouter     from './routes/config.js';
 import profilesRouter   from './routes/profiles.js';
 import scenariosRouter  from './routes/scenarios.js';
 import turnsRouter      from './routes/turns.js';
-import charactersRouter from './routes/characters.js';
+import charactersRouter         from './routes/characters.js';
+import scenarioCharactersRouter from './routes/scenario-characters.js';
 import locationsRouter  from './routes/locations.js';
 import memoriesRouter   from './routes/memories.js';
 import worldRouter      from './routes/world.js';
@@ -49,9 +50,12 @@ app.use('/api/profiles', profilesRouter);
 // Top-level scenarios CRUD — must be registered before nested sub-routers
 app.use('/api/scenarios', scenariosRouter);
 
+// Global character CRUD
+app.use('/api/characters', charactersRouter);
+
 // Nested sub-routers (mergeParams: true on each so :scenarioId is accessible)
 app.use('/api/scenarios/:scenarioId/turns',      turnsRouter);
-app.use('/api/scenarios/:scenarioId/characters', charactersRouter);
+app.use('/api/scenarios/:scenarioId/characters', scenarioCharactersRouter);
 app.use('/api/scenarios/:scenarioId/locations',  locationsRouter);
 app.use('/api/scenarios/:scenarioId/memories',   memoriesRouter);
 app.use('/api/scenarios/:scenarioId/world',      worldRouter);

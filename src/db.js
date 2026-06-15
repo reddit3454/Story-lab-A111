@@ -137,6 +137,13 @@ CREATE TABLE IF NOT EXISTS styles (
   created_at  TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS scenario_characters (
+  scenario_id  INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
+  character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  added_at     TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (scenario_id, character_id)
+);
+
 CREATE TABLE IF NOT EXISTS audit_events (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   pipeline_run_id TEXT DEFAULT '',
@@ -146,6 +153,26 @@ CREATE TABLE IF NOT EXISTS audit_events (
   detail_json     TEXT DEFAULT '{}',
   level           TEXT DEFAULT 'info',
   created_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS character_references (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  scenario_id  INTEGER REFERENCES scenarios(id) ON DELETE CASCADE,
+  character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+  filename     TEXT NOT NULL,
+  prompt_used  TEXT DEFAULT '',
+  accepted     INTEGER DEFAULT 0,
+  created_at   TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS character_fullbodies (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  scenario_id  INTEGER REFERENCES scenarios(id) ON DELETE CASCADE,
+  character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+  filename     TEXT NOT NULL,
+  prompt_used  TEXT DEFAULT '',
+  is_default   INTEGER DEFAULT 0,
+  created_at   TEXT DEFAULT (datetime('now'))
 );
 `);
 
@@ -184,6 +211,14 @@ for (const [key, value] of _defaults) {
 }
 
 /* ── Additive migrations ─────────────────────────────────────────── */
+
+// Populate scenario_characters from legacy characters.scenario_id (one-time migration)
+try {
+  db.exec("INSERT OR IGNORE INTO scenario_characters (scenario_id, character_id) SELECT scenario_id, id FROM characters WHERE scenario_id IS NOT NULL");
+} catch (_) {}
+
+// character image path on character record
+try { db.exec("ALTER TABLE characters ADD COLUMN reference_image_path TEXT DEFAULT NULL"); } catch (_) {}
 
 // locations background folder
 try { db.exec("ALTER TABLE locations ADD COLUMN background_folder TEXT DEFAULT ''"); } catch (_) {}
