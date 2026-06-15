@@ -18,7 +18,7 @@ const SCENE_CARD_INSTRUCTION = `After every story segment you write, append a sc
 
 Rules for image_prompt: write as plain comma-separated tags. Subjects first with explicit clothing description. Then action/pose. Then setting. Then lighting/atmosphere. Describe only what is literally visible in the scene you just wrote. Do not add things not in the scene.`;
 
-export function buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, relationships = [], config }) {
+export function buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships = [], lastArousal = 1, config }) {
   const parts = [];
 
   // 1. Scenario base prompt
@@ -31,13 +31,21 @@ export function buildSystemPrompt({ scenario, characters, rules, worldEntries, m
     const block = characters.map(function (c) {
       let s = `${c.name} (${c.role || 'character'})`;
       if (c.appearance_prompt) s += `\nAppearance: ${c.appearance_prompt}`;
+      if (c.description)       s += `\nBio: ${c.description}`;
       if (c.current_clothing)  s += `\nCurrently wearing: ${c.current_clothing}`;
       return s;
     }).join('\n\n');
     parts.push(`Characters:\n${block}`);
   }
 
-  // 3. Character relationships
+  // 3. Active location
+  if (location) {
+    let locBlock = `Current Location: ${location.name}`;
+    if (location.description) locBlock += `\n${location.description}`;
+    parts.push(locBlock);
+  }
+
+  // 4. Character relationships
   if (relationships.length > 0) {
     const block = relationships.map(function (r) {
       let line = `${r.from_name} → ${r.to_name}: ${r.relationship_type}`;
@@ -48,25 +56,25 @@ export function buildSystemPrompt({ scenario, characters, rules, worldEntries, m
     parts.push(`Character Relationships:\n${block}`);
   }
 
-  // 4. Rules (priority-ordered, descending)
+  // 5. Rules (priority-ordered, descending)
   if (rules.length > 0) {
     const block = rules.map(function (r) { return `- ${r.content}`; }).join('\n');
     parts.push(`Rules:\n${block}`);
   }
 
-  // 5. World entries
+  // 6. World entries
   if (worldEntries.length > 0) {
     const block = worldEntries.map(function (e) { return `${e.title}: ${e.content}`; }).join('\n\n');
     parts.push(`World Knowledge:\n${block}`);
   }
 
-  // 6. Memory block
+  // 7. Memory block
   if (memories.length > 0) {
     const block = memories.map(function (m) { return `- ${m.content}`; }).join('\n');
     parts.push(`Story Memory:\n${block}`);
   }
 
-  // 7. Character personalities
+  // 8. Character personalities
   const charsWithPersonality = characters.filter(c => c.personality && c.personality.trim());
   if (charsWithPersonality.length > 0) {
     const header = [
@@ -84,14 +92,17 @@ export function buildSystemPrompt({ scenario, characters, rules, worldEntries, m
     parts.push(header + block);
   }
 
-  // 8. NSFW instruction
+  // 9. NSFW instruction
   if (scenario.nsfw_enabled && config.nsfw_enabled) {
     parts.push('Explicit adult content is permitted in this story. Write without censorship when the narrative calls for it.');
   } else {
     parts.push('Keep content tasteful. Avoid explicit sexual content.');
   }
 
-  // 9. Scene card instruction
+  // 10. Arousal continuity
+  parts.push(`Current arousal level: ${lastArousal}/10. Maintain narrative continuity from this baseline.`);
+
+  // 11. Scene card instruction
   parts.push(SCENE_CARD_INSTRUCTION);
 
   return parts.join('\n\n---\n\n');
@@ -150,6 +161,9 @@ export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
     WHERE sc.scenario_id = ?
     ORDER BY c.name
   `).all(scenario.id);
+  const location     = scenario.active_location_id
+    ? db.prepare('SELECT * FROM locations WHERE id = ?').get(scenario.active_location_id)
+    : null;
   const rules        = db.prepare('SELECT * FROM rules WHERE scenario_id = ? ORDER BY priority DESC').all(scenario.id);
   const worldEntries = db.prepare('SELECT * FROM world_entries WHERE scenario_id = ?').all(scenario.id);
   const memories     = db.prepare('SELECT * FROM memories WHERE scenario_id = ? ORDER BY created_at DESC LIMIT 10').all(scenario.id);
@@ -161,10 +175,16 @@ export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
     WHERE cr.scenario_id = ?
     ORDER BY cf.name
   `).all(scenario.id);
+  const lastTurn     = db.prepare(
+    'SELECT scene_card_json FROM turns WHERE scenario_id = ? ORDER BY turn_number DESC LIMIT 1'
+  ).get(scenario.id);
+  const lastArousal  = lastTurn?.scene_card_json
+    ? (JSON.parse(lastTurn.scene_card_json).arousal_level ?? 1)
+    : 1;
 
   const config       = resolveMasterConfig(db);
   const backend      = await resolveNarratorBackend(db);
-  const systemPrompt = buildSystemPrompt({ scenario, characters, rules, worldEntries, memories, relationships, config });
+  const systemPrompt = buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships, lastArousal, config });
 
   const fullMessages = [
     { role: 'system', content: systemPrompt },

@@ -38,10 +38,12 @@ router.post('/', function (req, res) {
 });
 
 router.put('/:id', function (req, res) {
-  const {
-    description, prompt_prefix, prompt_suffix, negative_additions,
-    lora1_file, lora1_strength, lora2_file, lora2_strength, steps_override, cfg_override,
-  } = req.body;
+  const existing = db.prepare('SELECT * FROM image_profiles WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Profile not found' });
+
+  const b = req.body;
+  const steps = 'steps_override' in b ? b.steps_override : existing.steps_override;
+  const cfg   = 'cfg_override'   in b ? b.cfg_override   : existing.cfg_override;
 
   db.prepare(`
     UPDATE image_profiles SET
@@ -57,22 +59,20 @@ router.put('/:id', function (req, res) {
       cfg_override       = ?
     WHERE id = ?
   `).run(
-    description        ?? null,
-    prompt_prefix      ?? null,
-    prompt_suffix      ?? null,
-    negative_additions ?? null,
-    lora1_file         ?? null,
-    lora1_strength     ?? null,
-    lora2_file         ?? null,
-    lora2_strength     ?? null,
-    steps_override     ?? null,
-    cfg_override       ?? null,
+    b.description        ?? null,
+    b.prompt_prefix      ?? null,
+    b.prompt_suffix      ?? null,
+    b.negative_additions ?? null,
+    b.lora1_file         ?? null,
+    b.lora1_strength     ?? null,
+    b.lora2_file         ?? null,
+    b.lora2_strength     ?? null,
+    steps,
+    cfg,
     req.params.id,
   );
 
-  const row = db.prepare('SELECT * FROM image_profiles WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Profile not found' });
-  res.json(row);
+  res.json(db.prepare('SELECT * FROM image_profiles WHERE id = ?').get(req.params.id));
 });
 
 // /active must precede /:id so Express doesn't capture "active" as an id param
