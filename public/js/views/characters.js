@@ -91,6 +91,27 @@ function renderCharacterList(characters) {
   });
 }
 
+function _parsePersonality(str) {
+  var empty = { traits: '', motivations: '', fears: '', social: '', boundaries: '' };
+  if (!str || !str.trim()) return empty;
+  var lines = str.split('\n');
+  var hasLabels = lines.some(function (l) {
+    return /^(PERSONALITY|MOTIVATIONS|FEARS|SOCIAL_STYLE|BOUNDARIES):/.test(l.trim());
+  });
+  if (!hasLabels) { return Object.assign({}, empty, { traits: str.trim() }); }
+  var result = Object.assign({}, empty);
+  lines.forEach(function (line) {
+    var m = line.match(/^([A-Z_]+):\s*(.*)/);
+    if (!m) return;
+    if (m[1] === 'PERSONALITY')  result.traits       = m[2].trim();
+    if (m[1] === 'MOTIVATIONS')  result.motivations  = m[2].trim();
+    if (m[1] === 'FEARS')        result.fears        = m[2].trim();
+    if (m[1] === 'SOCIAL_STYLE') result.social       = m[2].trim();
+    if (m[1] === 'BOUNDARIES')   result.boundaries   = m[2].trim();
+  });
+  return result;
+}
+
 function renderCharacterForm(char) {
   var panel = document.getElementById('char-detail-panel');
   if (!panel) return;
@@ -123,6 +144,7 @@ function renderCharacterForm(char) {
   } catch (_) { _outfitSets = []; }
   var _defaultOutfitName = char ? (char.default_outfit_name || null) : null;
   var _outfitSetsRaw = char ? (char.outfit_sets || '') : '';
+  var parsedPersonality = _parsePersonality(char ? (char.personality || '') : '');
 
   var gvLower = genderVal.toLowerCase();
   var showBreast = (gvLower === 'female' || gvLower === 'non-binary');
@@ -408,6 +430,32 @@ function renderCharacterForm(char) {
           '<div class="form-group">' +
             '<label class="form-label">Appearance Notes <span class="form-hint">general appearance notes; fallback when Image Description is empty</span></label>' +
             '<textarea class="form-input" id="char-appearance-notes" rows="3" placeholder="Physical appearance details...">' + escapeHtml(char ? (char.appearance_notes || '') : '') + '</textarea>' +
+          '</div>' +
+        '</div>' +
+
+        // --- Personality ---
+        '<div class="section-divider"></div>' +
+        '<div class="form-section">' +
+          '<h3 class="section-title" style="margin-bottom:10px">Personality</h3>' +
+          '<div class="form-group">' +
+            '<label class="form-label">Core Traits <span class="form-hint">short summary (e.g. calm, analytical, sarcastic when stressed)</span></label>' +
+            '<textarea class="form-input" id="char-personality-traits" rows="2" placeholder="e.g. calm, analytical, sarcastic when stressed">' + escapeHtml(parsedPersonality.traits) + '</textarea>' +
+          '</div>' +
+          '<div class="form-group">' +
+            '<label class="form-label">Motivations &amp; Goals</label>' +
+            '<textarea class="form-input" id="char-personality-motivations" rows="3" placeholder="What drives this character? What do they want?">' + escapeHtml(parsedPersonality.motivations) + '</textarea>' +
+          '</div>' +
+          '<div class="form-group">' +
+            '<label class="form-label">Fears &amp; Vulnerabilities</label>' +
+            '<textarea class="form-input" id="char-personality-fears" rows="3" placeholder="What do they fear? What are their weak points?">' + escapeHtml(parsedPersonality.fears) + '</textarea>' +
+          '</div>' +
+          '<div class="form-group">' +
+            '<label class="form-label">Social Style &amp; Speech Patterns</label>' +
+            '<textarea class="form-input" id="char-personality-social" rows="3" placeholder="How do they talk? Reserved or expressive? Formal or casual?">' + escapeHtml(parsedPersonality.social) + '</textarea>' +
+          '</div>' +
+          '<div class="form-group">' +
+            '<label class="form-label">Boundaries / Hard Rules</label>' +
+            '<textarea class="form-input" id="char-personality-boundaries" rows="3" placeholder="Things this character will never do or say">' + escapeHtml(parsedPersonality.boundaries) + '</textarea>' +
           '</div>' +
         '</div>' +
 
@@ -777,6 +825,13 @@ function renderCharacterForm(char) {
       moodtriggersneg:      document.getElementById('char-moodtriggersneg').value.trim()     || null,
       arousaltriggers:      document.getElementById('char-arousaltriggers').value.trim()     || null,
       image_prompt_override: (function () { var el = document.getElementById('char-image-prompt-override'); return el ? el.value.trim() || null : null; }()),
+      personality: [
+        'PERSONALITY: '  + ((document.getElementById('char-personality-traits')       || {}).value || '').trim(),
+        'MOTIVATIONS: '  + ((document.getElementById('char-personality-motivations')  || {}).value || '').trim(),
+        'FEARS: '        + ((document.getElementById('char-personality-fears')        || {}).value || '').trim(),
+        'SOCIAL_STYLE: ' + ((document.getElementById('char-personality-social')       || {}).value || '').trim(),
+        'BOUNDARIES: '   + ((document.getElementById('char-personality-boundaries')   || {}).value || '').trim(),
+      ].join('\n'),
     };
     if (!data.name) { showToast('Name is required.', 'error'); return; }
     setLoading(btn, true, 'Saving...');

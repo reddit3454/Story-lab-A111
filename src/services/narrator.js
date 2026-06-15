@@ -55,14 +55,32 @@ export function buildSystemPrompt({ scenario, characters, rules, worldEntries, m
     parts.push(`Story Memory:\n${block}`);
   }
 
-  // 6. NSFW instruction
+  // 6. Character personalities
+  const charsWithPersonality = characters.filter(c => c.personality && c.personality.trim());
+  if (charsWithPersonality.length > 0) {
+    const header = [
+      'CHARACTER PERSONALITIES',
+      'You are given structured personality profiles for the active cast. Use them as follows:',
+      '- Treat PERSONALITY and MOTIVATIONS as primary drivers of each character\'s decisions and reactions.',
+      '- Use FEARS to shape their responses under pressure.',
+      '- Use SOCIAL_STYLE to guide their dialogue wording, tone, and pacing.',
+      '- Respect BOUNDARIES: do not have the character act in ways that contradict those constraints.',
+      '',
+    ].join('\n');
+    const block = charsWithPersonality.map(c =>
+      `CHARACTER: ${c.name}\nROLE: ${c.role || 'character'}\n${c.personality}`
+    ).join('\n\n');
+    parts.push(header + block);
+  }
+
+  // 7. NSFW instruction
   if (scenario.nsfw_enabled && config.nsfw_enabled) {
     parts.push('Explicit adult content is permitted in this story. Write without censorship when the narrative calls for it.');
   } else {
     parts.push('Keep content tasteful. Avoid explicit sexual content.');
   }
 
-  // 7. Scene card instruction
+  // 8. Scene card instruction
   parts.push(SCENE_CARD_INSTRUCTION);
 
   return parts.join('\n\n---\n\n');
