@@ -1,5 +1,6 @@
 import * as ollama from './ollama.js';
 import { resolveMasterConfig } from './config-resolver.js';
+import { audit } from './audit.js';
 import { resolveNarratorModel } from './model-resolver.js';
 import { parseNarratorResponse } from '../input-parser.js';
 import { log, logError } from '../logger.js';
@@ -223,6 +224,13 @@ export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
   );
 
   const maxTokens = parseInt(config.narrator_max_tokens || '1200', 10);
+
+  if (tokenEstimate >= maxTokens * 0.85) {
+    console.warn('[narrator] context warning: token estimate', tokenEstimate, 'is near or over max', maxTokens);
+    audit({ service: 'narrator', stage: 'context_near_limit', status: 'warn',
+            message: 'token estimate near limit', scenario_id: scenario.id,
+            input: { tokenEstimate, narrator_max_tokens: maxTokens, scenarioId: scenario.id } });
+  }
 
   let responseText;
   if (backend.backend === 'llamacpp') {

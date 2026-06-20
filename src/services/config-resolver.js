@@ -3,6 +3,7 @@ const NUMERIC_KEYS = new Set([
   'hr_steps', 'hr_scale', 'hr_denoising', 'ad_strength',
   'ipadapter_weight', 'ipadapter_end',
   'lora1_strength', 'lora2_strength',
+  'img2img_denoising',
 ]);
 
 const BOOLEAN_KEYS = new Set(['hr_enabled', 'ad_enabled', 'lora_enabled', 'nsfw_enabled', 'explicit_mode', 'ipadapter_enabled']);

@@ -162,7 +162,7 @@ router.post('/', async function (req, res) {
       // Fire memory generation async if threshold reached
       if (memory.shouldGenerateMemory(narratorTurnNum)) {
         const allTurns = db.prepare('SELECT * FROM turns WHERE scenario_id = ? ORDER BY turn_number ASC').all(scenarioId);
-        memory.generateMemory({ db, scenarioId, turns: allTurns, config: {} }).catch(function (err) {
+        memory.generateMemory({ db, scenarioId, turns: allTurns, config: resolveMasterConfig(db) }).catch(function (err) {
           console.error('[memory] auto-generate failed:', err.message);
         });
       }

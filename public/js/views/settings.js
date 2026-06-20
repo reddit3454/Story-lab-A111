@@ -928,9 +928,10 @@ function wireMasterSettings() {
         '</div>' +
         '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:12px">' +
           '<div class="form-group" style="margin:0"><label class="form-label">CLIP Skip</label><input class="form-input" id="ms-clip-skip" type="number" min="1" max="4" step="1" value="' + v('clip_skip',2) + '"></div>' +
-          '<div class="form-group" style="margin:0"><label class="form-label">Global Negative Prompt</label></div>' +
+          '<div class="form-group" style="margin:0"><label class="form-label">Img2Img Denoising Strength</label><input class="form-input" id="ms-img2img-denoising" type="number" min="0.1" max="1.0" step="0.05" value="' + v('img2img_denoising', 0.45) + '"><p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">How much the image changes during img2img. Lower = subtle changes, higher = dramatic.</p></div>' +
         '</div>' +
         '<div class="form-group">' +
+          '<label class="form-label">Global Negative Prompt</label>' +
           '<textarea class="form-input" id="ms-negative" rows="2" placeholder="lowres, bad anatomy, bad hands, blurry...">' + escapeHtml(v('a1111_negative_prompt','')) + '</textarea>' +
         '</div>' +
       '</div>' +
@@ -1207,6 +1208,7 @@ function wireMasterSettings() {
           ipadapter_end:          tv('ms-ipa-end') || '0.6',
           prompt_extractor_model: (tv('ms-extractor-model') || '').trim(),
           location_bg_mode:       tv('ms-location-bg-mode') || 'image',
+          img2img_denoising:      tv('ms-img2img-denoising') || '0.45',
           lora_enabled:           loraOn ? 'true' : 'false',
           lora1_file:             (tv('ms-lora1') || '').trim(),
           lora1_strength:         tv('ms-lora1s') || '1.0',

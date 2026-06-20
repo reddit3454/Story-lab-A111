@@ -366,7 +366,7 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
       genResult = await a1111.img2img(baseUrl, {
         ...basePayload,
         init_images:        [`data:image/png;base64,${bgBase64}`],
-        denoising_strength: 0.45,
+        denoising_strength: config.img2img_denoising ?? 0.45,
         resize_mode:        1,
       }, savePath);
     } else {

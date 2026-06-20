@@ -1,39 +1,6 @@
 import { generate } from './ollama.js';
 
 // ---------------------------------------------------------------------------
-// buildMotionPrompt
-// Produces a short motion description for video/animation from a picked moment
-// or scene card. Accepts either format; never throws; never returns null.
-// ---------------------------------------------------------------------------
-export function buildMotionPrompt(sceneCardOrPickedMoment) {
-  const src = sceneCardOrPickedMoment;
-  if (!src || typeof src !== 'object') {
-    return 'subtle natural breathing, soft blink, gentle ambient motion, slight camera drift';
-  }
-
-  const parts = [];
-
-  const action = src.visibleAction || src.action || null;
-  if (action && action.length < 120) {
-    parts.push(action.trim().replace(/\.+$/, ''));
-  }
-
-  const setting = src.setting || src.environment || null;
-  if (setting && setting.length < 60 && parts.length < 2) {
-    parts.push(setting.trim().replace(/\.+$/, ''));
-  }
-
-  const mood = src.mood || src.atmosphere || null;
-  if (mood && mood.length < 40 && parts.length < 2) {
-    parts.push(mood.trim().replace(/\.+$/, ''));
-  }
-
-  parts.push('subtle breathing, gentle camera drift');
-
-  return parts.join(', ').slice(0, 200);
-}
-
-// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
