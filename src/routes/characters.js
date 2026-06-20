@@ -235,7 +235,8 @@ router.put('/:id', function (req, res) {
       moodtriggersneg      = ?,
       arousaltriggers      = ?,
       image_prompt_override = ?,
-      unique_trait          = ?
+      unique_trait          = ?,
+      reference_image       = ?
     WHERE id = ?
   `).run(
     b.name                ?? null,
@@ -279,6 +280,7 @@ router.put('/:id', function (req, res) {
     b.arousaltriggers     ?? null,
     b.image_prompt_override ?? null,
     b.unique_trait          ?? null,
+    b.reference_image       ?? '',
     req.params.id,
   );
 

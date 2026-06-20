@@ -6,6 +6,7 @@ import { initScenarioSetup } from './views/scenario-setup.js';
 import { initPlay } from './views/play.js';
 import { connectWs } from './views/play.js';
 import { initSettings } from './views/settings.js';
+import { initLocations } from './views/locations.js';
 
 // Expose UI helpers so non-module scripts (locations-init.js, styles-init.js) can use them
 window.showToast   = showToast;
@@ -31,7 +32,7 @@ export function router() {
   else if (view === 'scenario-setup') { activate('view-scenario-setup'); initScenarioSetup(params.get('id')); }
   else if (view === 'play')           { activate('view-play');           initPlay(params.get('scenario')); }
   else if (view === 'settings')       { activate('view-settings');       initSettings(); }
-  else if (view === 'locations')      { activate('view-locations');      if (typeof window.initLocations === 'function') window.initLocations(); }
+  else if (view === 'locations')      { activate('view-locations');      initLocations(params.get('scenario')); }
   else    { location.hash = '#dashboard'; }
 }
 

@@ -855,10 +855,17 @@ function wireMasterSettings() {
   function g(id) { return document.getElementById(id); }
   function tv(id) { var el = g(id); return el ? (el.type === 'checkbox' ? el.checked : el.value) : ''; }
 
-  function buildMasterForm(cfg, samplerList, schedulerList) {
+  function buildMasterForm(cfg, samplerList, schedulerList, loraList) {
     cfg = cfg || {};
     function v(key, def) { return cfg[key] != null ? cfg[key] : def; }
     function boolCfg(key, def) { var val = v(key, def); return val === true || val === 'true' || val === 1 || val === '1'; }
+    function buildLoraOpts(selected) {
+      return '<option value="">-- none --</option>' +
+        (loraList || []).map(function (l) {
+          var nm = typeof l === 'string' ? l : (l.name || l.alias || '');
+          return '<option value="' + escapeHtml(nm) + '"' + (nm === (selected || '') ? ' selected' : '') + '>' + escapeHtml(nm) + '</option>';
+        }).join('');
+    }
 
     var samplerOpts = (samplerList || A1111_SAMPLERS).map(function (s) {
       return '<option value="' + escapeHtml(s) + '"' + (v('a1111_sampler','DPM++ 2M SDE') === s ? ' selected' : '') + '>' + escapeHtml(s) + '</option>';
@@ -964,6 +971,77 @@ function wireMasterSettings() {
         '</div>' +
       '</div>' +
 
+      // ---- IP-Adapter ----
+      '<div style="margin-bottom:24px">' +
+        '<h3 class="imggen-section-head">IP-Adapter (Face Consistency)</h3>' +
+        '<div style="margin-bottom:10px">' +
+          '<label class="toggle-label">' +
+            '<span>Enable IP-Adapter face consistency</span>' +
+            '<div class="toggle' + (boolCfg('ipadapter_enabled', false) ? ' active' : '') + '" id="ms-ipa-enabled"></div>' +
+          '</label>' +
+        '</div>' +
+        '<div id="ms-ipa-params" style="' + (boolCfg('ipadapter_enabled', false) ? '' : 'display:none') + '">' +
+          '<div class="form-group" style="margin:0 0 12px">' +
+            '<label class="form-label">ControlNet model name</label>' +
+            '<input class="form-input" id="ms-ipa-model" type="text" value="' + escapeHtml(v('ipadapter_model','ip-adapter-plus-face_sdxl_vit-h [andrewnuness]')) + '">' +
+            '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--color-warning,#f59e0b);font-weight:500">Must match your ControlNet model name exactly as shown in A1111\'s model list.</p>' +
+          '</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+            '<div class="form-group" style="margin:0">' +
+              '<label class="form-label">Influence weight <span class="form-hint">(0.35 rec.)</span></label>' +
+              '<input class="form-input" id="ms-ipa-weight" type="number" min="0.1" max="0.8" step="0.05" value="' + v('ipadapter_weight', 0.35) + '">' +
+            '</div>' +
+            '<div class="form-group" style="margin:0">' +
+              '<label class="form-label">Stop at step % <span class="form-hint">(0.6 rec.)</span></label>' +
+              '<input class="form-input" id="ms-ipa-end" type="number" min="0.3" max="1.0" step="0.05" value="' + v('ipadapter_end', 0.6) + '">' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      // ---- Global LoRAs ----
+      '<div style="margin-bottom:24px">' +
+        '<h3 class="imggen-section-head">Global LoRAs</h3>' +
+        '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">Applied on every generation unless overridden by an active profile. LoRA filenames must match exactly as listed in A1111.</p>' +
+        '<div style="margin-bottom:10px">' +
+          '<label class="toggle-label">' +
+            '<span>Enable LoRAs in generation</span>' +
+            '<div class="toggle' + (boolCfg('lora_enabled', true) ? ' active' : '') + '" id="ms-lora-enabled"></div>' +
+          '</label>' +
+        '</div>' +
+        '<div id="ms-lora-params" style="' + (boolCfg('lora_enabled', true) ? '' : 'display:none') + '">' +
+          '<div style="display:grid;grid-template-columns:1fr 90px;gap:8px;margin-bottom:8px">' +
+            '<div class="form-group" style="margin:0"><label class="form-label">LoRA 1</label>' +
+              '<select class="form-input" id="ms-lora1">' + buildLoraOpts(v('lora1_file', '')) + '</select>' +
+            '</div>' +
+            '<div class="form-group" style="margin:0"><label class="form-label">Strength</label>' +
+              '<input class="form-input" id="ms-lora1s" type="number" min="0" max="3" step="0.05" value="' + v('lora1_strength', 1.0) + '">' +
+            '</div>' +
+          '</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 90px;gap:8px">' +
+            '<div class="form-group" style="margin:0"><label class="form-label">LoRA 2</label>' +
+              '<select class="form-input" id="ms-lora2">' + buildLoraOpts(v('lora2_file', '')) + '</select>' +
+            '</div>' +
+            '<div class="form-group" style="margin:0"><label class="form-label">Strength</label>' +
+              '<input class="form-input" id="ms-lora2s" type="number" min="0" max="3" step="0.05" value="' + v('lora2_strength', 1.0) + '">' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      // ---- Location Background Mode ----
+      '<div style="margin-bottom:24px">' +
+        '<h3 class="imggen-section-head">Location Backgrounds</h3>' +
+        '<div class="form-group" style="margin:0">' +
+          '<label class="form-label">Background mode</label>' +
+          '<select class="form-input" id="ms-location-bg-mode">' +
+            '<option value="image"' + (v('location_bg_mode', 'image') === 'image' ? ' selected' : '') + '>Background images (img2img)</option>' +
+            '<option value="description"' + (v('location_bg_mode', 'image') === 'description' ? ' selected' : '') + '>Location description (text tags, txt2img)</option>' +
+          '</select>' +
+          '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)"><b>Background images</b>: uses pre-rendered location images as an img2img reference. <b>Location description</b>: injects the location\'s image tags into the prompt instead (txt2img).</p>' +
+        '</div>' +
+      '</div>' +
+
       // ---- Prompt Extractor ----
       '<div style="margin-bottom:24px">' +
         '<h3 class="imggen-section-head">Prompt Extractor</h3>' +
@@ -1001,6 +1079,24 @@ function wireMasterSettings() {
       adToggle.onclick = function () {
         adToggle.classList.toggle('active');
         adParams.style.display = adToggle.classList.contains('active') ? '' : 'none';
+      };
+    }
+    // IP-Adapter toggle
+    var ipaToggle = g('ms-ipa-enabled');
+    var ipaParams = g('ms-ipa-params');
+    if (ipaToggle && ipaParams) {
+      ipaToggle.onclick = function () {
+        ipaToggle.classList.toggle('active');
+        ipaParams.style.display = ipaToggle.classList.contains('active') ? '' : 'none';
+      };
+    }
+    // LoRA toggle
+    var loraToggle = g('ms-lora-enabled');
+    var loraParams = g('ms-lora-params');
+    if (loraToggle && loraParams) {
+      loraToggle.onclick = function () {
+        loraToggle.classList.toggle('active');
+        loraParams.style.display = loraToggle.classList.contains('active') ? '' : 'none';
       };
     }
     // Test connection
@@ -1083,8 +1179,10 @@ function wireMasterSettings() {
     var statusEl = g('ms-status');
     if (saveBtn) {
       saveBtn.onclick = function () {
-        var hrOn = g('ms-hr-enabled') && g('ms-hr-enabled').classList.contains('active') ? 1 : 0;
-        var adOn = g('ms-ad-enabled') && g('ms-ad-enabled').classList.contains('active') ? 1 : 0;
+        var hrOn   = g('ms-hr-enabled')   && g('ms-hr-enabled').classList.contains('active')   ? 1 : 0;
+        var adOn   = g('ms-ad-enabled')   && g('ms-ad-enabled').classList.contains('active')   ? 1 : 0;
+        var ipaOn  = g('ms-ipa-enabled')  && g('ms-ipa-enabled').classList.contains('active')  ? 1 : 0;
+        var loraOn = g('ms-lora-enabled') && g('ms-lora-enabled').classList.contains('active') ? 1 : 0;
         var map = {
           a1111_url:           (tv('ms-url') || '').trim() || 'http://127.0.0.1:7860',
           a1111_sampler:       tv('ms-sampler') || 'DPM++ 2M SDE',
@@ -1103,7 +1201,17 @@ function wireMasterSettings() {
           ad_enabled:             adOn ? 'true' : 'false',
           ad_model:               (tv('ms-ad-model') || '').trim() || 'face_yolov8n.pt',
           ad_strength:            tv('ms-ad-strength') || '0.4',
+          ipadapter_enabled:      ipaOn ? 'true' : 'false',
+          ipadapter_model:        (tv('ms-ipa-model') || '').trim() || 'ip-adapter-plus-face_sdxl_vit-h [andrewnuness]',
+          ipadapter_weight:       tv('ms-ipa-weight') || '0.35',
+          ipadapter_end:          tv('ms-ipa-end') || '0.6',
           prompt_extractor_model: (tv('ms-extractor-model') || '').trim(),
+          location_bg_mode:       tv('ms-location-bg-mode') || 'image',
+          lora_enabled:           loraOn ? 'true' : 'false',
+          lora1_file:             (tv('ms-lora1') || '').trim(),
+          lora1_strength:         tv('ms-lora1s') || '1.0',
+          lora2_file:             (tv('ms-lora2') || '').trim(),
+          lora2_strength:         tv('ms-lora2s') || '1.0',
         };
         saveBtn.disabled = true;
         if (statusEl) statusEl.textContent = 'Saving...';
@@ -1130,11 +1238,13 @@ function wireMasterSettings() {
     API.getConfig(),
     API.getA1111Samplers().catch(function () { return []; }),
     API.getA1111Schedulers().catch(function () { return []; }),
+    API.getA1111Loras().catch(function () { return []; }),
   ]).then(function (results) {
     var cfg        = results[0].config || results[0] || {};
     var samplers   = Array.isArray(results[1]) && results[1].length ? results[1] : null;
     var schedulers = Array.isArray(results[2]) && results[2].length ? results[2] : null;
-    buildMasterForm(cfg, samplers, schedulers);
+    var loraList   = Array.isArray(results[3]) ? results[3] : [];
+    buildMasterForm(cfg, samplers, schedulers, loraList);
   }).catch(function (err) {
     container.innerHTML = '<p style="color:var(--danger);font-size:13px">Failed to load config: ' + escapeHtml(err.message) + '</p>' +
       '<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="(function(){var c=document.getElementById(\'imggen-master\');if(c){c.innerHTML=\'<div class=loading-state>Loading...</div>\';_masterSettingsWired=false;wireMasterSettings();}})()">Retry</button>';
@@ -1236,11 +1346,11 @@ function wireProfiles() {
       '<div class="form-group"><label class="form-label">Prompt Suffix</label><textarea class="form-input" id="pe-suffix" rows="2" placeholder="cinematic lighting, 8k...">' + escapeHtml(p.prompt_suffix || '') + '</textarea></div>' +
       '<div class="form-group"><label class="form-label">Negative Additions</label><textarea class="form-input" id="pe-negative" rows="2" placeholder="extra terms added to global negative...">' + escapeHtml(p.negative_additions || '') + '</textarea></div>' +
       '<div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px">' +
-        '<div class="form-group" style="margin:0"><label class="form-label">LoRA 1</label><input class="form-input" id="pe-lora1" type="text" value="' + escapeHtml(p.lora1_file || '') + '" placeholder="filename.safetensors"></div>' +
+        '<div class="form-group" style="margin:0"><label class="form-label">LoRA 1</label><select class="form-input" id="pe-lora1"><option value="">Loading...</option></select></div>' +
         '<div class="form-group" style="margin:0;min-width:90px"><label class="form-label">Strength</label><input class="form-input" id="pe-lora1s" type="number" min="0" max="3" step="0.05" value="' + (p.lora1_strength != null ? p.lora1_strength : 0.75) + '"></div>' +
       '</div>' +
       '<div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:12px">' +
-        '<div class="form-group" style="margin:0"><label class="form-label">LoRA 2</label><input class="form-input" id="pe-lora2" type="text" value="' + escapeHtml(p.lora2_file || '') + '" placeholder="filename.safetensors"></div>' +
+        '<div class="form-group" style="margin:0"><label class="form-label">LoRA 2</label><select class="form-input" id="pe-lora2"><option value="">Loading...</option></select></div>' +
         '<div class="form-group" style="margin:0;min-width:90px"><label class="form-label">Strength</label><input class="form-input" id="pe-lora2s" type="number" min="0" max="3" step="0.05" value="' + (p.lora2_strength != null ? p.lora2_strength : 0.75) + '"></div>' +
       '</div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">' +
@@ -1252,6 +1362,33 @@ function wireProfiles() {
         '<button class="btn btn-ghost btn-sm" id="pe-cancel">Cancel</button>' +
         '<span id="pe-status" style="font-size:12px;color:var(--text-muted);align-self:center"></span>' +
       '</div>';
+
+    // Populate LoRA selects from A1111
+    var _peLora1Cur = p.lora1_file || '';
+    var _peLora2Cur = p.lora2_file || '';
+    API.getA1111Loras().then(function (data) {
+      var loras = Array.isArray(data) ? data : [];
+      function makeOpts(cur) {
+        return '<option value="">-- none --</option>' +
+          loras.map(function (l) {
+            var nm = typeof l === 'string' ? l : (l.name || l.alias || '');
+            return '<option value="' + escapeHtml(nm) + '"' + (nm === cur ? ' selected' : '') + '>' + escapeHtml(nm) + '</option>';
+          }).join('');
+      }
+      var s1 = document.getElementById('pe-lora1');
+      var s2 = document.getElementById('pe-lora2');
+      if (s1) s1.innerHTML = makeOpts(_peLora1Cur);
+      if (s2) s2.innerHTML = makeOpts(_peLora2Cur);
+    }).catch(function () {
+      function offlineOpts(cur) {
+        return '<option value="">-- none --</option>' +
+          (cur ? '<option value="' + escapeHtml(cur) + '" selected>' + escapeHtml(cur) + '</option>' : '');
+      }
+      var s1 = document.getElementById('pe-lora1');
+      var s2 = document.getElementById('pe-lora2');
+      if (s1) s1.innerHTML = offlineOpts(_peLora1Cur);
+      if (s2) s2.innerHTML = offlineOpts(_peLora2Cur);
+    });
 
     function gv(id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; }
     var saveBtn  = document.getElementById('pe-save');

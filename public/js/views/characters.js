@@ -178,6 +178,23 @@ function renderCharacterForm(char) {
       '<div id="faceid-display" style="margin-top:10px">' + faceIdThumb + '</div>' +
     '</div>' +
     '<div class="section-divider"></div>' +
+    '<div class="ipadapter-section">' +
+      '<div class="references-header">' +
+        '<div>' +
+          '<h3 class="section-title" style="margin-bottom:2px">IP-Adapter Reference</h3>' +
+          '<p class="form-hint" style="margin:0">Image used for IP-Adapter face consistency. Click the menu on any image below to set.</p>' +
+        '</div>' +
+        '<div class="references-actions">' +
+          (char && char.reference_image ? '<button class="btn btn-danger btn-sm" id="btn-ipadapter-clear">Clear</button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div id="ipadapter-display" style="margin-top:8px;font-size:13px">' +
+        (char && char.reference_image
+          ? '<span style="color:var(--color-success,#22c55e)">&#9733; <code style="font-size:11px">' + escapeHtml(char.reference_image) + '</code></span>'
+          : '<span style="color:var(--text-muted)">Not set. Click &#x22EE; on any generated image to set.</span>') +
+      '</div>' +
+    '</div>' +
+    '<div class="section-divider"></div>' +
     '<div class="references-section">' +
       '<div class="references-header">' +
         '<h3 class="section-title">Reference Images</h3>' +
@@ -794,6 +811,7 @@ function renderCharacterForm(char) {
       appearance_notes:     document.getElementById('char-appearance-notes').value.trim(),
       is_user_character:    document.getElementById('char-is-user').classList.contains('active') ? 1 : 0,
       reference_image_path: char ? (char.reference_image_path || null) : null,
+      reference_image:      char ? (char.reference_image || '') : '',
       gender:               document.getElementById('char-gender').value || '',
       age_range:            document.getElementById('char-age-range').value || 'adult',
       hair_color:           document.getElementById('char-hair-color').value  || '',
@@ -1203,6 +1221,25 @@ function renderCharacterForm(char) {
       };
     }
 
+    var ipaClearBtn = document.getElementById('btn-ipadapter-clear');
+    if (ipaClearBtn) {
+      ipaClearBtn.onclick = function () {
+        showConfirm('Clear IP-Adapter Reference', 'Remove the IP-Adapter reference for "' + char.name + '"?', function () {
+          setLoading(ipaClearBtn, true, 'Clearing...');
+          var updateData = Object.assign({}, state.currentCharacter, { reference_image: '' });
+          API.updateCharacter(char.id, updateData).then(function (result) {
+            showToast('IP-Adapter reference cleared.', 'success');
+            state.currentCharacter = result;
+            renderCharacterForm(result);
+          }).catch(function (err) {
+            showToast('Clear failed: ' + err.message, 'error');
+            var b = document.getElementById('btn-ipadapter-clear');
+            if (b) setLoading(b, false);
+          });
+        });
+      };
+    }
+
     var faceIdUploadBtn   = document.getElementById('btn-faceid-upload');
     var faceIdUploadInput = document.getElementById('faceid-upload-input');
     if (faceIdUploadBtn && faceIdUploadInput) {
@@ -1414,12 +1451,18 @@ function loadReferences(charId) {
       grid.innerHTML = '<div class="empty-state small">No reference images yet.</div>';
       return;
     }
+    var currentIpRef = state.currentCharacter ? (state.currentCharacter.reference_image || '') : '';
     grid.innerHTML = refs.map(function (ref) {
+      var isIpRef = ref.filename === currentIpRef;
       return '<div class="ref-thumb' + (ref.accepted ? ' accepted' : '') + '" data-ref-id="' + ref.id + '">' +
         '<img src="' + imageSrc(ref.filename) + '" alt="Ref" loading="lazy" onerror="this.style.display=\'none\'">' +
         (ref.accepted ? '<div class="ref-badge-accepted">Active</div>' : '') +
+        (isIpRef ? '<div class="ref-badge-accepted" style="bottom:22px;background:var(--color-success,#22c55e)">IP-Ref</div>' : '') +
         '<div class="ref-hover">' +
           (!ref.accepted ? '<button class="btn btn-success btn-xs ref-accept-btn" data-ref-id="' + ref.id + '">Accept</button>' : '') +
+          '<button class="btn ' + (isIpRef ? 'btn-warning' : 'btn-secondary') + ' btn-xs ip-ref-set-btn" data-filename="' + escapeHtml(ref.filename) + '">' +
+            (isIpRef ? '&#9733; IP-Ref' : 'Set IP-Ref') +
+          '</button>' +
           '<button class="btn btn-danger btn-xs ref-delete-btn" data-ref-id="' + ref.id + '">Delete</button>' +
           (ref.prompt_used ? '<div class="ref-prompt">' + escapeHtml(ref.prompt_used) + '</div>' : '') +
         '</div>' +
@@ -1432,6 +1475,23 @@ function loadReferences(charId) {
         API.acceptReference(charId, btn.dataset.refId).then(function () {
           showToast('Reference accepted!', 'success');
           loadReferences(charId);
+        }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
+      };
+    });
+
+    grid.querySelectorAll('.ip-ref-set-btn').forEach(function (btn) {
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        if (!state.currentCharacter) return;
+        var filename = btn.dataset.filename;
+        var updateData = Object.assign({}, state.currentCharacter, { reference_image: filename });
+        API.updateCharacter(charId, updateData).then(function (result) {
+          state.currentCharacter = result;
+          showToast('IP-Adapter reference set!', 'success');
+          var displayEl = document.getElementById('ipadapter-display');
+          if (displayEl) displayEl.innerHTML = '<span style="color:var(--color-success,#22c55e)">&#9733; <code style="font-size:11px">' + escapeHtml(filename) + '</code></span>';
+          loadReferences(charId);
+          loadFullbodies(charId);
         }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
       };
     });
@@ -1476,12 +1536,18 @@ function renderFullbodyGrid(charId, fbs) {
     if (typeof window._refreshFaceIdSlotOrder === 'function') setTimeout(window._refreshFaceIdSlotOrder, 50);
     return;
   }
+  var currentIpRefFb = state.currentCharacter ? (state.currentCharacter.reference_image || '') : '';
   grid.innerHTML = fbs.map(function (fb) {
     var canDelete = count > 1;
+    var isIpRef   = fb.filename === currentIpRefFb;
     return '<div class="ref-thumb" data-fb-id="' + fb.id + '">' +
       '<img src="' + imageSrc(fb.filename) + '" alt="Full body" loading="lazy" onerror="this.style.display=\'none\'">' +
+      (isIpRef ? '<div class="ref-badge-accepted" style="bottom:22px;background:var(--color-success,#22c55e)">IP-Ref</div>' : '') +
       '<div class="ref-hover">' +
         '<button class="btn btn-success btn-xs fb-use-ref-btn" data-fb-id="' + fb.id + '">Use as Ref</button>' +
+        '<button class="btn ' + (isIpRef ? 'btn-warning' : 'btn-secondary') + ' btn-xs fb-ip-ref-btn" data-filename="' + escapeHtml(fb.filename) + '">' +
+          (isIpRef ? '&#9733; IP-Ref' : 'Set IP-Ref') +
+        '</button>' +
         (canDelete
           ? '<button class="btn btn-danger btn-xs fb-delete-btn" data-fb-id="' + fb.id + '">Delete</button>'
           : '<button class="btn btn-danger btn-xs" disabled style="cursor:not-allowed;opacity:0.5" ' +
@@ -1502,6 +1568,23 @@ function renderFullbodyGrid(charId, fbs) {
             'alt="FaceID reference" class="faceid-thumb" id="faceid-thumb-img" ' +
             'onerror="this.style.display=\'none\'">';
         }
+      }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
+    };
+  });
+
+  grid.querySelectorAll('.fb-ip-ref-btn').forEach(function (btn) {
+    btn.onclick = function (e) {
+      e.stopPropagation();
+      if (!state.currentCharacter) return;
+      var filename = btn.dataset.filename;
+      var updateData = Object.assign({}, state.currentCharacter, { reference_image: filename });
+      API.updateCharacter(charId, updateData).then(function (result) {
+        state.currentCharacter = result;
+        showToast('IP-Adapter reference set!', 'success');
+        var displayEl = document.getElementById('ipadapter-display');
+        if (displayEl) displayEl.innerHTML = '<span style="color:var(--color-success,#22c55e)">&#9733; <code style="font-size:11px">' + escapeHtml(filename) + '</code></span>';
+        loadReferences(charId);
+        loadFullbodies(charId);
       }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
     };
   });

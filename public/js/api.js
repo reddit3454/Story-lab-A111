@@ -85,6 +85,13 @@
     getScenarioLocations:       function (sid)        { return request('GET',    '/api/scenarios/' + sid + '/locations'); },
     addLocationToScenario:      function (sid, locId) { return request('POST',   '/api/scenarios/' + sid + '/locations/' + locId + '/add'); },
     removeLocationFromScenario: function (sid, locId) { return request('DELETE', '/api/scenarios/' + sid + '/locations/' + locId + '/remove'); },
+    setScenarioActiveLocation:   function (sid, locId) { return request('PUT',    '/api/scenarios/' + sid, { active_location_id: locId }); },
+    clearScenarioActiveLocation: function (sid)        { return request('PUT',    '/api/scenarios/' + sid, { active_location_id: null }); },
+    getScenarioActiveLocation:   function (sid)        {
+      return request('GET', '/api/scenarios/' + sid).then(function (d) {
+        return { active_location_id: (d.scenario || d).active_location_id || null };
+      });
+    },
 
     /* Location backgrounds — global DB-driven */
     getLocationBackgrounds:       function (locId)           { return request('GET',    '/api/locations/' + locId + '/backgrounds'); },

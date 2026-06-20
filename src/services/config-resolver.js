@@ -1,9 +1,11 @@
 const NUMERIC_KEYS = new Set([
   'a1111_steps', 'a1111_cfg', 'a1111_width', 'a1111_height', 'a1111_clip_skip',
   'hr_steps', 'hr_scale', 'hr_denoising', 'ad_strength',
+  'ipadapter_weight', 'ipadapter_end',
+  'lora1_strength', 'lora2_strength',
 ]);
 
-const BOOLEAN_KEYS = new Set(['hr_enabled', 'ad_enabled', 'lora_enabled', 'nsfw_enabled', 'explicit_mode']);
+const BOOLEAN_KEYS = new Set(['hr_enabled', 'ad_enabled', 'lora_enabled', 'nsfw_enabled', 'explicit_mode', 'ipadapter_enabled']);
 
 // Profile cannot override these master constraints
 const STRUCTURAL_KEYS = new Set([

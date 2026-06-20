@@ -19,7 +19,7 @@ function _locationSlug(name) {
 
 const IMAGE_EXT = /\.(png|jpg|jpeg)$/i;
 
-function _buildA1111Payload(config, prompt, negative) {
+function _buildA1111Payload(config, prompt, negative, referenceImageBase64 = null) {
   const payload = {
     prompt,
     negative_prompt:  negative,
@@ -53,6 +53,23 @@ function _buildA1111Payload(config, prompt, negative) {
           ad_denoising_strength:  config.ad_strength || 0.4,
         }],
       },
+    };
+  }
+
+  if (referenceImageBase64 && config.ipadapter_enabled) {
+    if (!payload.alwayson_scripts) payload.alwayson_scripts = {};
+    payload.alwayson_scripts['controlnet'] = {
+      args: [{
+        enabled:        true,
+        module:         'ip-adapter-auto',
+        model:          config.ipadapter_model || 'ip-adapter-plus-face_sdxl_vit-h [andrewnuness]',
+        weight:         parseFloat(config.ipadapter_weight) || 0.35,
+        image:          referenceImageBase64,
+        guidance_start: 0.0,
+        guidance_end:   parseFloat(config.ipadapter_end) || 0.6,
+        control_mode:   0,
+        pixel_perfect:  true,
+      }],
     };
   }
 
@@ -129,13 +146,18 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
       }
     }
 
+    // Final fallback: use scenario's pinned active location
+    const scenario = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(scenarioId);
+    if (!location && scenario?.active_location_id) {
+      location = db.prepare('SELECT * FROM locations WHERE id = ?').get(scenario.active_location_id);
+    }
+
     characters = db.prepare(`
       SELECT c.* FROM characters c
       JOIN scenario_characters sc ON c.id = sc.character_id
       WHERE sc.scenario_id = ?
       ORDER BY c.name
     `).all(scenarioId);
-    const scenario = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(scenarioId);
 
     // Stage 2a: scene_picker — advisory only, never mutates sceneCard/location/characters
     let pickedMoment = null;
@@ -169,7 +191,7 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
     if (opts.directPrompt && opts.rawPrompt) {
       sceneCard = { image_prompt: opts.rawPrompt };
     }
-    let bgPath = isBackground ? null : _resolveBackground(location);
+    let bgPath = (isBackground || config.location_bg_mode === 'description') ? null : _resolveBackground(location);
     let prompt, negative, parts;
     // Resolve clothing state for each character from this scene card's clothing_changes.
     // turns.js already applied these synchronously, but we re-resolve here to build
@@ -313,7 +335,20 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
     }
 
     fs.mkdirSync(saveDir, { recursive: true });
-    const basePayload = _buildA1111Payload(config, prompt, negative);
+
+    // Resolve IP-Adapter reference image (main character's stored reference_image path)
+    let referenceImageBase64 = null;
+    if (config.ipadapter_enabled && !isBackground) {
+      const mainCharRef = characters.find(c => c.role !== 'player') || characters[0] || null;
+      if (mainCharRef?.reference_image) {
+        const refPath = path.join(IMAGES_DIR, mainCharRef.reference_image);
+        if (fs.existsSync(refPath)) {
+          referenceImageBase64 = fs.readFileSync(refPath).toString('base64');
+        }
+      }
+    }
+
+    const basePayload = _buildA1111Payload(config, prompt, negative, referenceImageBase64);
 
     log('image-pipeline', 'PROMPT_SUBMITTED', null,
       `[FULL PROMPT]\n${basePayload.prompt}\n\n[NEGATIVE]\n${basePayload.negative_prompt}`

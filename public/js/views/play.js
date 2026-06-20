@@ -33,8 +33,8 @@ export function initPlay(scenarioId) {
       /* Sidebar */
       '<div class="play-sidebar' + (state.sidebarOpen ? '' : ' collapsed') + '" id="play-sidebar">' +
         '<div class="sidebar-tabs" id="sidebar-tabs">' +
-          ['memory','lore','rules','cast','rel'].map(function (t) {
-            var label = t === 'rel' ? 'Rels' : t[0].toUpperCase() + t.slice(1);
+          ['memory','lore','rules','cast','rel','loc'].map(function (t) {
+            var label = t === 'rel' ? 'Rels' : t === 'loc' ? 'Place' : t[0].toUpperCase() + t.slice(1);
             return '<button class="stab' + (state.currentSidebarTab===t?' active':'') + '" data-tab="' + t + '">' + label + '</button>';
           }).join('') +
         '</div>' +
@@ -2183,6 +2183,7 @@ function loadSidebarTab(tab, scenarioId) {
   else if (tab === 'rules')    renderRulesTab(content, scenarioId);
   else if (tab === 'cast')     renderCastTab(content, scenarioId);
   else if (tab === 'rel')      renderRelationshipsTab(content, scenarioId);
+  else if (tab === 'loc')      renderLocationTab(content, scenarioId);
 }
 
 function renderMemoryTab(container, scenarioId) {
@@ -2722,6 +2723,80 @@ function renderRelationshipsTab(container, scenarioId) {
   });
 }
 
+
+/* ============================================================
+   LOCATION SIDEBAR TAB
+   ============================================================ */
+function renderLocationTab(container, scenarioId) {
+  var locs    = state.allLocations || [];
+  var sc      = state.currentScenario;
+  var activeId = sc ? sc.active_location_id : null;
+
+  function buildItems() {
+    if (!locs.length) {
+      return '<p style="font-size:13px;color:var(--text-muted);padding:8px 0">' +
+        'No locations linked to this scenario.' +
+        '</p>';
+    }
+    return '<div class="loc-tab-list" style="display:flex;flex-direction:column;gap:6px;margin-top:8px">' +
+      locs.map(function (l) {
+        var isActive = l.id === activeId;
+        return '<div class="loc-tab-item" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;background:' +
+          (isActive ? 'var(--accent-muted,rgba(100,180,255,.15))' : 'var(--bg-card,#1e1e2e)') + ';border:1px solid ' +
+          (isActive ? 'var(--accent,#64b4ff)' : 'var(--border,#333)') + '">' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13px;font-weight:' + (isActive ? '600' : '400') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+              escapeHtml(l.name) +
+              (isActive ? ' <span style="font-size:11px;color:var(--accent,#64b4ff)">(active)</span>' : '') +
+            '</div>' +
+            (l.time_of_day && l.time_of_day !== 'any'
+              ? '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(l.time_of_day) + '</div>'
+              : '') +
+          '</div>' +
+          (isActive
+            ? '<button class="btn btn-ghost btn-xs loc-tab-clear" style="white-space:nowrap">Clear</button>'
+            : '<button class="btn btn-xs btn-secondary loc-tab-set" data-locid="' + l.id + '" style="white-space:nowrap">Set</button>') +
+        '</div>';
+      }).join('') +
+    '</div>';
+  }
+
+  container.innerHTML =
+    '<div style="padding:4px 0">' +
+      '<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">' +
+        'Set the active location to use its background images during generation.' +
+      '</div>' +
+      buildItems() +
+    '</div>';
+
+  container.querySelectorAll('.loc-tab-set').forEach(function (btn) {
+    btn.onclick = function () {
+      var locId = Number(btn.dataset.locid);
+      btn.disabled = true;
+      API.setScenarioActiveLocation(scenarioId, locId)
+        .then(function () {
+          if (sc) sc.active_location_id = locId;
+          renderLocationTab(container, scenarioId);
+          var loc = locs.find(function (l) { return l.id === locId; });
+          showToast('Location set: ' + escapeHtml(loc ? loc.name : String(locId)), 'success');
+        })
+        .catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
+    };
+  });
+
+  container.querySelectorAll('.loc-tab-clear').forEach(function (btn) {
+    btn.onclick = function () {
+      btn.disabled = true;
+      API.clearScenarioActiveLocation(scenarioId)
+        .then(function () {
+          if (sc) sc.active_location_id = null;
+          renderLocationTab(container, scenarioId);
+          showToast('Active location cleared.', 'info');
+        })
+        .catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
+    };
+  });
+}
 
 /* ============================================================
    MOOD / AROUSAL HELPERS

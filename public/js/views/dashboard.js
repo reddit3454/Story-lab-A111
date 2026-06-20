@@ -11,6 +11,7 @@ export function initDashboard() {
       '<div class="header-actions">' +
         '<button class="btn btn-ghost btn-sm" id="btn-browse-media">Browse Media</button>' +
         '<a href="#characters" class="btn btn-ghost">Characters</a>' +
+        '<a href="#locations" class="btn btn-ghost">Locations</a>' +
         '<a href="#images" class="btn btn-ghost">Images</a>' +
         '<a href="#settings" class="btn btn-ghost">Settings</a>' +
         '<button id="btn-new-scenario" class="btn btn-primary">New Scenario</button>' +

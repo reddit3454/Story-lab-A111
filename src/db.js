@@ -206,6 +206,10 @@ const _defaults = [
   ['narrator_max_tokens',     '1200'],
   ['prompt_extractor_model',  ''],
   ['explicit_mode',           'false'],
+  ['ipadapter_enabled',       'false'],
+  ['ipadapter_model',         'ip-adapter-plus-face_sdxl_vit-h [andrewnuness]'],
+  ['ipadapter_weight',        '0.35'],
+  ['ipadapter_end',           '0.6'],
 ];
 
 for (const [key, value] of _defaults) {
@@ -221,6 +225,9 @@ try {
 
 // character image path on character record
 try { db.exec("ALTER TABLE characters ADD COLUMN reference_image_path TEXT DEFAULT NULL"); } catch (_) {}
+
+// IP-Adapter reference image (relative path under IMAGES_DIR)
+try { db.exec("ALTER TABLE characters ADD COLUMN reference_image TEXT DEFAULT ''"); } catch (_) {}
 
 // locations background folder
 try { db.exec("ALTER TABLE locations ADD COLUMN background_folder TEXT DEFAULT ''"); } catch (_) {}

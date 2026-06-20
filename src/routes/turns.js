@@ -94,14 +94,15 @@ router.post('/', async function (req, res) {
 
     const narratorTurnNum = nextTurn + 1;
     const narratorIns = db.prepare(`
-      INSERT INTO turns (scenario_id, turn_number, role, content_text, scene_card_json, token_estimate)
-      VALUES (?, ?, 'narrator', ?, ?, ?)
+      INSERT INTO turns (scenario_id, turn_number, role, content_text, scene_card_json, token_estimate, location_id)
+      VALUES (?, ?, 'narrator', ?, ?, ?, ?)
     `).run(
       scenarioId,
       narratorTurnNum,
       result.story_text,
       JSON.stringify(result.scene_card),
       result.token_estimate,
+      scenario.active_location_id ?? null,
     );
     const narratorTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(narratorIns.lastInsertRowid);
 
