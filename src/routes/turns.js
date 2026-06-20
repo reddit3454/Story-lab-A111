@@ -94,7 +94,8 @@ router.post('/', async function (req, res) {
 
       // (c) Atomic: insert user turn + narrator turn
       let userIns, narratorIns;
-      db.transaction(function () {
+      db.exec('BEGIN');
+      try {
         userIns = db.prepare(`
           INSERT INTO turns (scenario_id, turn_number, role, content_text, location_id)
           VALUES (?, ?, 'user', ?, ?)
@@ -111,7 +112,11 @@ router.post('/', async function (req, res) {
           result.token_estimate,
           scenario.active_location_id ?? null,
         );
-      })();
+        db.exec('COMMIT');
+      } catch (txErr) {
+        db.exec('ROLLBACK');
+        throw txErr;
+      }
 
       const userTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(userIns.lastInsertRowid);
       const narratorTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(narratorIns.lastInsertRowid);
