@@ -29,6 +29,7 @@ export async function generateMemory({ db, scenarioId, turns, config }) {
   return db.prepare('SELECT * FROM memories WHERE id = ?').get(result.lastInsertRowid);
 }
 
+// ORPHAN: not imported anywhere — safe to delete if unneeded
 export function getRecentMemories(db, scenarioId, limit = 10) {
   return db.prepare(
     'SELECT * FROM memories WHERE scenario_id = ? ORDER BY created_at DESC LIMIT ?'

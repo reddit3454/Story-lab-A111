@@ -27,6 +27,7 @@ SCENE CARD RULES:
 - clothing_changes format: [{ "character_name": "Name", "new_clothing": "description of what they are now wearing" }]
 Only include clothing_changes entries when clothing actually changed in the scene. Leave array empty otherwise.`;
 
+// ORPHAN: not imported anywhere — safe to delete if unneeded
 export function buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships = [], lastArousal = 1 }) {
   const parts = [];
 

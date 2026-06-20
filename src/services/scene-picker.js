@@ -1,4 +1,4 @@
-import { generate } from './ollama.js';
+import { chat } from './ollama.js';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -150,11 +150,14 @@ export async function pickBestMoment(contextTurns, activeCharacters, recentImage
 
   let res;
   try {
-    res = await generate({ model: pickerModel, prompt, options: { num_predict: 500 } });
+    res = await chat({ model: pickerModel, messages: [
+      { role: 'system', content: 'You are a visual scene selection assistant. Return only valid JSON.' },
+      { role: 'user', content: prompt },
+    ], options: { num_predict: 500 } });
   } catch (_) {
     return null;
   }
 
-  const rawText = (res?.response || '').trim();
+  const rawText = (res?.message?.content || '').trim();
   return parseCandidateResponse(rawText);
 }

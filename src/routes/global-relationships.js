@@ -3,6 +3,7 @@ import db from '../db.js';
 
 const router = Router();
 
+// ORPHAN: not imported anywhere — safe to delete if unneeded
 export const RELATIONSHIP_TYPES = [
   'friend', 'romantic partner', 'rival', 'enemy', 'colleague',
   'mentor', 'student', 'cousin', 'mother', 'father', 'brother',

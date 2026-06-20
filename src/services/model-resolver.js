@@ -12,6 +12,7 @@ export async function resolveNarratorModel(db) {
   return models[0].name;
 }
 
+// ORPHAN: not imported anywhere — safe to delete if unneeded
 export async function resolveModels(db) {
   const narrator = await resolveNarratorModel(db);
   return { narrator };

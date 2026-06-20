@@ -117,6 +117,7 @@ export async function getSchedulers(baseUrl) {
   return Array.isArray(data) ? data.map(s => s.name || s.label).filter(Boolean) : [];
 }
 
+// ORPHAN: not imported anywhere — safe to delete if unneeded
 export async function getOptions(baseUrl) {
   return _fetch(baseUrl, '/sdapi/v1/options', { _timeout: INFO_TIMEOUT_MS });
 }

@@ -5,6 +5,7 @@ import * as memory from '../services/memory.js';
 import broadcast from '../broadcast.js';
 import { extractImagePrompt } from '../services/prompt-extractor.js';
 import { resolveMasterConfig } from '../services/config-resolver.js';
+import { applyClothingChanges } from '../services/clothing.js';
 
 const router = Router({ mergeParams: true });
 const _activeTurns = new Map();
@@ -139,25 +140,7 @@ router.post('/', async function (req, res) {
       }
 
       // Apply clothing changes declared in scene card
-      const clothingChanges = result.scene_card?.clothing_changes;
-      if (Array.isArray(clothingChanges) && clothingChanges.length > 0) {
-        const castRows = db.prepare(`
-          SELECT c.id, c.name FROM characters c
-          JOIN scenario_characters sc ON c.id = sc.character_id
-          WHERE sc.scenario_id = ?
-        `).all(scenarioId);
-        const nameToId = {};
-        for (const c of castRows) nameToId[c.name.toLowerCase()] = c.id;
-
-        const updateClothing = db.prepare('UPDATE characters SET current_clothing = ? WHERE id = ?');
-        for (const change of clothingChanges) {
-          const charId = change.character_id
-            ?? nameToId[(change.character_name || '').toLowerCase()];
-          if (charId && change.new_clothing) {
-            updateClothing.run(change.new_clothing, charId);
-          }
-        }
-      }
+      applyClothingChanges(db, scenarioId, result.scene_card?.clothing_changes);
 
       // Fire memory generation async if threshold reached
       if (memory.shouldGenerateMemory(narratorTurnNum)) {

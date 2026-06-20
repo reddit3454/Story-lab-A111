@@ -28,6 +28,7 @@ export function resolveMasterConfig(db) {
   return config;
 }
 
+// ORPHAN: not imported anywhere — safe to delete if unneeded
 export function resolveActiveProfile(db) {
   return db.prepare('SELECT * FROM image_profiles WHERE is_active = 1 LIMIT 1').get() || null;
 }
