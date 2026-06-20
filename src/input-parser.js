@@ -30,7 +30,8 @@ export function parseNarratorResponse(rawResponse) {
   let parsed;
   try {
     parsed = JSON.parse(jsonStr);
-  } catch (_) {
+  } catch (parseErr) {
+    console.warn('[input-parser] scene card JSON parse failed:', parseErr.message, '| raw snippet:', jsonStr.slice(0, 120));
     return { story_text, scene_card: defaultSceneCard() };
   }
 
@@ -43,8 +44,13 @@ export function parseNarratorResponse(rawResponse) {
     card.mood = parsed.mood;
   if (typeof parsed.arousal_level === 'number')
     card.arousal_level = Math.max(1, Math.min(10, Math.round(parsed.arousal_level)));
-  if (typeof parsed.nsfw_elements === 'boolean')
+  if (typeof parsed.nsfw_elements === 'boolean') {
     card.nsfw_elements = parsed.nsfw_elements;
+  } else if (parsed.nsfw_elements === 'true' || parsed.nsfw_elements === 1) {
+    card.nsfw_elements = true;
+  } else if (parsed.nsfw_elements === 'false' || parsed.nsfw_elements === 0) {
+    card.nsfw_elements = false;
+  }
   if (Array.isArray(parsed.clothing_changes))
     card.clothing_changes = parsed.clothing_changes;
   if (typeof parsed.explicit_act === 'string' && parsed.explicit_act.trim())

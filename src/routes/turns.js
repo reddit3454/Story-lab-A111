@@ -147,8 +147,11 @@ router.post('/', async function (req, res) {
       // Apply clothing changes declared in scene card
       applyClothingChanges(db, scenarioId, result.scene_card?.clothing_changes);
 
-      // Fire memory generation async if threshold reached
-      if (memory.shouldGenerateMemory(narratorTurnNum)) {
+      // Fire memory generation async if threshold reached.
+      // Use exchange count (floor(narratorTurnNum/2)) so the interval fires every 20
+      // exchanges regardless of any pre-existing turns that create an odd offset.
+      const exchangeCount = Math.floor(narratorTurnNum / 2);
+      if (memory.shouldGenerateMemory(exchangeCount)) {
         const allTurns = db.prepare('SELECT * FROM turns WHERE scenario_id = ? ORDER BY turn_number ASC').all(scenarioId);
         memory.generateMemory({ db, scenarioId, turns: allTurns, config: resolveMasterConfig(db) }).catch(function (err) {
           console.error('[memory] auto-generate failed:', err.message);
