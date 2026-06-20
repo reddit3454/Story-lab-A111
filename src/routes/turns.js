@@ -7,6 +7,7 @@ import { extractImagePrompt } from '../services/prompt-extractor.js';
 import { resolveMasterConfig } from '../services/config-resolver.js';
 
 const router = Router({ mergeParams: true });
+const _activeTurns = new Map();
 
 router.get('/', function (req, res) {
   const { scenarioId } = req.params;
@@ -57,110 +58,121 @@ router.post('/', async function (req, res) {
   if (!scenario) return res.status(404).json({ error: 'Scenario not found' });
 
   if (role === 'user') {
-    // Next turn number
-    const maxRow = db.prepare('SELECT MAX(turn_number) as m FROM turns WHERE scenario_id = ?').get(scenarioId);
-    const nextTurn = (maxRow?.m || 0) + 1;
-
-    // Insert user turn
-    const userIns = db.prepare(`
-      INSERT INTO turns (scenario_id, turn_number, role, content_text, location_id)
-      VALUES (?, ?, 'user', ?, ?)
-    `).run(scenarioId, nextTurn, content_text, location_id ?? null);
-    const userTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(userIns.lastInsertRowid);
-
-    // Load recent turns for context window (include user turn so we filter it out below)
-    const contextLimit = (scenario.context_turns || 20) + 1;
-    const recentRows = db.prepare(`
-      SELECT * FROM turns WHERE scenario_id = ? ORDER BY turn_number DESC LIMIT ?
-    `).all(scenarioId, contextLimit);
-
-    // Build Ollama messages: history (oldest first) then current user message
-    const history = recentRows
-      .filter(function (t) { return t.id !== userTurn.id; })
-      .reverse();
-
-    const messages = history.map(function (t) {
-      return { role: t.role === 'user' ? 'user' : 'assistant', content: t.content_text };
-    });
-    messages.push({ role: 'user', content: content_text });
-
-    // Call narrator
-    let result;
-    try {
-      result = await narrator.runNarratorTurn({ db, scenario, messages, turnNumber: nextTurn + 1 });
-    } catch (err) {
-      return res.status(500).json({ error: 'Narrator failed: ' + err.message });
+    if (_activeTurns.has(scenarioId)) {
+      return res.status(409).json({ error: 'Turn already in progress for this scenario' });
     }
-
-    const narratorTurnNum = nextTurn + 1;
-    const narratorIns = db.prepare(`
-      INSERT INTO turns (scenario_id, turn_number, role, content_text, scene_card_json, token_estimate, location_id)
-      VALUES (?, ?, 'narrator', ?, ?, ?, ?)
-    `).run(
-      scenarioId,
-      narratorTurnNum,
-      result.story_text,
-      JSON.stringify(result.scene_card),
-      result.token_estimate,
-      scenario.active_location_id ?? null,
-    );
-    const narratorTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(narratorIns.lastInsertRowid);
-
-    // Extract image prompt via dedicated model
+    _activeTurns.set(scenarioId, true);
     try {
-      const characters = db.prepare(`
-        SELECT c.* FROM characters c
-        JOIN scenario_characters sc ON c.id = sc.character_id
-        WHERE sc.scenario_id = ?
-      `).all(scenarioId);
-      const config = resolveMasterConfig(db);
-      const extractedPrompt = await extractImagePrompt({
-        storyText: result.story_text,
-        characters,
-        config,
+      // (a) Next turn number
+      const maxRow = db.prepare('SELECT MAX(turn_number) as m FROM turns WHERE scenario_id = ?').get(scenarioId);
+      const nextTurn = (maxRow?.m || 0) + 1;
+
+      // Load recent turns for context window (user turn not yet in DB)
+      const contextLimit = (scenario.context_turns || 20) + 1;
+      const recentRows = db.prepare(`
+        SELECT * FROM turns WHERE scenario_id = ? ORDER BY turn_number DESC LIMIT ?
+      `).all(scenarioId, contextLimit);
+
+      // Build Ollama messages: history (oldest first) then current user message
+      const history = recentRows.reverse();
+
+      const messages = history.map(function (t) {
+        return { role: t.role === 'user' ? 'user' : 'assistant', content: t.content_text };
       });
-      if (extractedPrompt) {
-        const updatedCard = Object.assign({}, result.scene_card, { image_prompt: extractedPrompt });
-        db.prepare('UPDATE turns SET scene_card_json = ? WHERE id = ?')
-          .run(JSON.stringify(updatedCard), narratorIns.lastInsertRowid);
-        result.scene_card.image_prompt = extractedPrompt;
+      messages.push({ role: 'user', content: content_text });
+
+      // (b) Call narrator async
+      let result;
+      try {
+        result = await narrator.runNarratorTurn({ db, scenario, messages, turnNumber: nextTurn + 1 });
+      } catch (err) {
+        return res.status(500).json({ error: 'Narrator failed: ' + err.message });
       }
-    } catch (err) {
-      console.error('[prompt-extractor] non-fatal:', err.message);
-    }
 
-    // Apply clothing changes declared in scene card
-    const clothingChanges = result.scene_card?.clothing_changes;
-    if (Array.isArray(clothingChanges) && clothingChanges.length > 0) {
-      const castRows = db.prepare(`
-        SELECT c.id, c.name FROM characters c
-        JOIN scenario_characters sc ON c.id = sc.character_id
-        WHERE sc.scenario_id = ?
-      `).all(scenarioId);
-      const nameToId = {};
-      for (const c of castRows) nameToId[c.name.toLowerCase()] = c.id;
+      const narratorTurnNum = nextTurn + 1;
 
-      const updateClothing = db.prepare('UPDATE characters SET current_clothing = ? WHERE id = ?');
-      for (const change of clothingChanges) {
-        const charId = change.character_id
-          ?? nameToId[(change.character_name || '').toLowerCase()];
-        if (charId && change.new_clothing) {
-          updateClothing.run(change.new_clothing, charId);
+      // (c) Atomic: insert user turn + narrator turn
+      let userIns, narratorIns;
+      db.transaction(function () {
+        userIns = db.prepare(`
+          INSERT INTO turns (scenario_id, turn_number, role, content_text, location_id)
+          VALUES (?, ?, 'user', ?, ?)
+        `).run(scenarioId, nextTurn, content_text, location_id ?? null);
+
+        narratorIns = db.prepare(`
+          INSERT INTO turns (scenario_id, turn_number, role, content_text, scene_card_json, token_estimate, location_id)
+          VALUES (?, ?, 'narrator', ?, ?, ?, ?)
+        `).run(
+          scenarioId,
+          narratorTurnNum,
+          result.story_text,
+          JSON.stringify(result.scene_card),
+          result.token_estimate,
+          scenario.active_location_id ?? null,
+        );
+      })();
+
+      const userTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(userIns.lastInsertRowid);
+      const narratorTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(narratorIns.lastInsertRowid);
+
+      // Extract image prompt via dedicated model
+      try {
+        const characters = db.prepare(`
+          SELECT c.* FROM characters c
+          JOIN scenario_characters sc ON c.id = sc.character_id
+          WHERE sc.scenario_id = ?
+        `).all(scenarioId);
+        const config = resolveMasterConfig(db);
+        const extractedPrompt = await extractImagePrompt({
+          storyText: result.story_text,
+          characters,
+          config,
+        });
+        if (extractedPrompt) {
+          const updatedCard = Object.assign({}, result.scene_card, { image_prompt: extractedPrompt });
+          db.prepare('UPDATE turns SET scene_card_json = ? WHERE id = ?')
+            .run(JSON.stringify(updatedCard), narratorIns.lastInsertRowid);
+          result.scene_card.image_prompt = extractedPrompt;
+        }
+      } catch (err) {
+        console.error('[prompt-extractor] non-fatal:', err.message);
+      }
+
+      // Apply clothing changes declared in scene card
+      const clothingChanges = result.scene_card?.clothing_changes;
+      if (Array.isArray(clothingChanges) && clothingChanges.length > 0) {
+        const castRows = db.prepare(`
+          SELECT c.id, c.name FROM characters c
+          JOIN scenario_characters sc ON c.id = sc.character_id
+          WHERE sc.scenario_id = ?
+        `).all(scenarioId);
+        const nameToId = {};
+        for (const c of castRows) nameToId[c.name.toLowerCase()] = c.id;
+
+        const updateClothing = db.prepare('UPDATE characters SET current_clothing = ? WHERE id = ?');
+        for (const change of clothingChanges) {
+          const charId = change.character_id
+            ?? nameToId[(change.character_name || '').toLowerCase()];
+          if (charId && change.new_clothing) {
+            updateClothing.run(change.new_clothing, charId);
+          }
         }
       }
-    }
 
-    // Fire memory generation async if threshold reached
-    if (memory.shouldGenerateMemory(narratorTurnNum)) {
-      const allTurns = db.prepare('SELECT * FROM turns WHERE scenario_id = ? ORDER BY turn_number ASC').all(scenarioId);
-      memory.generateMemory({ db, scenarioId, turns: allTurns, config: {} }).catch(function (err) {
-        console.error('[memory] auto-generate failed:', err.message);
-      });
-    }
+      // Fire memory generation async if threshold reached
+      if (memory.shouldGenerateMemory(narratorTurnNum)) {
+        const allTurns = db.prepare('SELECT * FROM turns WHERE scenario_id = ? ORDER BY turn_number ASC').all(scenarioId);
+        memory.generateMemory({ db, scenarioId, turns: allTurns, config: {} }).catch(function (err) {
+          console.error('[memory] auto-generate failed:', err.message);
+        });
+      }
 
-    const finalNarratorTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(narratorIns.lastInsertRowid);
-    broadcast.send('turn_complete', { scenarioId: parseInt(scenarioId, 10), turn: finalNarratorTurn });
-    return res.json({ user_turn: userTurn, narrator_turn: finalNarratorTurn });
+      const finalNarratorTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(narratorIns.lastInsertRowid);
+      broadcast.send('turn_complete', { scenarioId: parseInt(scenarioId, 10), turn: finalNarratorTurn });
+      return res.json({ user_turn: userTurn, narrator_turn: finalNarratorTurn });
+    } finally {
+      _activeTurns.delete(scenarioId);
+    }
   }
 
   // Manual turn injection (any other role)

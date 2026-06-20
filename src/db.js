@@ -218,127 +218,133 @@ for (const [key, value] of _defaults) {
 
 /* ── Additive migrations ─────────────────────────────────────────── */
 
+function migrate(sql) {
+  try {
+    db.exec(sql);
+  } catch (err) {
+    if (!err.message.includes('already exists') && !err.message.includes('duplicate column')) {
+      console.warn('[db migration]', err.message);
+    }
+  }
+}
+
 // Populate scenario_characters from legacy characters.scenario_id (one-time migration)
 try {
   db.exec("INSERT OR IGNORE INTO scenario_characters (scenario_id, character_id) SELECT scenario_id, id FROM characters WHERE scenario_id IS NOT NULL");
 } catch (_) {}
 
 // character image path on character record
-try { db.exec("ALTER TABLE characters ADD COLUMN reference_image_path TEXT DEFAULT NULL"); } catch (_) {}
+migrate("ALTER TABLE characters ADD COLUMN reference_image_path TEXT DEFAULT NULL");
 
 // IP-Adapter reference image (relative path under IMAGES_DIR)
-try { db.exec("ALTER TABLE characters ADD COLUMN reference_image TEXT DEFAULT ''"); } catch (_) {}
+migrate("ALTER TABLE characters ADD COLUMN reference_image TEXT DEFAULT ''");
 
 // locations background folder
-try { db.exec("ALTER TABLE locations ADD COLUMN background_folder TEXT DEFAULT ''"); } catch (_) {}
+migrate("ALTER TABLE locations ADD COLUMN background_folder TEXT DEFAULT ''");
 
 // scene_images quality columns
-try { db.exec('ALTER TABLE scene_images ADD COLUMN accepted   INTEGER DEFAULT 0'); } catch (_) {}
-try { db.exec('ALTER TABLE scene_images ADD COLUMN user_rating INTEGER DEFAULT 0'); } catch (_) {}
-try { db.exec('ALTER TABLE scene_images ADD COLUMN model_hash  TEXT DEFAULT \'\''); } catch (_) {}
-try { db.exec('ALTER TABLE scene_images ADD COLUMN loras_json  TEXT DEFAULT \'[]\''); } catch (_) {}
-try { db.exec('ALTER TABLE scene_images ADD COLUMN scene_card_json TEXT DEFAULT NULL'); } catch (_) {}
+migrate('ALTER TABLE scene_images ADD COLUMN accepted   INTEGER DEFAULT 0');
+migrate('ALTER TABLE scene_images ADD COLUMN user_rating INTEGER DEFAULT 0');
+migrate("ALTER TABLE scene_images ADD COLUMN model_hash  TEXT DEFAULT ''");
+migrate("ALTER TABLE scene_images ADD COLUMN loras_json  TEXT DEFAULT '[]'");
+migrate('ALTER TABLE scene_images ADD COLUMN scene_card_json TEXT DEFAULT NULL');
 
 // audit_events context columns
-try { db.exec('ALTER TABLE audit_events ADD COLUMN scenario_id INTEGER'); } catch (_) {}
-try { db.exec('ALTER TABLE audit_events ADD COLUMN turn_id     INTEGER'); } catch (_) {}
-try { db.exec('ALTER TABLE audit_events ADD COLUMN duration_ms INTEGER'); } catch (_) {}
+migrate('ALTER TABLE audit_events ADD COLUMN scenario_id INTEGER');
+migrate('ALTER TABLE audit_events ADD COLUMN turn_id     INTEGER');
+migrate('ALTER TABLE audit_events ADD COLUMN duration_ms INTEGER');
 
 // turns table missing columns
-try { db.exec("ALTER TABLE turns ADD COLUMN scene_card_json TEXT DEFAULT '{}'"); } catch (_) {}
-try { db.exec("ALTER TABLE turns ADD COLUMN token_estimate INTEGER DEFAULT 0"); } catch (_) {}
-try { db.exec("ALTER TABLE turns ADD COLUMN location_id INTEGER REFERENCES locations(id)"); } catch (_) {}
+migrate("ALTER TABLE turns ADD COLUMN scene_card_json TEXT DEFAULT '{}'");
+migrate("ALTER TABLE turns ADD COLUMN token_estimate INTEGER DEFAULT 0");
+migrate("ALTER TABLE turns ADD COLUMN location_id INTEGER REFERENCES locations(id)");
 
 // scenario extended wizard fields
-try { db.exec("ALTER TABLE scenarios ADD COLUMN tone                        TEXT    DEFAULT 'Dramatic'"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN premise                     TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN setting                     TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN default_start               TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN reply_length                TEXT    DEFAULT 'medium'"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN lust_level                  INTEGER DEFAULT 3"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN explicitness_level          TEXT    DEFAULT 'moderate'"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN pacing                      TEXT    DEFAULT 'normal'"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN narrative_pov               TEXT    DEFAULT 'third'"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN violence_level              TEXT    DEFAULT 'mild'"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN tone_modifier               TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN narrator_presence_enabled   INTEGER DEFAULT 0"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN narrator_presence_mode      TEXT    DEFAULT 'all'"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN narrator_presence_config    TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN active_location_id          INTEGER DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN user_character_id           INTEGER DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN ended_at                    TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE scenarios ADD COLUMN generation_config           TEXT    DEFAULT NULL"); } catch (_) {}
+migrate("ALTER TABLE scenarios ADD COLUMN tone                        TEXT    DEFAULT 'Dramatic'");
+migrate("ALTER TABLE scenarios ADD COLUMN premise                     TEXT    DEFAULT ''");
+migrate("ALTER TABLE scenarios ADD COLUMN setting                     TEXT    DEFAULT ''");
+migrate("ALTER TABLE scenarios ADD COLUMN default_start               TEXT    DEFAULT ''");
+migrate("ALTER TABLE scenarios ADD COLUMN reply_length                TEXT    DEFAULT 'medium'");
+migrate("ALTER TABLE scenarios ADD COLUMN lust_level                  INTEGER DEFAULT 3");
+migrate("ALTER TABLE scenarios ADD COLUMN explicitness_level          TEXT    DEFAULT 'moderate'");
+migrate("ALTER TABLE scenarios ADD COLUMN pacing                      TEXT    DEFAULT 'normal'");
+migrate("ALTER TABLE scenarios ADD COLUMN narrative_pov               TEXT    DEFAULT 'third'");
+migrate("ALTER TABLE scenarios ADD COLUMN violence_level              TEXT    DEFAULT 'mild'");
+migrate("ALTER TABLE scenarios ADD COLUMN tone_modifier               TEXT    DEFAULT ''");
+migrate("ALTER TABLE scenarios ADD COLUMN narrator_presence_enabled   INTEGER DEFAULT 0");
+migrate("ALTER TABLE scenarios ADD COLUMN narrator_presence_mode      TEXT    DEFAULT 'all'");
+migrate("ALTER TABLE scenarios ADD COLUMN narrator_presence_config    TEXT    DEFAULT NULL");
+migrate("ALTER TABLE scenarios ADD COLUMN active_location_id          INTEGER DEFAULT NULL");
+migrate("ALTER TABLE scenarios ADD COLUMN user_character_id           INTEGER DEFAULT NULL");
+migrate("ALTER TABLE scenarios ADD COLUMN ended_at                    TEXT    DEFAULT NULL");
+migrate("ALTER TABLE scenarios ADD COLUMN generation_config           TEXT    DEFAULT NULL");
 
 // character relationships table
-try {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS character_relationships (
-      id                INTEGER PRIMARY KEY AUTOINCREMENT,
-      scenario_id       INTEGER NOT NULL,
-      from_character_id INTEGER NOT NULL,
-      to_character_id   INTEGER NOT NULL,
-      relationship_type TEXT NOT NULL DEFAULT 'friend',
-      description       TEXT DEFAULT '',
-      strength          INTEGER DEFAULT 3,
-      created_at        TEXT DEFAULT (datetime('now')),
-      UNIQUE(scenario_id, from_character_id, to_character_id)
-    )
-  `);
-} catch (_) {}
+migrate(`
+  CREATE TABLE IF NOT EXISTS character_relationships (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    scenario_id       INTEGER NOT NULL,
+    from_character_id INTEGER NOT NULL,
+    to_character_id   INTEGER NOT NULL,
+    relationship_type TEXT NOT NULL DEFAULT 'friend',
+    description       TEXT DEFAULT '',
+    strength          INTEGER DEFAULT 3,
+    created_at        TEXT DEFAULT (datetime('now')),
+    UNIQUE(scenario_id, from_character_id, to_character_id)
+  )
+`);
 
 // character extended profile columns
-try { db.exec("ALTER TABLE characters ADD COLUMN description          TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN image_description    TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN appearance_notes     TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN gender               TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN age_range            TEXT    DEFAULT 'adult'"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN height               TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN body_type            TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN breast_size          TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN butt_size            TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN penis_state          TEXT    DEFAULT 'soft'"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN skin_tone            TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN skin_extras          TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN eye_color            TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN eye_shape            TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN nose_shape           TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN lip_shape            TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN face_shape           TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN hair_color           TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN hair_style           TEXT    DEFAULT ''"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN hair_extras          TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN default_outfit       TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN outfit_style         TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN outfit_sets          TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN default_outfit_name  TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN is_user_character    INTEGER DEFAULT 0"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN moodbaseline         INTEGER DEFAULT 3"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN arousalthreshold     TEXT    DEFAULT 'medium'"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN arousallockeduntil   INTEGER DEFAULT 2"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN arousalmax           INTEGER DEFAULT 5"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN moodtriggerspos      TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN moodtriggersneg      TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN arousaltriggers      TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN image_prompt_override TEXT   DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN faceid_ref_count     INTEGER DEFAULT 5"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN faceid_ref_order     TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec("ALTER TABLE characters ADD COLUMN unique_trait         TEXT    DEFAULT NULL"); } catch (_) {}
-try { db.exec('ALTER TABLE character_fullbodies ADD COLUMN is_default INTEGER DEFAULT 0'); } catch (_) {}
+migrate("ALTER TABLE characters ADD COLUMN description          TEXT    DEFAULT ''");
+migrate("ALTER TABLE characters ADD COLUMN image_description    TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN appearance_notes     TEXT    DEFAULT ''");
+migrate("ALTER TABLE characters ADD COLUMN gender               TEXT    DEFAULT ''");
+migrate("ALTER TABLE characters ADD COLUMN age_range            TEXT    DEFAULT 'adult'");
+migrate("ALTER TABLE characters ADD COLUMN height               TEXT    DEFAULT ''");
+migrate("ALTER TABLE characters ADD COLUMN body_type            TEXT    DEFAULT ''");
+migrate("ALTER TABLE characters ADD COLUMN breast_size          TEXT    DEFAULT ''");
+migrate("ALTER TABLE characters ADD COLUMN butt_size            TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN penis_state          TEXT    DEFAULT 'soft'");
+migrate("ALTER TABLE characters ADD COLUMN skin_tone            TEXT    DEFAULT ''");
+migrate("ALTER TABLE characters ADD COLUMN skin_extras          TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN eye_color            TEXT    DEFAULT ''");
+migrate("ALTER TABLE characters ADD COLUMN eye_shape            TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN nose_shape           TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN lip_shape            TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN face_shape           TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN hair_color           TEXT    DEFAULT ''");
+migrate("ALTER TABLE characters ADD COLUMN hair_style           TEXT    DEFAULT ''");
+migrate("ALTER TABLE characters ADD COLUMN hair_extras          TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN default_outfit       TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN outfit_style         TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN outfit_sets          TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN default_outfit_name  TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN is_user_character    INTEGER DEFAULT 0");
+migrate("ALTER TABLE characters ADD COLUMN moodbaseline         INTEGER DEFAULT 3");
+migrate("ALTER TABLE characters ADD COLUMN arousalthreshold     TEXT    DEFAULT 'medium'");
+migrate("ALTER TABLE characters ADD COLUMN arousallockeduntil   INTEGER DEFAULT 2");
+migrate("ALTER TABLE characters ADD COLUMN arousalmax           INTEGER DEFAULT 5");
+migrate("ALTER TABLE characters ADD COLUMN moodtriggerspos      TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN moodtriggersneg      TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN arousaltriggers      TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN image_prompt_override TEXT   DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN faceid_ref_count     INTEGER DEFAULT 5");
+migrate("ALTER TABLE characters ADD COLUMN faceid_ref_order     TEXT    DEFAULT NULL");
+migrate("ALTER TABLE characters ADD COLUMN unique_trait         TEXT    DEFAULT NULL");
+migrate('ALTER TABLE character_fullbodies ADD COLUMN is_default INTEGER DEFAULT 0');
 
 // Global locations: add background_folder column to existing scenario-scoped table
-try { db.exec("ALTER TABLE locations ADD COLUMN background_folder TEXT DEFAULT ''"); } catch (_) {}
+migrate("ALTER TABLE locations ADD COLUMN background_folder TEXT DEFAULT ''");
 
 // scenario_locations join table (mirrors scenario_characters pattern)
-try {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS scenario_locations (
-      scenario_id INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
-      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
-      added_at    TEXT DEFAULT (datetime('now')),
-      PRIMARY KEY (scenario_id, location_id)
-    )
-  `);
-} catch (_) {}
+migrate(`
+  CREATE TABLE IF NOT EXISTS scenario_locations (
+    scenario_id INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
+    location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    added_at    TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (scenario_id, location_id)
+  )
+`);
 
 // Populate scenario_locations from legacy locations.scenario_id (one-time migration)
 try {
@@ -346,21 +352,19 @@ try {
 } catch (_) {}
 
 // DB-driven location backgrounds table
-try {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS location_backgrounds (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
-      filename    TEXT NOT NULL,
-      is_default  INTEGER DEFAULT 0,
-      created_at  TEXT DEFAULT (datetime('now')),
-      UNIQUE(location_id, filename)
-    )
-  `);
-} catch (_) {}
+migrate(`
+  CREATE TABLE IF NOT EXISTS location_backgrounds (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    filename    TEXT NOT NULL,
+    is_default  INTEGER DEFAULT 0,
+    created_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(location_id, filename)
+  )
+`);
 
 // Unique index on locations.name so INSERT OR IGNORE can seed by name idempotently
-try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_name ON locations(name)"); } catch (_) {}
+migrate("CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_name ON locations(name)");
 
 // Seed 8 known locations (INSERT OR IGNORE skips existing by name)
 try {
@@ -427,7 +431,7 @@ try {
   `);
 } catch (_) {}
 try { db.exec("UPDATE character_relationships SET scenario_id = 0"); } catch (_) {}
-try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_char_rel_global ON character_relationships(from_character_id, to_character_id)"); } catch (_) {}
+migrate("CREATE UNIQUE INDEX IF NOT EXISTS idx_char_rel_global ON character_relationships(from_character_id, to_character_id)");
 
 // Fix existing scene_images: prepend scenario_id/ to bare basenames (no path separator means old format)
 try { db.exec("UPDATE scene_images SET filename = CAST(scenario_id AS TEXT) || '/' || filename WHERE instr(filename, '/') = 0"); } catch (_) {}

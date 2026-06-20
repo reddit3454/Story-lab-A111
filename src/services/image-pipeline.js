@@ -13,6 +13,23 @@ import * as a1111 from './a1111.js';
 import { pickBestMoment } from './scene-picker.js';
 import { buildSdxlPrompt } from './story-enhancer.js';
 
+const _getTurn                = db.prepare('SELECT * FROM turns WHERE id = ?');
+const _getLocation            = db.prepare('SELECT * FROM locations WHERE id = ?');
+const _getScenario            = db.prepare('SELECT * FROM scenarios WHERE id = ?');
+const _getLatestTurnByRole    = db.prepare('SELECT * FROM turns WHERE scenario_id = ? AND role = ? ORDER BY turn_number DESC LIMIT 1');
+const _getCharacters          = db.prepare('SELECT c.* FROM characters c JOIN scenario_characters sc ON c.id = sc.character_id WHERE sc.scenario_id = ? ORDER BY c.name');
+const _getRecentNarratorTurns = db.prepare('SELECT content_text FROM turns WHERE scenario_id = ? AND role = ? ORDER BY turn_number DESC LIMIT 6');
+const _getRecentImageCards    = db.prepare('SELECT scene_card_json FROM scene_images WHERE scenario_id = ? ORDER BY id DESC LIMIT 4');
+const _insertSceneImage       = db.prepare(`
+  INSERT INTO scene_images (
+    scenario_id, turn_id, filename, mode, generation_method,
+    background_used, prompt_used, negative_used, profile_id,
+    seed, steps, cfg, width, height, model_name, model_hash, generation_time_ms,
+    scene_card_json
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+const _getLocationBackgrounds = db.prepare('SELECT filename, is_default FROM location_backgrounds WHERE location_id = ?');
+
 function _locationSlug(name) {
   return (name || 'location').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 }
@@ -81,9 +98,7 @@ function _resolveBackground(location) {
   const folder = location.background_folder || '';
   if (!folder) return null;
 
-  const rows = db.prepare(
-    'SELECT filename, is_default FROM location_backgrounds WHERE location_id = ?'
-  ).all(location.id);
+  const rows = _getLocationBackgrounds.all(location.id);
   if (!rows.length) return null;
 
   // Prefer the row marked is_default; fall back to a random pick
@@ -118,59 +133,46 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
     let characters  = [];
 
     if (turnId) {
-      turn = db.prepare('SELECT * FROM turns WHERE id = ?').get(turnId);
+      turn = _getTurn.get(turnId);
       if (turn?.scene_card_json) {
         try { sceneCard = JSON.parse(turn.scene_card_json); } catch (_) {}
       }
       if (turn?.location_id) {
-        location = db.prepare('SELECT * FROM locations WHERE id = ?').get(turn.location_id);
+        location = _getLocation.get(turn.location_id);
       }
     }
 
     if (opts.locationId && !location) {
-      location = db.prepare('SELECT * FROM locations WHERE id = ?').get(opts.locationId);
+      location = _getLocation.get(opts.locationId);
     }
 
     // When no specific turn is targeted (Scene button, character cards), or the turn's
     // scene card has no image_prompt, fall back to the latest narrator turn so the
     // generated image always reflects the current story beat rather than just char appearances.
     if (!isBackground && (!sceneCard || !sceneCard.image_prompt)) {
-      const latestNarTurn = db.prepare(
-        `SELECT * FROM turns WHERE scenario_id = ? AND role = 'narrator' ORDER BY turn_number DESC LIMIT 1`
-      ).get(scenarioId);
+      const latestNarTurn = _getLatestTurnByRole.get(scenarioId, 'narrator');
       if (latestNarTurn?.scene_card_json) {
         try { sceneCard = JSON.parse(latestNarTurn.scene_card_json); } catch (_) {}
       }
       if (latestNarTurn?.location_id && !location) {
-        location = db.prepare('SELECT * FROM locations WHERE id = ?').get(latestNarTurn.location_id);
+        location = _getLocation.get(latestNarTurn.location_id);
       }
     }
 
     // Final fallback: use scenario's pinned active location
-    const scenario = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(scenarioId);
+    const scenario = _getScenario.get(scenarioId);
     if (!location && scenario?.active_location_id) {
-      location = db.prepare('SELECT * FROM locations WHERE id = ?').get(scenario.active_location_id);
+      location = _getLocation.get(scenario.active_location_id);
     }
 
-    characters = db.prepare(`
-      SELECT c.* FROM characters c
-      JOIN scenario_characters sc ON c.id = sc.character_id
-      WHERE sc.scenario_id = ?
-      ORDER BY c.name
-    `).all(scenarioId);
+    characters = _getCharacters.all(scenarioId);
 
     // Stage 2a: scene_picker — advisory only, never mutates sceneCard/location/characters
     let pickedMoment = null;
     if (!isBackground && mode !== 'character') {
-      const recentTurns = db.prepare(
-        `SELECT content_text FROM turns WHERE scenario_id = ? AND role = 'narrator' ORDER BY turn_number DESC LIMIT 6`
-      ).all(scenarioId).map(r => r.content_text).filter(Boolean).reverse();
+      const recentTurns = _getRecentNarratorTurns.all(scenarioId, 'narrator').map(r => r.content_text).filter(Boolean).reverse();
 
-      // scene_images has no scene_card_json column in current schema — recentImageCards
-      // will always be []. The picker degrades gracefully (no variety penalty).
-      const recentImageCards = db.prepare(
-        `SELECT scene_card_json FROM scene_images WHERE scenario_id = ? ORDER BY id DESC LIMIT 4`
-      ).all(scenarioId).map(r => { try { return JSON.parse(r.scene_card_json); } catch (_) { return null; } }).filter(Boolean);
+      const recentImageCards = _getRecentImageCards.all(scenarioId).map(r => { try { return JSON.parse(r.scene_card_json); } catch (_) { return null; } }).filter(Boolean);
 
       if (recentTurns.length > 0) {
         pickedMoment = await pickBestMoment(
@@ -393,13 +395,7 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
     // Stage 6: persist (skip for background mode — caller handles location update)
     let imageId = null;
     if (!isBackground) {
-      const ins = db.prepare(`
-        INSERT INTO scene_images (
-          scenario_id, turn_id, filename, mode, generation_method,
-          background_used, prompt_used, negative_used, profile_id,
-          seed, steps, cfg, width, height, model_name, model_hash, generation_time_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      const ins = _insertSceneImage.run(
         scenarioId,
         turnId  ?? null,
         filename,
@@ -417,6 +413,7 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
         genResult.model_name,
         genResult.model_hash,
         genResult.generation_time_ms,
+        sceneCard ? JSON.stringify(sceneCard) : null,
       );
       imageId = ins.lastInsertRowid;
 
