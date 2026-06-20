@@ -11,6 +11,7 @@ import { audit } from './audit.js';
 import * as a1111 from './a1111.js';
 import { pickBestMoment } from './scene-picker.js';
 import { buildSdxlPrompt } from './story-enhancer.js';
+import { extractImagePrompt } from './prompt-extractor.js';
 
 const _getTurn                = db.prepare('SELECT * FROM turns WHERE id = ?');
 const _getLocation            = db.prepare('SELECT * FROM locations WHERE id = ?');
@@ -246,7 +247,20 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
         if (sceneCard?.image_prompt) descParts.push(sceneCard.image_prompt);
         sceneDescription = descParts.filter(Boolean).join(', ');
       } else {
-        sceneDescription = sceneCard?.image_prompt || prompt;
+        // No picked moment: use the narrator's extracted image_prompt when available.
+        // If that is also empty, call extractImagePrompt on the latest story text directly.
+        // Never fall back to the appearance-blob prompt — that duplicates traitBlock in
+        // buildSdxlPrompt and gives the enhancer zero actual story context.
+        sceneDescription = sceneCard?.image_prompt || '';
+        if (!sceneDescription) {
+          const latestNarTurn = _getLatestTurnByRole.get(scenarioId, 'narrator');
+          if (latestNarTurn?.content_text) {
+            try {
+              const extracted = await extractImagePrompt({ storyText: latestNarTurn.content_text, characters, config });
+              if (extracted) sceneDescription = extracted;
+            } catch (_) {}
+          }
+        }
       }
 
       // Extract structured explicit fields for the enhancer (picker preferred, scene card fallback)
