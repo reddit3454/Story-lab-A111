@@ -7,7 +7,6 @@ import { log, logError } from '../logger.js';
 import broadcast from '../broadcast.js';
 import { resolveEffectiveConfig } from './config-resolver.js';
 import { buildPrompt, buildCharacterPrompt } from './prompt-builder.js';
-import { resolveClothing } from './clothing.js';
 import { audit } from './audit.js';
 import * as a1111 from './a1111.js';
 import { pickBestMoment } from './scene-picker.js';
@@ -195,18 +194,9 @@ export async function generate({ mode, scenarioId, turnId = null, characterId = 
     }
     let bgPath = (isBackground || config.location_bg_mode === 'description') ? null : _resolveBackground(location);
     let prompt, negative, parts;
-    // Resolve clothing state for each character from this scene card's clothing_changes.
-    // turns.js already applied these synchronously, but we re-resolve here to build
-    // resolvedClothingMap so buildPrompt gets authoritative per-character strings.
     const resolvedClothingMap = {};
-    if (!isBackground && mode !== 'character') {
-      for (const char of characters) {
-        const { clothingString, changed, newState } = await resolveClothing(db, char, sceneCard);
-        resolvedClothingMap[char.id] = clothingString;
-        if (changed) {
-          log('image-pipeline', 'clothing_applied', null, `${char.name} clothing updated: ${newState}`);
-        }
-      }
+    for (const char of characters) {
+      resolvedClothingMap[char.id] = char.current_clothing || char.base_clothing || '';
     }
 
     if (mode === 'character' && characterId) {

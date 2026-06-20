@@ -1053,6 +1053,16 @@ function wireMasterSettings() {
         '</div>' +
       '</div>' +
 
+      // ---- Scene Picker ----
+      '<div style="margin-bottom:24px">' +
+        '<h3 class="imggen-section-head">Scene Picker</h3>' +
+        '<div class="form-group">' +
+          '<label class="form-label">Scene Picker Model</label>' +
+          '<input class="form-input" id="ms-picker-model" type="text" value="' + escapeHtml(v('picker_model', '')) + '" placeholder="e.g. llama3 — falls back to narrator model if blank">' +
+          '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Model used to select the best visual moment per turn. Can be a smaller/faster model than the narrator. Leave blank to use the narrator model.</p>' +
+        '</div>' +
+      '</div>' +
+
       // ---- Save bar ----
       '<div style="display:flex;align-items:center;gap:12px;padding-top:8px;border-top:1px solid var(--border)">' +
         '<button class="btn btn-primary" id="ms-save-btn">Save Settings</button>' +
@@ -1207,6 +1217,7 @@ function wireMasterSettings() {
           ipadapter_weight:       tv('ms-ipa-weight') || '0.35',
           ipadapter_end:          tv('ms-ipa-end') || '0.6',
           prompt_extractor_model: (tv('ms-extractor-model') || '').trim(),
+          picker_model:           (tv('ms-picker-model') || '').trim(),
           location_bg_mode:       tv('ms-location-bg-mode') || 'image',
           img2img_denoising:      tv('ms-img2img-denoising') || '0.45',
           lora_enabled:           loraOn ? 'true' : 'false',

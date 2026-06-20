@@ -205,6 +205,7 @@ const _defaults = [
   ['narrator_context_turns',  '20'],
   ['narrator_max_tokens',     '1200'],
   ['prompt_extractor_model',  ''],
+  ['picker_model',            ''],
   ['explicit_mode',           'false'],
   ['ipadapter_enabled',       'false'],
   ['ipadapter_model',         'ip-adapter-plus-face_sdxl_vit-h [andrewnuness]'],

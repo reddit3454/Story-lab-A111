@@ -6,7 +6,7 @@ export function shouldGenerateMemory(turnNumber, interval = 20) {
 }
 
 export async function generateMemory({ db, scenarioId, turns, config }) {
-  const model = await resolveNarratorModel(db);
+  const model = config?.narrator_model || await resolveNarratorModel(db);
 
   const recentTurns = turns.slice(-20);
   const turnText = recentTurns
@@ -18,8 +18,19 @@ export async function generateMemory({ db, scenarioId, turns, config }) {
     'events worth remembering for future story continuity. Be concise — one sentence per fact.\n\n' +
     turnText + '\n\nKey facts to remember:';
 
-  const response = await ollama.generate({ model, prompt, options: { num_predict: 200 } });
-  const summaryText = (response.response || '').trim();
+  const response = await ollama.chat({
+    model,
+    messages: [
+      { role: 'system', content: 'You are a story memory assistant. Summarize key facts concisely.' },
+      { role: 'user', content: prompt },
+    ],
+    options: { num_predict: 200 },
+  });
+  const summaryText = (response.message?.content || '').trim();
+  if (!summaryText) {
+    console.warn('[memory] generateMemory returned empty content — model may not have responded');
+    return null;
+  }
 
   const lastTurn = recentTurns[recentTurns.length - 1];
   const result = db.prepare(

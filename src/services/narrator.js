@@ -4,6 +4,28 @@ import { audit } from './audit.js';
 import { resolveNarratorModel } from './model-resolver.js';
 import { parseNarratorResponse } from '../input-parser.js';
 import { log, logError } from '../logger.js';
+import db from '../db.js';
+
+const _getCharacters = db.prepare(`
+  SELECT c.* FROM characters c
+  JOIN scenario_characters sc ON c.id = sc.character_id
+  WHERE sc.scenario_id = ? ORDER BY c.name
+`);
+const _getLocation       = db.prepare('SELECT * FROM locations WHERE id = ?');
+const _getRules          = db.prepare('SELECT * FROM rules WHERE scenario_id = ? ORDER BY priority DESC');
+const _getWorldEntries   = db.prepare('SELECT * FROM world_entries WHERE scenario_id = ?');
+const _getMemories       = db.prepare('SELECT * FROM memories WHERE scenario_id = ? ORDER BY created_at DESC LIMIT 10');
+const _getRelationships  = db.prepare(`
+  SELECT cr.*, cf.name AS from_name, ct.name AS to_name
+  FROM character_relationships cr
+  JOIN characters cf ON cf.id = cr.from_character_id
+  JOIN characters ct ON ct.id = cr.to_character_id
+  JOIN scenario_characters sc1 ON sc1.character_id = cr.from_character_id AND sc1.scenario_id = ?
+  JOIN scenario_characters sc2 ON sc2.character_id = cr.to_character_id   AND sc2.scenario_id = ?
+  ORDER BY cf.name
+`);
+const _getLastTurnCard   = db.prepare('SELECT scene_card_json FROM turns WHERE scenario_id = ? ORDER BY turn_number DESC LIMIT 1');
+const _getLlamaCppConfig = db.prepare('SELECT value FROM global_config WHERE key = ?');
 
 const SCENE_CARD_INSTRUCTION = `After every story segment, append this block exactly:
 ---SCENE---
@@ -27,7 +49,7 @@ SCENE CARD RULES:
 - clothing_changes format: [{ "character_name": "Name", "new_clothing": "description of what they are now wearing" }]
 Only include clothing_changes entries when clothing actually changed in the scene. Leave array empty otherwise.`;
 
-// ORPHAN: not imported anywhere — safe to delete if unneeded
+// Internal use only — called by runNarratorTurn below. Not exported to other modules.
 export function buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships = [], lastArousal = 1 }) {
   const parts = [];
 
@@ -139,7 +161,7 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
 // Resolves which backend and model to use for the narrator role.
 // Returns { backend: 'ollama'|'llamacpp', model: string, port?: number }
 async function resolveNarratorBackend(db) {
-  const cfgRow = db.prepare('SELECT value FROM global_config WHERE key = ?').get('llamacpp_config');
+  const cfgRow = _getLlamaCppConfig.get('llamacpp_config');
   if (cfgRow?.value) {
     try {
       const llamaCfg = JSON.parse(cfgRow.value);
@@ -183,33 +205,24 @@ async function llamacppChat({ port, messages, maxTokens }) {
 }
 
 export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
-  const characters   = db.prepare(`
-    SELECT c.* FROM characters c
-    JOIN scenario_characters sc ON c.id = sc.character_id
-    WHERE sc.scenario_id = ?
-    ORDER BY c.name
-  `).all(scenario.id);
+  const characters   = _getCharacters.all(scenario.id);
   const location     = scenario.active_location_id
-    ? db.prepare('SELECT * FROM locations WHERE id = ?').get(scenario.active_location_id)
+    ? _getLocation.get(scenario.active_location_id)
     : null;
-  const rules        = db.prepare('SELECT * FROM rules WHERE scenario_id = ? ORDER BY priority DESC').all(scenario.id);
-  const worldEntries = db.prepare('SELECT * FROM world_entries WHERE scenario_id = ?').all(scenario.id);
-  const memories     = db.prepare('SELECT * FROM memories WHERE scenario_id = ? ORDER BY created_at DESC LIMIT 10').all(scenario.id);
-  const relationships = db.prepare(`
-    SELECT cr.*, cf.name AS from_name, ct.name AS to_name
-    FROM character_relationships cr
-    JOIN characters cf ON cf.id = cr.from_character_id
-    JOIN characters ct ON ct.id = cr.to_character_id
-    JOIN scenario_characters sc1 ON sc1.character_id = cr.from_character_id AND sc1.scenario_id = ?
-    JOIN scenario_characters sc2 ON sc2.character_id = cr.to_character_id   AND sc2.scenario_id = ?
-    ORDER BY cf.name
-  `).all(scenario.id, scenario.id);
-  const lastTurn     = db.prepare(
-    'SELECT scene_card_json FROM turns WHERE scenario_id = ? ORDER BY turn_number DESC LIMIT 1'
-  ).get(scenario.id);
-  const lastArousal  = lastTurn?.scene_card_json
-    ? (JSON.parse(lastTurn.scene_card_json).arousal_level ?? 1)
-    : 1;
+  const rules        = _getRules.all(scenario.id);
+  const worldEntries = _getWorldEntries.all(scenario.id);
+  const memories     = _getMemories.all(scenario.id);
+  const relationships = _getRelationships.all(scenario.id, scenario.id);
+  let lastArousal = 1;
+  const lastTurnRow = _getLastTurnCard.get(scenario.id);
+  if (lastTurnRow?.scene_card_json) {
+    try {
+      const parsed = JSON.parse(lastTurnRow.scene_card_json);
+      if (typeof parsed?.arousal_level === 'number') {
+        lastArousal = parsed.arousal_level;
+      }
+    } catch (_) {}
+  }
 
   const config       = resolveMasterConfig(db);
   const backend      = await resolveNarratorBackend(db);

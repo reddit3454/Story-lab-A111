@@ -52,7 +52,7 @@ function _characterBlock(characters) {
     if (c.breast_size && (gL === 'female' || gL === 'non-binary')) parts.push(c.breast_size + ' breasts');
     if (c.butt_size)  parts.push(c.butt_size + ' butt');
     if (parts.length) return parts.join(', ');
-    return c.appearance_prompt || c.name;
+    return c.appearance_prompt || c.image_description || c.appearance_notes || c.name;
   }).filter(Boolean).join(', ');
 }
 
@@ -82,7 +82,9 @@ export function buildPrompt({ sceneCard, characters, location, scenario, config,
     ? (location?.image_tags || '')
     : '';
 
-  const arousalTags  = getArousalTags(sceneCard?.arousal_level ?? 1, config);
+  const arousalTags  = (characters && characters.length > 0)
+    ? getArousalTags(sceneCard?.arousal_level ?? 1, config)
+    : [];
   const arousal_tags = arousalTags.join(', ');
 
   const parts = {
@@ -133,6 +135,11 @@ export function buildCharacterPrompt({ character, actionContext = '', config }) 
   if (character.butt_size) appearance.push(character.butt_size + ' butt');
   if (!appearance.length && character.appearance_prompt)
     appearance.push(character.appearance_prompt);
+  if (!appearance.length && character.image_description) {
+    appearance.push(character.image_description);
+  } else if (!appearance.length && character.appearance_notes) {
+    appearance.push(character.appearance_notes);
+  }
   const clothing = character.current_clothing || character.base_clothing || '';
   const action   = actionContext || 'standing, natural pose, candid';
   const prompt = _join(
