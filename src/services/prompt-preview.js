@@ -111,6 +111,14 @@ export async function buildPromptPreview(db, { scenarioId, turnId, target, chara
     ? [location.name, location.image_tags || location.image_tags_day || ''].filter(Boolean).join(', ')
     : '';
 
+  // User-defined scenario append tags — "middle" means "after all character
+  // description tags" (appearance + clothing), before action/setting content;
+  // start/end wrap the whole assembled tags string once, after both branches
+  // below (including the legacy extractor) have produced it.
+  const appendStart  = String(scenario?.append_start  || '').trim();
+  const appendMiddle = String(scenario?.append_middle || '').trim();
+  const appendEnd    = String(scenario?.append_end    || '').trim();
+
   let plain = '';
   let tags = '';
   let source = 'generic';
@@ -131,6 +139,7 @@ export async function buildPromptPreview(db, { scenarioId, turnId, target, chara
       'candid',
       appearance,
       clothing,
+      appendMiddle || null,
       resolved.entry.brief,
       resolved.entry.expression,
       resolved.entry.attention ? `attention ${resolved.entry.attention}` : null,
@@ -142,7 +151,7 @@ export async function buildPromptPreview(db, { scenarioId, turnId, target, chara
     source = 'generic';
     const action = composeGenericCharacterAction({ location });
     plain = action;
-    tags = ['solo', 'full body', 'candid', appearance, clothing, action, locBit]
+    tags = ['solo', 'full body', 'candid', appearance, clothing, appendMiddle || null, action, locBit]
       .filter(Boolean).join(', ');
 
     // Legacy LLM extract only if generic empty and model configured (migration safety)
@@ -172,6 +181,9 @@ export async function buildPromptPreview(db, { scenarioId, turnId, target, chara
 
   plain = (plain || '').trim();
   tags = (tags || '').trim();
+  if (appendStart || appendEnd) {
+    tags = [appendStart, tags, appendEnd].filter(Boolean).join(', ');
+  }
   if (plain && tags === plain) tags = '';
 
   if (!plain && !tags) {

@@ -184,3 +184,36 @@ test('character preview uses prior-turn brief when current turn has no entry for
   assert.match(String(result.summary_tags || ''), /correct scenario outfit/);
   assert.match(String(result.summary_tags || ''), /kitchen|wide/i);
 });
+
+test('character preview splices append_start/middle/end into summary_tags, middle after appearance+clothing', async (t) => {
+  installFetchGuard(t);
+  const { scenarioId, characterId, turnId } = seed({ withBrief: true });
+  db.prepare(`UPDATE scenarios SET append_start = ?, append_middle = ?, append_end = ? WHERE id = ?`)
+    .run('sepia tone', 'freckles', 'watermark', scenarioId);
+
+  const result = await buildPromptPreview(db, { scenarioId, turnId, target: 'character', characterId });
+
+  const tags = String(result.summary_tags || '');
+  assert.ok(tags.startsWith('sepia tone'), `append_start must lead, got: ${tags}`);
+  assert.ok(tags.endsWith('watermark'), `append_end must trail, got: ${tags}`);
+  const clothingIdx = tags.indexOf('correct scenario outfit');
+  const middleIdx = tags.indexOf('freckles');
+  const briefIdx = tags.indexOf('walking through doorway');
+  assert.ok(clothingIdx > -1 && middleIdx > -1 && briefIdx > -1, `expected all three segments present, got: ${tags}`);
+  assert.ok(clothingIdx < middleIdx, `append_middle must come after clothing, got: ${tags}`);
+  assert.ok(middleIdx < briefIdx, `append_middle must come before action/brief content, got: ${tags}`);
+});
+
+test('character preview generic-fallback path also splices append tags', async (t) => {
+  installFetchGuard(t);
+  const { scenarioId, characterId, turnId } = seed({ withBrief: false });
+  db.prepare(`UPDATE scenarios SET append_start = ?, append_middle = ?, append_end = ? WHERE id = ?`)
+    .run('sepia tone', 'freckles', 'watermark', scenarioId);
+
+  const result = await buildPromptPreview(db, { scenarioId, turnId, target: 'character', characterId });
+
+  const tags = String(result.summary_tags || '');
+  assert.ok(tags.startsWith('sepia tone'), `append_start must lead, got: ${tags}`);
+  assert.ok(tags.endsWith('watermark'), `append_end must trail, got: ${tags}`);
+  assert.ok(tags.includes('freckles'), `append_middle must be present, got: ${tags}`);
+});
