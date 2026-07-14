@@ -11,6 +11,7 @@ const SCENARIO_FIELDS = [
   'pacing', 'narrative_pov', 'violence_level', 'tone_modifier',
   'narrator_presence_enabled', 'narrator_presence_mode', 'narrator_presence_config',
   'active_location_id', 'user_character_id', 'ended_at', 'generation_config',
+  'append_start', 'append_middle', 'append_end',
 ];
 
 const BOOL_FIELDS = new Set(['nsfw_enabled', 'narrator_presence_enabled']);

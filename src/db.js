@@ -298,6 +298,9 @@ migrate("ALTER TABLE scenarios ADD COLUMN active_location_id          INTEGER DE
 migrate("ALTER TABLE scenarios ADD COLUMN user_character_id           INTEGER DEFAULT NULL");
 migrate("ALTER TABLE scenarios ADD COLUMN ended_at                    TEXT    DEFAULT NULL");
 migrate("ALTER TABLE scenarios ADD COLUMN generation_config           TEXT    DEFAULT NULL");
+migrate("ALTER TABLE scenarios ADD COLUMN append_start                TEXT    DEFAULT ''");
+migrate("ALTER TABLE scenarios ADD COLUMN append_middle               TEXT    DEFAULT ''");
+migrate("ALTER TABLE scenarios ADD COLUMN append_end                  TEXT    DEFAULT ''");
 
 // character relationships table
 migrate(`
