@@ -312,6 +312,15 @@ export function flattenSelected(selected) {
   return out;
 }
 
+function _flattenWithMiddleInsert(selected, middleTag) {
+  const out = [];
+  for (const name of BUCKET_ORDER) {
+    for (const item of selected[name] || []) out.push(item.tag);
+    if (name === 'clothing' && middleTag) out.push(middleTag);
+  }
+  return out;
+}
+
 /**
  * Core selector — pure, dependency-free.
  * @param {'scene'|'character'} mode
@@ -493,7 +502,17 @@ export function buildPrompt({
   });
   const selection = selectPromptTags('scene', buckets);
   const lora = _loraTags(config);
-  const prompt = _join(...selection.selectedTags, lora);
+
+  const appendStart  = _normalizeTag(scenario?.append_start  || '');
+  const appendMiddle = _normalizeTag(scenario?.append_middle || '');
+  const appendEnd    = _normalizeTag(scenario?.append_end    || '');
+
+  // append_end is deliberately NOT joined into `prompt` here — image-pipeline.js applies
+  // parts.append_end centrally, after the location-environment tag append, so it is
+  // always the true tail regardless of which path (deterministic or enhancer-rewritten)
+  // produced `prompt`. It is still captured in `parts` below for that later step.
+  const orderedTags = _flattenWithMiddleInsert(selection.selected, appendMiddle);
+  const prompt = _join(appendStart, ...orderedTags, lora);
 
   const parts = {
     mode: isImg2img ? 'img2img' : 'txt2img',
@@ -508,6 +527,9 @@ export function buildPrompt({
     arousal_tags: getArousalTags(sceneCard?.arousal_level ?? 1, config || {}).join(', '),
     suffix: config?.prompt_suffix ?? '',
     lora_tags: lora,
+    append_start: appendStart,
+    append_middle: appendMiddle,
+    append_end: appendEnd,
     negative: _join(
       config?.master_negative ?? '',
       config?.negative_additions ?? '',
@@ -526,8 +548,10 @@ export function buildPrompt({
  * guaranteeing the resolved scenario clothing block survives regardless of what the
  * rewrite produced.
  */
-export function composeEnhancedScenePrompt({ prefix = '', body = '', clothingBlock = '', suffix = '', loraTags = '' }) {
-  return _join(prefix, body, clothingBlock, suffix, loraTags);
+export function composeEnhancedScenePrompt({
+  prefix = '', body = '', clothingBlock = '', appendMiddle = '', suffix = '', loraTags = '', appendStart = '',
+}) {
+  return _join(appendStart, prefix, body, clothingBlock, appendMiddle, suffix, loraTags);
 }
 
 export function buildCharacterPrompt({ character, actionContext = '', location = null, config }) {

@@ -227,3 +227,62 @@ test('buildPrompt does not include empty clothing candidates when unresolved', (
   assert.equal(parts.clothing_block, '');
   assert.ok(!(parts.selectedTags || []).some((t) => /undefined|null/i.test(t)));
 });
+
+// --- append_start / append_middle / append_end ---
+test('buildPrompt applies append_start/append_middle/append_end from scenario, middle after clothing bucket', () => {
+  const char = {
+    id: 5, name: 'Sam', role: 'character', gender: 'female',
+    hair_color: 'black', hair_style: 'short', eye_color: 'brown', skin_tone: 'tan',
+    body_type: 'athletic', current_clothing: '',
+  };
+  const { prompt, parts } = buildPrompt({
+    sceneCard: { image_prompt: 'standing at the shoreline', mood: 'joyful', arousal_level: 1 },
+    characters: [char],
+    location: null,
+    scenario: { append_start: 'sepia tone', append_middle: 'freckles', append_end: 'watermark' },
+    config: { master_positive: 'best quality', nsfw_enabled: false, lora_enabled: false },
+    resolvedClothingMap: { 5: 'red bikini' },
+  });
+  assert.ok(prompt.startsWith('sepia tone'), `expected append_start to lead, got: ${prompt}`);
+  // append_end is intentionally NOT part of buildPrompt()'s own join — image-pipeline.js
+  // applies parts.append_end centrally, after the location-environment tag append, so
+  // it is always the true tail regardless of path. Here we only assert it was captured.
+  assert.equal(parts.append_end, 'watermark');
+  assert.equal(parts.append_middle, 'freckles');
+  const clothingIdx = prompt.indexOf('red bikini');
+  const middleIdx = prompt.indexOf('freckles');
+  assert.ok(clothingIdx > -1 && middleIdx > clothingIdx, `append_middle must come after clothing, got: ${prompt}`);
+});
+
+test('buildPrompt leaves prompt unchanged when scenario has no append fields', () => {
+  const { prompt, parts } = buildPrompt({
+    sceneCard: { image_prompt: 'she waves hello', mood: 'joyful', arousal_level: 1 },
+    characters: [{ id: 9, name: 'X', role: 'character', gender: 'female', hair_color: 'black' }],
+    location: null,
+    scenario: {},
+    config: { master_positive: 'best quality', nsfw_enabled: false, lora_enabled: false },
+    resolvedClothingMap: {},
+  });
+  assert.equal(parts.append_start, '');
+  assert.equal(parts.append_middle, '');
+  assert.equal(parts.append_end, '');
+  assert.ok(!prompt.includes('undefined') && !prompt.includes('null'));
+});
+
+test('composeEnhancedScenePrompt splices appendStart before prefix and appendMiddle between clothing and suffix', () => {
+  const result = composeEnhancedScenePrompt({
+    appendStart: 'sepia tone',
+    prefix: 'masterpiece, best quality',
+    body: 'a woman standing in a doorway',
+    clothingBlock: 'red sundress',
+    appendMiddle: 'freckles',
+    suffix: '8k, detailed',
+    loraTags: '',
+  });
+  assert.ok(result.startsWith('sepia tone'), `expected appendStart to lead, got: ${result}`);
+  const clothingIdx = result.indexOf('red sundress');
+  const middleIdx = result.indexOf('freckles');
+  const suffixIdx = result.indexOf('8k, detailed');
+  assert.ok(clothingIdx < middleIdx, `appendMiddle must come after clothing block, got: ${result}`);
+  assert.ok(middleIdx < suffixIdx, `appendMiddle must come before suffix, got: ${result}`);
+});
