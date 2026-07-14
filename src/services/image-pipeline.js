@@ -555,8 +555,10 @@ if (isBackground && location) {
             prefix,
             body: enhanced.positive,
             clothingBlock: resolvedClothingBlock,
+            appendMiddle: parts?.append_middle || '',
             suffix,
             loraTags: lora,
+            appendStart: parts?.append_start || '',
           });
           negative = [
             config.master_negative || '',
@@ -579,6 +581,15 @@ if (isBackground && location) {
       if (locEnv.trim()) {
         prompt = prompt ? prompt + ', ' + locEnv : locEnv;
       }
+    }
+
+    // Append End — user-defined scenario tag that must be the true tail of the
+    // assembled prompt. Applied once, here, after every other tail-append above
+    // (enhancer rewrite, location environment tags). Only buildPrompt() (scene/
+    // background mode) sets parts.append_end — buildCharacterPrompt()'s `parts`
+    // never carries it, so this is a no-op for mode: 'character'.
+    if (parts?.append_end) {
+      prompt = prompt ? prompt + ', ' + parts.append_end : parts.append_end;
     }
 
     audit({ pipeline_run_id: runId, service: 'prompt-builder', stage: 'build_prompt',

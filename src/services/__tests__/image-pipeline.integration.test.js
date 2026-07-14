@@ -416,3 +416,56 @@ test('CF-2: falls back to the first non-player cast member when no picker signal
   assert.equal(decodeSentReferenceImage(calls), 'REF:Alice',
     'documented fallback: first non-player cast member (alphabetical) when no scene-subject signal exists');
 });
+
+// ---------------------------------------------------------------------------
+// Scenario append_start / append_middle / append_end
+// ---------------------------------------------------------------------------
+
+test('scenario append_start/middle/end are applied to the final submitted scene-mode prompt, end after location env tags', async (t) => {
+  installFetch(t, {
+    '/api/chat': ollamaChatRouter({
+      pickerMainSubject: 'Riley',
+      enhancerPositive: 'masterpiece, best quality, medium shot, standing near window, warm light',
+    }),
+    ...CONTROLNET_CATALOG_ROUTES,
+    '/sdapi/v1/txt2img': () => fakeA1111Response(),
+  });
+
+  const { scenarioId } = seedScenario({ npcNames: ['Riley'], clothingByName: { Riley: 'red silk robe' } });
+  const locId = db.prepare(
+    `INSERT INTO locations (name, image_tags) VALUES ('Beach', 'sand, waves, sunset')`
+  ).run().lastInsertRowid;
+  db.prepare(`UPDATE scenarios SET active_location_id = ?, append_start = ?, append_middle = ?, append_end = ? WHERE id = ?`)
+    .run(locId, 'sepia tone', 'freckles', 'polaroid border', scenarioId);
+
+  await generate({ mode: 'scene', scenarioId, turnId: null });
+
+  const image = lastSceneImage(scenarioId);
+  assert.ok(image.prompt_used.startsWith('sepia tone'),
+    `append_start must lead the submitted prompt, got: ${image.prompt_used}`);
+  assert.ok(image.prompt_used.includes('sand, waves, sunset'),
+    `location env tags must still be present, got: ${image.prompt_used}`);
+  assert.ok(image.prompt_used.endsWith('polaroid border'),
+    `append_end must be the true tail, after location env tags, got: ${image.prompt_used}`);
+  assert.ok(image.prompt_used.includes('freckles'),
+    `append_middle must be present, got: ${image.prompt_used}`);
+});
+
+test('character mode ignores scenario append fields (handled only in the prompt-preview review layer, not here)', async (t) => {
+  installFetch(t, {
+    '/api/chat': async () => ({ status: 200, json: { message: { content: '{}' } } }),
+    ...CONTROLNET_CATALOG_ROUTES,
+    '/sdapi/v1/txt2img': () => fakeA1111Response(),
+  });
+
+  const { scenarioId, idByName } = seedScenario({ npcNames: ['Riley'], clothingByName: { Riley: 'green sundress' } });
+  db.prepare(`UPDATE scenarios SET append_start = ?, append_middle = ?, append_end = ? WHERE id = ?`)
+    .run('sepia tone', 'freckles', 'polaroid border', scenarioId);
+
+  await generate({ mode: 'character', scenarioId, characterId: idByName.Riley, turnId: null });
+
+  const image = lastSceneImage(scenarioId);
+  assert.ok(!image.prompt_used.includes('sepia tone'),
+    `character-mode prompt must not include scenario append fields, got: ${image.prompt_used}`);
+  assert.ok(!image.prompt_used.includes('polaroid border'));
+});
