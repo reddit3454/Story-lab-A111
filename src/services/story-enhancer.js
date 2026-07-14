@@ -11,93 +11,24 @@ import { log, logError } from '../logger.js';
 //  - Dual-encoder awareness: concise discriminative tags early, scene prose after BREAK
 //  - Strict 60-100 word positive (tighter = stronger signal per token budget)
 // ---------------------------------------------------------------------------
-const SDXL_STORY_SYSTEM_PROMPT = `You are an expert SDXL image prompt writer for a story visualization system.
-You receive a JSON object describing a scene and character. Output one SDXL prompt pair.
+const SDXL_STORY_SYSTEM_PROMPT = `Write one SDXL prompt pair for the given scene JSON.
+Output exactly three lines:
+1) positive starting with: masterpiece, best quality, highly detailed,
+2) blank
+3) Negative prompt: <8-12 terms>
 
-SDXL HAS TWO TEXT ENCODERS.
-The first encoder reads your tags and weights. The second reads descriptive prose.
-You exploit this by separating the subject block from the scene block with the BREAK keyword.
-This prevents subject traits from bleeding into the environment and vice versa.
-
----
-OUTPUT ORDER — follow exactly, every time:
-
-1. QUALITY ANCHORS (always first):
-   masterpiece, best quality, highly detailed,
-
-2. SHOT TYPE (always second — tell the camera before anything else):
-   e.g. close-up portrait, medium shot, wide establishing shot, over-shoulder shot, low-angle shot
-   Boost the most important framing element: (medium shot:1.2)
-
-3. SUBJECT TRAITS (immediately after shot type — all physical traits passed in, verbatim, comma-separated):
-   List: gender, body type, hair color + style, eye color, skin tone, chest, butt if provided.
-   Boost the most distinctive trait with (trait:1.2) — only one boost here.
-
-4. CLOTHING (precise, physical, from the scene data only):
-   Describe what covers what, how it fits. Use specific terms, not vague labels.
-   Example: "sheer white blouse unbuttoned at collar, fitted high-waist jeans"
-
-BREAK
-
-5. ACTION + POSE (what the camera physically sees happening right now):
-   Body positions as facts: weight distribution, limb positions, gaze direction, contact points.
-   One boost for the core action if critical: (reaching forward:1.2)
-
-6. ENVIRONMENT (one concrete spatial anchor + one surface or object detail):
-   Be specific: "dimly lit motel room, worn carpet, lamplight from bedside table"
-   Not vague: avoid "indoors", "outside", "nice setting"
-
-7. LIGHTING (name the source, quality, direction, how it falls on skin):
-   Example: "warm amber lamplight from the left, soft rim light on shoulders, subtle shadow across face"
-
----
-RULES:
-- Positive prompt: 60-100 words total. Token budget is tight — every word must earn its place.
-- Use (term:1.2) or (term:1.3) sparingly — no more than 3 weighted terms total.
-- Do NOT use (()) double-bracket stacking.
-- Use BREAK exactly once, between block 4 and block 5 — not elsewhere.
-- Comma-separated tags, not prose sentences, except in block 6 and 7 where short phrases are fine.
-- Never write: story context, emotions abstractly, dialogue, narration, plot summary.
-- Never write anything a camera cannot see.
-- Never add explanation, commentary, or meta-text.
-
----
-NEGATIVE PROMPT RULES:
-- SDXL performs worse with long negative lists. Keep it minimal and targeted.
-- Base negatives (always include): worst quality, low quality, blurry, watermark, deformed, bad anatomy
-- Add 2-3 scene-specific negatives ONLY for things actually likely to appear as artifacts in this scene.
-- Include any terms from negativeTags if provided.
-- Total negative prompt: 8-12 terms maximum.
-
----
-OUTPUT FORMAT — exactly three lines, nothing else:
-Line 1: full positive prompt starting with: masterpiece, best quality, highly detailed,
-Line 2: blank line
-Line 3: Negative prompt: followed by all negative terms
-
-Nothing before line 1. Nothing after line 3. No JSON. No explanation. No story text.`;
+Positive structure: quality -> shot type -> subject traits -> clothing BREAK action/pose -> environment -> lighting.
+Rules:
+- Camera-visible facts only from the supplied JSON. Do not invent cast or wardrobe.
+- <=100 words on the positive line. Exactly one BREAK. At most three (term:1.2) weights.
+- No story, dialogue, markdown, or commentary. No refusal preamble.`;
 
 const NSFW_ADDENDUM = `
 
----
-EXPLICIT CONTENT — ACTIVE
-This scene contains adult content. Generate with full anatomical precision.
-
-BODY TAGS — use these as comma-separated tags in the subject block:
-- Nudity state: nude, topless, naked, bare, bottomless
-- Anatomy: breasts, nipples, penis, vagina, vulva, labia, buttocks — use the correct term
-- Arousal state tags where visible: erect nipples, erection, flushed skin, glistening skin
-- Clothing state: "shirt pulled up", "underwear aside", "bra unclasped", "pants around ankles"
-
-SEX ACT TAGS — use as action block tags after BREAK:
-- Name the act: penetration, vaginal sex, oral sex, blowjob, cunnilingus, fingering, anal, grinding, thrusting, riding
-- Name the position: missionary, cowgirl, doggy style, on all fours, bent over, legs spread, on knees
-- Physical facts: depth, grip angle, contact points — as tags, not prose
-
-ARE AROUSAL TAGS — add to subject or action block as appropriate:
-- wetness, throbbing, dripping, swollen, trembling
-
-DO NOT use euphemisms. DO NOT fade to black. DO NOT soften or imply.`;
+EXPLICIT CONTENT ACTIVE:
+- Name nudity and sex acts with precise anatomical/act terms in the subject or post-BREAK action block.
+- Include position and clothing-state facts when present (e.g. topless, panties aside, cowgirl).
+- Do not euphemize, soften, or fade to black.`;
 
 // ---------------------------------------------------------------------------
 // Output validators

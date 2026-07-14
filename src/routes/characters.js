@@ -2,9 +2,15 @@ import fs from 'fs';
 import path from 'path';
 import { Router } from 'express';
 import db from '../db.js';
+import broadcast from '../broadcast.js';
 import { IMAGES_DIR } from '../paths.js';
+import {
+  setScenarioRuntimeClothing,
+  setScenarioStartingOutfit,
+  getScenarioClothing,
+} from '../services/clothing.js';
 import { resolveEffectiveConfig } from '../services/config-resolver.js';
-import * as a1111 from '../services/a1111.js';
+import { buildA1111Payload, callA1111 } from '../services/image-pipeline.js';
 
 const router = Router();
 
@@ -91,23 +97,6 @@ function _assembleCharacterPrompt(char) {
   }
   if (parts.length) return parts.join(', ');
   return (char.appearance_prompt?.trim()) || char.name;
-}
-
-function _buildPayload(config, prompt, negative) {
-  return {
-    prompt,
-    negative_prompt: negative || '',
-    steps:       Math.round(config.a1111_steps)  || 30,
-    cfg_scale:   config.a1111_cfg                || 7,
-    width:       Math.round(config.a1111_width)  || 832,
-    height:      Math.round(config.a1111_height) || 1216,
-    sampler_name: config.a1111_sampler           || 'DPM++ 2M SDE',
-    scheduler:   config.a1111_scheduler          || 'Karras',
-    seed:        -1,
-    override_settings: {
-      CLIP_stop_at_last_layers: Math.round(config.a1111_clip_skip) || 2,
-    },
-  };
 }
 
 /* ── Character CRUD ───────────────────────────────────────────────────────── */
@@ -295,12 +284,49 @@ router.delete('/:id', function (req, res) {
 });
 
 router.patch('/:id/clothing', function (req, res) {
-  const { current_clothing } = req.body;
-  db.prepare('UPDATE characters SET current_clothing = ? WHERE id = ?')
-    .run(current_clothing ?? '', req.params.id);
-  const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Character not found' });
-  res.json(row);
+  const charId = parseInt(req.params.id, 10);
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(charId);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+
+  const { current_clothing, scenario_id, runtime } = req.body || {};
+  const clothing = String(current_clothing ?? '').trim();
+  const scenarioId = scenario_id != null ? parseInt(scenario_id, 10) : null;
+
+  // Scenario-scoped: never mutate character wardrobe JSON / card defaults.
+  // CF-10: runtime must be an explicit boolean when scenario_id is set.
+  // (Omitted used to default to runtime write here, opposite of the scenario-characters route.)
+  if (scenarioId) {
+    const link = db.prepare(
+      'SELECT starting_clothing FROM scenario_characters WHERE scenario_id = ? AND character_id = ?'
+    ).get(scenarioId, charId);
+    if (!link) return res.status(404).json({ error: 'Character not in this scenario' });
+
+    if (typeof runtime !== 'boolean') {
+      return res.status(400).json({
+        error: 'runtime must be an explicit boolean when scenario_id is set (true=runtime clothing, false=starting outfit)',
+      });
+    }
+
+    if (runtime === false) {
+      setScenarioStartingOutfit(scenarioId, charId, { description: clothing, setName: null });
+    } else {
+      setScenarioRuntimeClothing(scenarioId, charId, clothing);
+    }
+    const live = getScenarioClothing(scenarioId, charId);
+    broadcast.send('clothingupdate', {
+      scenarioId,
+      characters: [{ characterId: charId, current_clothing: live }],
+    });
+    return res.json({ ok: true, current_clothing: live });
+  }
+
+  // Character-card only legacy field (not outfit_sets JSON)
+  db.prepare('UPDATE characters SET current_clothing = ? WHERE id = ?').run(clothing, charId);
+  broadcast.send('clothingupdate', {
+    scenarioId: null,
+    characters: [{ characterId: charId, current_clothing: clothing }],
+  });
+  res.json({ ok: true, character: db.prepare('SELECT * FROM characters WHERE id = ?').get(charId) });
 });
 
 /* ── Character References ─────────────────────────────────────────────────── */
@@ -314,7 +340,7 @@ router.get('/:id/references', function (req, res) {
 
 // Specific literal routes MUST be before dynamic /:refId or Express swallows them
 router.delete('/:id/references/faceid', function (req, res) {
-  db.prepare('UPDATE characters SET reference_image_path = NULL WHERE id = ?').run(req.params.id);
+  db.prepare('UPDATE characters SET reference_image_path = NULL, reference_image = NULL WHERE id = ?').run(req.params.id);
   const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
   res.json({ ok: true, character: char });
 });
@@ -348,7 +374,9 @@ router.post('/:id/references/generate', async function (req, res) {
     const savePath = path.join(refDir, basename);
     fs.mkdirSync(refDir, { recursive: true });
 
-    await a1111.txt2img(baseUrl, _buildPayload(config, prompt, negative), savePath);
+    // Shared with image-pipeline.js's main generation path (VAE override + retry-on-failure) — see CF-4.
+    const payload = buildA1111Payload(config, prompt, negative, null);
+    await callA1111(baseUrl, 'txt2img', payload, savePath);
 
     const relPath = _relPath(req.params.id, 'references', basename);
     const ins = db.prepare(
@@ -407,8 +435,8 @@ router.post('/:id/references/:ref/accept', function (req, res) {
   }
   if (!row) return res.status(404).json({ error: 'Reference not found' });
 
-  db.prepare('UPDATE characters SET reference_image_path = ? WHERE id = ?')
-    .run(row.filename, charId);
+  db.prepare('UPDATE characters SET reference_image_path = ?, reference_image = ? WHERE id = ?')
+    .run(row.filename, row.filename, charId);
 
   const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(charId);
   res.json({ ok: true, character: char });
@@ -423,6 +451,13 @@ router.get('/:id/fullbody', function (req, res) {
   res.json({ fullbodies: fbs });
 });
 
+// DEPRECATED: faceid_ref_count/faceid_ref_order have no runtime consumer — the app is
+// single-reference only (see resolvePrimaryCharacterForReference / buildA1111Payload,
+// which read characters.reference_image_path). The UI that called this route has been
+// removed (it was leftover ComfyUI-era copy referencing a node — IPAAdapterFaceIDBatch —
+// that doesn't exist in this A1111-only architecture). Route kept only so any stray
+// caller doesn't 404; do not build new features on these columns without first
+// implementing real multi-reference ControlNet unit support end-to-end.
 router.patch('/:id/faceid-config', function (req, res) {
   const { faceid_ref_count, faceid_ref_order } = req.body;
   db.prepare(`UPDATE characters SET faceid_ref_count = ?, faceid_ref_order = ? WHERE id = ?`).run(
@@ -450,7 +485,9 @@ router.post('/:id/fullbody/generate', async function (req, res) {
     const savePath = path.join(fbDir, basename);
     fs.mkdirSync(fbDir, { recursive: true });
 
-    await a1111.txt2img(baseUrl, _buildPayload(config, prompt, negative), savePath);
+    // Shared with image-pipeline.js's main generation path (VAE override + retry-on-failure) — see CF-4.
+    const payload = buildA1111Payload(config, prompt, negative, null);
+    await callA1111(baseUrl, 'txt2img', payload, savePath);
 
     const relPath = _relPath(req.params.id, 'fullbody', basename);
     const ins = db.prepare(
@@ -498,8 +535,8 @@ router.post('/:id/fullbody/:fbId/use-as-ref', function (req, res) {
     .get(req.params.fbId, req.params.id);
   if (!row) return res.status(404).json({ error: 'Full-body image not found' });
 
-  db.prepare('UPDATE characters SET reference_image_path = ? WHERE id = ?')
-    .run(row.filename, req.params.id);
+  db.prepare('UPDATE characters SET reference_image_path = ?, reference_image = ? WHERE id = ?')
+    .run(row.filename, row.filename, req.params.id);
 
   const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
   res.json({ ok: true, character: char });

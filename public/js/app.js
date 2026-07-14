@@ -7,6 +7,8 @@ import { initPlay } from './views/play.js';
 import { connectWs } from './views/play.js';
 import { initSettings } from './views/settings.js';
 import { initLocations } from './views/locations.js';
+import { initStyles } from './views/styles.js';
+import { initImages } from './views/images.js';
 
 // Expose UI helpers so non-module scripts (locations-init.js, styles-init.js) can use them
 window.showToast   = showToast;
@@ -33,6 +35,8 @@ export function router() {
   else if (view === 'play')           { activate('view-play');           initPlay(params.get('scenario')); }
   else if (view === 'settings')       { activate('view-settings');       initSettings(); }
   else if (view === 'locations')      { activate('view-locations');      initLocations(params.get('scenario')); }
+  else if (view === 'styles')         { activate('view-styles');         initStyles(params.get('scenario')); }
+  else if (view === 'images')         { activate('view-images');         initImages(); }
   else    { location.hash = '#dashboard'; }
 }
 

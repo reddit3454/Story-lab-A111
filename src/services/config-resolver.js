@@ -1,12 +1,14 @@
 const NUMERIC_KEYS = new Set([
+  'narrator_context_tokens', 'narrator_max_tokens',
   'a1111_steps', 'a1111_cfg', 'a1111_width', 'a1111_height', 'a1111_clip_skip',
   'hr_steps', 'hr_scale', 'hr_denoising', 'ad_strength',
   'ipadapter_weight', 'ipadapter_end',
   'lora1_strength', 'lora2_strength',
   'img2img_denoising',
+  'refiner_switch_at',
 ]);
 
-const BOOLEAN_KEYS = new Set(['hr_enabled', 'ad_enabled', 'lora_enabled', 'nsfw_enabled', 'explicit_mode', 'ipadapter_enabled']);
+const BOOLEAN_KEYS = new Set(['hr_enabled', 'ad_enabled', 'lora_enabled', 'nsfw_enabled', 'explicit_mode', 'ipadapter_enabled', 'refiner_enabled', 'summary_learning_enabled']);
 
 // Profile cannot override these master constraints
 const STRUCTURAL_KEYS = new Set([
@@ -28,10 +30,11 @@ export function resolveMasterConfig(db) {
   return config;
 }
 
-// ORPHAN: not imported anywhere — safe to delete if unneeded
+// Used by resolveEffectiveConfig() below (same module). Not an orphan.
 export function resolveActiveProfile(db) {
   return db.prepare('SELECT * FROM image_profiles WHERE is_active = 1 LIMIT 1').get() || null;
 }
+
 
 export function resolveEffectiveConfig(db) {
   const master  = resolveMasterConfig(db);

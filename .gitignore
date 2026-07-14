@@ -32,6 +32,12 @@ desktop.ini
 .idea/
 *.iml
 
+# Playwright MCP verification artifacts (screenshots/snapshots, not project source)
+.playwright-mcp/
+
+# Serena MCP tool-local project config
+.serena/
+
 # Story-Lab & local tooling
 logs/
 output/

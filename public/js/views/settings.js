@@ -173,7 +173,7 @@ function buildTabContent(tabId) {
         '<div class="settings-section">' +
           '<h2 class="section-title">Workflow &amp; Styles</h2>' +
           '<p class="text-muted" style="margin-bottom:12px">Styles control the visual look, model, and LoRA configuration used for scene images.</p>' +
-          '<a href="#styles" class="btn btn-secondary btn-sm">Open Styles Editor</a>' +
+          '<a href="#styles' + (state.currentScenario ? '?scenario=' + state.currentScenario.id : '') + '" class="btn btn-secondary btn-sm">Open Styles Editor</a>' +
         '</div>';
 
     // -----------------------------------------------------------------------
@@ -414,6 +414,11 @@ function buildTabContent(tabId) {
             'Activate one to apply it to all generation. Only one profile can be active at a time.' +
           '</p>' +
           '<div id="imggen-profiles"><div class="loading-state">Loading...</div></div>' +
+        '</div>' +
+        '<div class="settings-section" style="margin-top:24px">' +
+          '<h2 class="section-title">Image Summary and Learning</h2>' +
+          '<p class="text-muted" style="margin-bottom:12px">Panel defaults, rating prompts, and exemplar learning thresholds.</p>' +
+          '<div id="imggen-summary-learning"><div class="loading-state">Loading...</div></div>' +
         '</div>';
 
     // -----------------------------------------------------------------------
@@ -445,7 +450,7 @@ function wireSettingsTabs(el, activeTabId) {
       if (tid === 'general')         { loadHealthCards(); loadGlobalRules(); }
       if (tid === 'models')          { loadLlamacppConfig(); }
       if (tid === 'imagetools')      { wireImageTools(); wirePromptLab(); }
-      if (tid === 'imagegeneration') { wireMasterSettings(); wireProfiles(); }
+      if (tid === 'imagegeneration') { wireMasterSettings(); wireProfiles(); wireImageSummarySettings(); }
     };
   });
 }
@@ -486,6 +491,7 @@ export function initSettings() {
     '</div>';
 
   wireSettingsTabs(el, TABS[0].id);
+  wireImageSummarySettings();
 
   // Wire font buttons
   var storyBtn      = document.getElementById('btn-pick-story-font');
@@ -829,6 +835,61 @@ function wirePromptLab() {
 }
 
 // ---------------------------------------------------------------------------
+
+var _imageSummarySettingsWired = false;
+
+function wireImageSummarySettings() {
+  var el = document.getElementById('imggen-summary-learning');
+  if (!el) return;
+
+  API.getConfig().then(function (cfg) {
+    var current = (cfg && cfg.image_summary_panel_default) || 'visible';
+    el.innerHTML =
+      '<div class="form-group">' +
+        '<label class="form-label">Image summary panel default</label>' +
+        '<select class="form-input" id="isl-panel-default">' +
+          '<option value="visible"' + (current === 'visible' ? ' selected' : '') + '>Expanded</option>' +
+          '<option value="minimized"' + (current === 'minimized' ? ' selected' : '') + '>Minimized</option>' +
+        '</select>' +
+        '<p class="form-hint text-muted" style="margin-top:6px">Applies to new narrator turns in Play.</p>' +
+      '</div>' +
+      '<div class="form-group"><label class="toggle-label"><span>Rating prompts after generate</span><input type="checkbox" id="isl-rating-prompt"' + ((cfg.summary_rating_prompt_enabled === true || cfg.summary_rating_prompt_enabled === 'true') ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="toggle-label"><span>Exemplar learning enabled</span><input type="checkbox" id="isl-learning-enabled"' + ((cfg.summary_learning_enabled === true || cfg.summary_learning_enabled === 'true') ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="form-label">Min content score (1-5)</label><input type="number" min="1" max="5" class="form-input" id="isl-content-min" value="' + (cfg.summary_content_min_for_learning || 4) + '"></div>' +
+      '<div class="form-group"><label class="form-label">Min style score (1-5)</label><input type="number" min="1" max="5" class="form-input" id="isl-style-min" value="' + (cfg.summary_style_min_for_learning || 4) + '"></div>' +
+      '<div class="form-group"><label class="form-label">Global exemplar cap</label><input type="number" min="10" max="200" class="form-input" id="isl-exemplar-max" value="' + (cfg.summary_exemplar_max || 50) + '"></div>' +
+      '<div class="form-group"><label class="form-label">Per-scenario exemplar cap</label><input type="number" min="1" max="50" class="form-input" id="isl-exemplar-per-scenario" value="' + (cfg.summary_exemplar_max_per_scenario || 10) + '"></div>' +
+      '<button type="button" class="btn btn-primary btn-sm" id="isl-save-all">Save learning settings</button>';
+
+    if (_imageSummarySettingsWired) return;
+    _imageSummarySettingsWired = true;
+
+    var saveAll = document.getElementById('isl-save-all');
+    if (saveAll) saveAll.onclick = function () {
+      API.setConfigs({
+        image_summary_panel_default: document.getElementById('isl-panel-default').value,
+        summary_rating_prompt_enabled: document.getElementById('isl-rating-prompt').checked ? 'true' : 'false',
+        summary_learning_enabled: document.getElementById('isl-learning-enabled').checked ? 'true' : 'false',
+        summary_content_min_for_learning: String(document.getElementById('isl-content-min').value),
+        summary_style_min_for_learning: String(document.getElementById('isl-style-min').value),
+        summary_exemplar_max: String(document.getElementById('isl-exemplar-max').value),
+        summary_exemplar_max_per_scenario: String(document.getElementById('isl-exemplar-per-scenario').value),
+      }).then(function () { showToast('Learning settings saved', 'success'); }).catch(function (e) { showToast(e.message, 'error'); });
+    };
+
+    el.addEventListener('change', function (ev) {
+      var sel = ev.target;
+      if (!sel || sel.id !== 'isl-panel-default') return;
+      if (sel.id === 'isl-panel-default') {
+        API.setConfig('image_summary_panel_default', sel.value)
+          .then(function () { showToast('Saved', 'success'); })
+          .catch(function (e) { showToast('Save failed: ' + e.message, 'error'); });
+      }
+    });
+  }).catch(function (e) {
+    el.innerHTML = '<p class="text-muted">Could not load settings: ' + escapeHtml(e.message) + '</p>';
+  });
+}
 // A1111 Master Settings (replaces old Image Generation wiring)
 // Loads from GET /api/config, saves via PUT /api/config/bulk
 // ---------------------------------------------------------------------------
@@ -844,6 +905,16 @@ var A1111_SCHEDULERS = [
   'Automatic', 'Uniform', 'Karras', 'Exponential', 'Polyexponential',
   'SGM Uniform', 'KL Optimal', 'Align Your Steps', 'Simple', 'Normal', 'DDIM', 'Beta',
 ];
+var UPSCALER_DEFAULTS = [
+  'None', 'Lanczos', 'Nearest', 'ESRGAN_4x', '4x-UltraSharp',
+  'LDSR', 'R-ESRGAN 4x+', 'R-ESRGAN 4x+ Anime6B', 'ScuNET GAN', 'SwinIR_4x',
+];
+var ADETAILER_MODEL_DEFAULTS = [
+  'face_yolov8n.pt', 'face_yolov8s.pt', 'face_yolov8n_v2.pt', 'face_yolov8l.pt',
+  'hand_yolov8n.pt', 'hand_yolov8s.pt',
+  'person_yolov8n-seg.pt', 'person_yolov8s-seg.pt',
+  'mediapipe_face_full', 'mediapipe_face_short', 'mediapipe_face_mesh',
+];
 
 function wireMasterSettings() {
   if (_masterSettingsWired) return;
@@ -855,7 +926,7 @@ function wireMasterSettings() {
   function g(id) { return document.getElementById(id); }
   function tv(id) { var el = g(id); return el ? (el.type === 'checkbox' ? el.checked : el.value) : ''; }
 
-  function buildMasterForm(cfg, samplerList, schedulerList, loraList) {
+  function buildMasterForm(cfg, samplerList, schedulerList, loraList, upscalerList, cnModels, cnModules, adModels, ollamaModels) {
     cfg = cfg || {};
     function v(key, def) { return cfg[key] != null ? cfg[key] : def; }
     function boolCfg(key, def) { var val = v(key, def); return val === true || val === 'true' || val === 1 || val === '1'; }
@@ -865,6 +936,56 @@ function wireMasterSettings() {
           var nm = typeof l === 'string' ? l : (l.name || l.alias || '');
           return '<option value="' + escapeHtml(nm) + '"' + (nm === (selected || '') ? ' selected' : '') + '>' + escapeHtml(nm) + '</option>';
         }).join('');
+    }
+    function buildUpscalerOpts(selected) {
+      var list = (upscalerList && upscalerList.length) ? upscalerList : UPSCALER_DEFAULTS;
+      if (selected && list.indexOf(selected) === -1) list = [selected].concat(list);
+      return list.map(function (u) {
+        return '<option value="' + escapeHtml(u) + '"' + (u === selected ? ' selected' : '') + '>' + escapeHtml(u) + '</option>';
+      }).join('');
+    }
+    function buildCNModelOpts(selected) {
+      var list = cnModels && cnModels.length ? cnModels : [];
+      if (!list.length) {
+        var opts = '<option value="">-- A1111 offline --</option>';
+        if (selected) opts += '<option value="' + escapeHtml(selected) + '" selected>' + escapeHtml(selected) + '</option>';
+        return opts;
+      }
+      if (selected && list.indexOf(selected) === -1) list = [selected].concat(list);
+      return '<option value="">-- select --</option>' +
+        list.map(function (m) {
+          return '<option value="' + escapeHtml(m) + '"' + (m === selected ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
+        }).join('');
+    }
+    function buildCNModuleOpts(selected) {
+      var list = cnModules && cnModules.length ? cnModules : [];
+      var blankLabel = '-- auto (by checkpoint family) --';
+      if (!list.length) {
+        var opts = '<option value="">' + blankLabel + '</option>';
+        if (selected) opts += '<option value="' + escapeHtml(selected) + '" selected>' + escapeHtml(selected) + '</option>';
+        return opts;
+      }
+      if (selected && list.indexOf(selected) === -1) list = [selected].concat(list);
+      return '<option value="">' + blankLabel + '</option>' +
+        list.map(function (m) {
+          return '<option value="' + escapeHtml(m) + '"' + (m === selected ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
+        }).join('');
+    }
+    function buildADModelOpts(selected) {
+      var list = (adModels && adModels.length) ? adModels : ADETAILER_MODEL_DEFAULTS;
+      if (selected && list.indexOf(selected) === -1) list = [selected].concat(list);
+      return list.map(function (m) {
+        return '<option value="' + escapeHtml(m) + '"' + (m === selected ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
+      }).join('');
+    }
+    function buildOllamaModelOpts(selected) {
+      var list = ollamaModels && ollamaModels.length ? ollamaModels : [];
+      var opts = '<option value="">-- narrator model (default) --</option>';
+      if (selected && list.indexOf(selected) === -1) opts += '<option value="' + escapeHtml(selected) + '" selected>' + escapeHtml(selected) + '</option>';
+      opts += list.map(function (m) {
+        return '<option value="' + escapeHtml(m) + '"' + (m === selected ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
+      }).join('');
+      return opts;
     }
 
     var samplerOpts = (samplerList || A1111_SAMPLERS).map(function (s) {
@@ -927,12 +1048,17 @@ function wireMasterSettings() {
           '<div class="form-group" style="margin:0"><label class="form-label">Height</label><input class="form-input" id="ms-height" type="number" min="64" max="4096" step="8" value="' + v('a1111_height',1216) + '"></div>' +
         '</div>' +
         '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:12px">' +
-          '<div class="form-group" style="margin:0"><label class="form-label">CLIP Skip</label><input class="form-input" id="ms-clip-skip" type="number" min="1" max="4" step="1" value="' + v('clip_skip',2) + '"></div>' +
+          '<div class="form-group" style="margin:0"><label class="form-label">CLIP Skip</label><input class="form-input" id="ms-clip-skip" type="number" min="1" max="4" step="1" value="' + v('a1111_clip_skip',2) + '"></div>' +
           '<div class="form-group" style="margin:0"><label class="form-label">Img2Img Denoising Strength</label><input class="form-input" id="ms-img2img-denoising" type="number" min="0.1" max="1.0" step="0.05" value="' + v('img2img_denoising', 0.45) + '"><p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">How much the image changes during img2img. Lower = subtle changes, higher = dramatic.</p></div>' +
         '</div>' +
         '<div class="form-group">' +
+          '<label class="form-label">Global Positive Prompt</label>' +
+          '<textarea class="form-input" id="ms-positive" rows="2" placeholder="masterpiece, best quality, highly detailed...">' + escapeHtml(v('master_positive','')) + '</textarea>' +
+          '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Quality and style tags prepended to every generated image. Applied before any active profile prefix.</p>' +
+        '</div>' +
+        '<div class="form-group">' +
           '<label class="form-label">Global Negative Prompt</label>' +
-          '<textarea class="form-input" id="ms-negative" rows="2" placeholder="lowres, bad anatomy, bad hands, blurry...">' + escapeHtml(v('a1111_negative_prompt','')) + '</textarea>' +
+          '<textarea class="form-input" id="ms-negative" rows="2" placeholder="lowres, bad anatomy, bad hands, blurry...">' + escapeHtml(v('master_negative','')) + '</textarea>' +
         '</div>' +
       '</div>' +
 
@@ -950,8 +1076,32 @@ function wireMasterSettings() {
             '<div class="form-group" style="margin:0"><label class="form-label">Scale</label><input class="form-input" id="ms-hr-scale" type="number" min="1" max="4" step="0.1" value="' + v('hr_scale',1.5) + '"></div>' +
             '<div class="form-group" style="margin:0"><label class="form-label">Steps</label><input class="form-input" id="ms-hr-steps" type="number" min="1" max="60" step="1" value="' + v('hr_steps',20) + '"></div>' +
             '<div class="form-group" style="margin:0"><label class="form-label">Denoising</label><input class="form-input" id="ms-hr-denoising" type="number" min="0" max="1" step="0.05" value="' + v('hr_denoising',0.4) + '"></div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Upscaler</label><input class="form-input" id="ms-hr-upscaler" type="text" value="' + escapeHtml(v('hr_upscaler','4x-UltraSharp')) + '"></div>' +
+            '<div class="form-group" style="margin:0"><label class="form-label">Upscaler</label><select class="form-input" id="ms-hr-upscaler">' + buildUpscalerOpts(v('hr_upscaler','4x-UltraSharp')) + '</select></div>' +
           '</div>' +
+        '</div>' +
+      '</div>' +
+
+      // ---- Refiner ----
+      '<div style="margin-bottom:24px">' +
+        '<h3 class="imggen-section-head">SDXL Refiner</h3>' +
+        '<div style="margin-bottom:10px">' +
+          '<label class="toggle-label">' +
+            '<span>Enable Refiner</span>' +
+            '<div class="toggle' + (boolCfg('refiner_enabled', false) ? ' active' : '') + '" id="ms-refiner-enabled"></div>' +
+          '</label>' +
+        '</div>' +
+        '<div id="ms-refiner-params" style="' + (boolCfg('refiner_enabled', false) ? '' : 'display:none') + '">' +
+          '<div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:end">' +
+            '<div class="form-group" style="margin:0">' +
+              '<label class="form-label">Refiner Checkpoint</label>' +
+              '<select class="form-input" id="ms-refiner-checkpoint"><option value="">Loading...</option></select>' +
+            '</div>' +
+            '<div class="form-group" style="margin:0;min-width:120px">' +
+              '<label class="form-label">Switch At <span class="form-hint">(0.0–1.0)</span></label>' +
+              '<input class="form-input" id="ms-refiner-switch-at" type="number" min="0.1" max="1.0" step="0.05" value="' + v('refiner_switch_at', 0.8) + '">' +
+            '</div>' +
+          '</div>' +
+          '<p class="form-hint" style="margin-top:6px;font-size:12px;color:var(--text-muted)">Fraction of steps run by the base model before handing off to the refiner. 0.8 = 80% base, 20% refiner. Requires an SDXL-compatible refiner checkpoint loaded in A1111.</p>' +
         '</div>' +
       '</div>' +
 
@@ -966,7 +1116,7 @@ function wireMasterSettings() {
         '</div>' +
         '<div id="ms-ad-params" style="' + (boolCfg('ad_enabled', true) ? '' : 'display:none') + '">' +
           '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Model</label><input class="form-input" id="ms-ad-model" type="text" value="' + escapeHtml(v('ad_model','face_yolov8n.pt')) + '"></div>' +
+            '<div class="form-group" style="margin:0"><label class="form-label">Model</label><select class="form-input" id="ms-ad-model">' + buildADModelOpts(v('ad_model','face_yolov8n.pt')) + '</select></div>' +
             '<div class="form-group" style="margin:0"><label class="form-label">Strength</label><input class="form-input" id="ms-ad-strength" type="number" min="0" max="1" step="0.05" value="' + v('ad_strength',0.4) + '"></div>' +
           '</div>' +
         '</div>' +
@@ -982,10 +1132,14 @@ function wireMasterSettings() {
           '</label>' +
         '</div>' +
         '<div id="ms-ipa-params" style="' + (boolCfg('ipadapter_enabled', false) ? '' : 'display:none') + '">' +
+          '<p class="form-hint" style="margin:0 0 10px">Both fields below are validated against this A1111 instance before every generation. If either is unset or not found, FaceID is skipped for that image rather than sent with a guessed value.</p>' +
           '<div class="form-group" style="margin:0 0 12px">' +
-            '<label class="form-label">ControlNet model name</label>' +
-            '<input class="form-input" id="ms-ipa-model" type="text" value="' + escapeHtml(v('ipadapter_model','ip-adapter-plus-face_sdxl_vit-h [andrewnuness]')) + '">' +
-            '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--color-warning,#f59e0b);font-weight:500">Must match your ControlNet model name exactly as shown in A1111\'s model list.</p>' +
+            '<label class="form-label">ControlNet model <span class="form-hint">(required — no default)</span></label>' +
+            '<select class="form-input" id="ms-ipa-model">' + buildCNModelOpts(v('ipadapter_model','')) + '</select>' +
+          '</div>' +
+          '<div class="form-group" style="margin:0 0 12px">' +
+            '<label class="form-label">Preprocessor module <span class="form-hint">(blank = auto by checkpoint family)</span></label>' +
+            '<select class="form-input" id="ms-ipa-module">' + buildCNModuleOpts(v('ipadapter_module','')) + '</select>' +
           '</div>' +
           '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
             '<div class="form-group" style="margin:0">' +
@@ -1048,8 +1202,8 @@ function wireMasterSettings() {
         '<h3 class="imggen-section-head">Prompt Extractor</h3>' +
         '<div class="form-group">' +
           '<label class="form-label">Prompt Extractor Model</label>' +
-          '<input class="form-input" id="ms-extractor-model" type="text" value="' + escapeHtml(v('prompt_extractor_model', '')) + '" placeholder="e.g. llama3 — falls back to narrator model if blank">' +
-          '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Reads each story paragraph and writes the Stable Diffusion image prompt. Use a small fast uncensored model (e.g. llama3, mistral, qwen2). Must be pulled in Ollama.</p>' +
+          '<select class="form-input" id="ms-extractor-model">' + buildOllamaModelOpts(v('prompt_extractor_model', '')) + '</select>' +
+          '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Reads each story paragraph and writes the Stable Diffusion image prompt. Use a small fast uncensored model. Falls back to narrator model if blank.</p>' +
         '</div>' +
       '</div>' +
 
@@ -1058,7 +1212,7 @@ function wireMasterSettings() {
         '<h3 class="imggen-section-head">Scene Picker</h3>' +
         '<div class="form-group">' +
           '<label class="form-label">Scene Picker Model</label>' +
-          '<input class="form-input" id="ms-picker-model" type="text" value="' + escapeHtml(v('picker_model', '')) + '" placeholder="e.g. llama3 — falls back to narrator model if blank">' +
+          '<select class="form-input" id="ms-picker-model">' + buildOllamaModelOpts(v('picker_model', '')) + '</select>' +
           '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Model used to select the best visual moment per turn. Can be a smaller/faster model than the narrator. Leave blank to use the narrator model.</p>' +
         '</div>' +
       '</div>' +
@@ -1109,6 +1263,31 @@ function wireMasterSettings() {
         loraToggle.classList.toggle('active');
         loraParams.style.display = loraToggle.classList.contains('active') ? '' : 'none';
       };
+    }
+    // Refiner toggle + populate checkpoint dropdown
+    var refToggle = g('ms-refiner-enabled');
+    var refParams = g('ms-refiner-params');
+    if (refToggle && refParams) {
+      refToggle.onclick = function () {
+        refToggle.classList.toggle('active');
+        refParams.style.display = refToggle.classList.contains('active') ? '' : 'none';
+      };
+    }
+    var refSel = g('ms-refiner-checkpoint');
+    if (refSel) {
+      var _savedRefiner = v('refiner_checkpoint', '');
+      API.getA1111Models()
+        .then(function (data) {
+          var models = (Array.isArray(data) ? data : (data.models || [])).map(function (m) { return m.title || m.model_name || m; });
+          refSel.innerHTML = '<option value="">-- none --</option>' +
+            models.map(function (m) {
+              return '<option value="' + escapeHtml(m) + '"' + (m === _savedRefiner ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
+            }).join('');
+        })
+        .catch(function () {
+          refSel.innerHTML = '<option value="">-- A1111 offline --</option>';
+          if (_savedRefiner) refSel.innerHTML += '<option value="' + escapeHtml(_savedRefiner) + '" selected>' + escapeHtml(_savedRefiner) + '</option>';
+        });
     }
     // Test connection
     var testBtn    = g('ms-test-conn');
@@ -1190,10 +1369,11 @@ function wireMasterSettings() {
     var statusEl = g('ms-status');
     if (saveBtn) {
       saveBtn.onclick = function () {
-        var hrOn   = g('ms-hr-enabled')   && g('ms-hr-enabled').classList.contains('active')   ? 1 : 0;
-        var adOn   = g('ms-ad-enabled')   && g('ms-ad-enabled').classList.contains('active')   ? 1 : 0;
-        var ipaOn  = g('ms-ipa-enabled')  && g('ms-ipa-enabled').classList.contains('active')  ? 1 : 0;
-        var loraOn = g('ms-lora-enabled') && g('ms-lora-enabled').classList.contains('active') ? 1 : 0;
+        var hrOn  = g('ms-hr-enabled')      && g('ms-hr-enabled').classList.contains('active')      ? 1 : 0;
+        var adOn  = g('ms-ad-enabled')      && g('ms-ad-enabled').classList.contains('active')      ? 1 : 0;
+        var ipaOn = g('ms-ipa-enabled')     && g('ms-ipa-enabled').classList.contains('active')     ? 1 : 0;
+        var loraOn= g('ms-lora-enabled')    && g('ms-lora-enabled').classList.contains('active')    ? 1 : 0;
+        var refOn = g('ms-refiner-enabled') && g('ms-refiner-enabled').classList.contains('active') ? 1 : 0;
         var map = {
           a1111_url:           (tv('ms-url') || '').trim() || 'http://127.0.0.1:7860',
           a1111_sampler:       tv('ms-sampler') || 'DPM++ 2M SDE',
@@ -1202,18 +1382,23 @@ function wireMasterSettings() {
           a1111_cfg:           tv('ms-cfg') || '7.0',
           a1111_width:         tv('ms-width') || '832',
           a1111_height:        tv('ms-height') || '1216',
-          clip_skip:           tv('ms-clip-skip') || '2',
-          a1111_negative_prompt: (tv('ms-negative') || '').trim(),
+          a1111_clip_skip:     tv('ms-clip-skip') || '2',
+          master_positive:     (tv('ms-positive') || '').trim(),
+          master_negative:     (tv('ms-negative') || '').trim(),
           hr_enabled:          hrOn ? 'true' : 'false',
           hr_scale:            tv('ms-hr-scale') || '1.5',
           hr_steps:            tv('ms-hr-steps') || '20',
           hr_denoising:        tv('ms-hr-denoising') || '0.4',
           hr_upscaler:         (tv('ms-hr-upscaler') || '').trim() || '4x-UltraSharp',
+          refiner_enabled:        refOn ? 'true' : 'false',
+          refiner_checkpoint:     (tv('ms-refiner-checkpoint') || '').trim(),
+          refiner_switch_at:      tv('ms-refiner-switch-at') || '0.8',
           ad_enabled:             adOn ? 'true' : 'false',
           ad_model:               (tv('ms-ad-model') || '').trim() || 'face_yolov8n.pt',
           ad_strength:            tv('ms-ad-strength') || '0.4',
           ipadapter_enabled:      ipaOn ? 'true' : 'false',
-          ipadapter_model:        (tv('ms-ipa-model') || '').trim() || 'ip-adapter-plus-face_sdxl_vit-h [andrewnuness]',
+          ipadapter_model:        (tv('ms-ipa-model') || '').trim(),
+          ipadapter_module:       (tv('ms-ipa-module') || '').trim(),
           ipadapter_weight:       tv('ms-ipa-weight') || '0.35',
           ipadapter_end:          tv('ms-ipa-end') || '0.6',
           prompt_extractor_model: (tv('ms-extractor-model') || '').trim(),
@@ -1252,12 +1437,25 @@ function wireMasterSettings() {
     API.getA1111Samplers().catch(function () { return []; }),
     API.getA1111Schedulers().catch(function () { return []; }),
     API.getA1111Loras().catch(function () { return []; }),
+    API.getA1111Upscalers().catch(function () { return []; }),
+    API.getA1111ControlNetModels().catch(function () { return []; }),
+    API.getA1111ControlNetModules().catch(function () { return []; }),
+    API.getA1111ADetailerModels().catch(function () { return []; }),
+    fetch('http://localhost:11434/api/tags')
+      .then(function (r) { return r.json(); })
+      .then(function (d) { return (d.models || []).map(function (m) { return m.name; }); })
+      .catch(function () { return []; }),
   ]).then(function (results) {
-    var cfg        = results[0].config || results[0] || {};
-    var samplers   = Array.isArray(results[1]) && results[1].length ? results[1] : null;
-    var schedulers = Array.isArray(results[2]) && results[2].length ? results[2] : null;
-    var loraList   = Array.isArray(results[3]) ? results[3] : [];
-    buildMasterForm(cfg, samplers, schedulers, loraList);
+    var cfg          = results[0].config || results[0] || {};
+    var samplers     = Array.isArray(results[1]) && results[1].length ? results[1] : null;
+    var schedulers   = Array.isArray(results[2]) && results[2].length ? results[2] : null;
+    var loraList     = Array.isArray(results[3]) ? results[3] : [];
+    var upscalerList = Array.isArray(results[4]) && results[4].length ? results[4] : null;
+    var cnModels     = Array.isArray(results[5]) ? results[5] : [];
+    var cnModules    = Array.isArray(results[6]) ? results[6] : [];
+    var adModels     = Array.isArray(results[7]) ? results[7] : [];
+    var ollamaModels = Array.isArray(results[8]) ? results[8] : [];
+    buildMasterForm(cfg, samplers, schedulers, loraList, upscalerList, cnModels, cnModules, adModels, ollamaModels);
   }).catch(function (err) {
     container.innerHTML = '<p style="color:var(--danger);font-size:13px">Failed to load config: ' + escapeHtml(err.message) + '</p>' +
       '<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="(function(){var c=document.getElementById(\'imggen-master\');if(c){c.innerHTML=\'<div class=loading-state>Loading...</div>\';_masterSettingsWired=false;wireMasterSettings();}})()">Retry</button>';

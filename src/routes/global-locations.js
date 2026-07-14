@@ -11,16 +11,33 @@ router.get('/', function (req, res) {
 });
 
 router.post('/', function (req, res) {
-  const { name, description, image_tags, time_of_day, background_folder, default_background } = req.body;
+  const {
+    name, description, short_desc, full_desc, tags,
+    image_tags, image_tags_day, image_tags_night,
+    time_of_day, background_folder, default_background,
+  } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
 
+  const dayTags = image_tags_day ?? image_tags ?? '';
+  const fullDesc = full_desc ?? description ?? '';
+  const shortDesc = short_desc ?? '';
+
   const result = db.prepare(`
-    INSERT INTO locations (name, description, image_tags, time_of_day, background_folder, default_background)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO locations (
+      name, description, short_desc, full_desc, tags,
+      image_tags, image_tags_day, image_tags_night,
+      time_of_day, background_folder, default_background
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     name,
-    description        ?? '',
-    image_tags         ?? '',
+    fullDesc,
+    shortDesc,
+    fullDesc,
+    tags ?? '',
+    dayTags,
+    image_tags_day ?? dayTags ?? null,
+    image_tags_night ?? null,
     time_of_day        ?? 'any',
     background_folder  ?? '',
     default_background ?? '',
@@ -33,21 +50,40 @@ router.put('/:id', function (req, res) {
   const row = db.prepare('SELECT id FROM locations WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Location not found' });
 
-  const { name, description, image_tags, time_of_day, background_folder, default_background } = req.body;
+  const {
+    name, description, short_desc, full_desc, tags,
+    image_tags, image_tags_day, image_tags_night,
+    time_of_day, background_folder, default_background,
+  } = req.body;
+
+  const existing = db.prepare('SELECT * FROM locations WHERE id = ?').get(req.params.id);
+  const nextFullDesc = full_desc ?? description ?? existing.full_desc ?? existing.description ?? '';
+  const nextShortDesc = short_desc ?? existing.short_desc ?? '';
+  const nextDayTags = image_tags_day ?? image_tags ?? existing.image_tags_day ?? existing.image_tags ?? '';
 
   db.prepare(`
     UPDATE locations SET
       name               = COALESCE(?, name),
       description        = COALESCE(?, description),
+      short_desc         = COALESCE(?, short_desc),
+      full_desc          = COALESCE(?, full_desc),
+      tags               = COALESCE(?, tags),
       image_tags         = COALESCE(?, image_tags),
+      image_tags_day     = COALESCE(?, image_tags_day),
+      image_tags_night   = COALESCE(?, image_tags_night),
       time_of_day        = COALESCE(?, time_of_day),
       background_folder  = COALESCE(?, background_folder),
       default_background = COALESCE(?, default_background)
     WHERE id = ?
   `).run(
     name               ?? null,
-    description        ?? null,
-    image_tags         ?? null,
+    nextFullDesc       || null,
+    nextShortDesc      || null,
+    nextFullDesc       || null,
+    tags               ?? null,
+    nextDayTags        || null,
+    image_tags_day     ?? null,
+    image_tags_night   ?? null,
     time_of_day        ?? null,
     background_folder  ?? null,
     default_background ?? null,

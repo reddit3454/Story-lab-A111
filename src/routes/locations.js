@@ -83,16 +83,27 @@ router.post('/:id/generate-background', async function (req, res) {
     return res.status(500).json({ error: 'Background generation failed: ' + err.message });
   }
 
-  res.json({ ok: true, filename: path.basename(result.savePath) });
+  const filename = path.basename(result.savePath);
+  db.prepare('INSERT OR IGNORE INTO location_backgrounds (location_id, filename) VALUES (?, ?)').run(locId, filename);
+  const hasDefault = db.prepare(
+    'SELECT id FROM location_backgrounds WHERE location_id = ? AND is_default = 1'
+  ).get(locId);
+  if (!hasDefault) {
+    db.prepare('UPDATE location_backgrounds SET is_default = 1 WHERE location_id = ? AND filename = ?').run(locId, filename);
+    db.prepare('UPDATE locations SET default_background = ? WHERE id = ?').run(filename, locId);
+  }
+  res.json({ ok: true, filename });
 });
 
 router.post('/:id/backgrounds/:filename/set-default', function (req, res) {
   const row = db.prepare('SELECT id FROM locations WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Location not found' });
 
-  db.prepare('UPDATE locations SET default_background = ? WHERE id = ?').run(
-    req.params.filename, req.params.id
-  );
+  const filename = req.params.filename;
+  db.prepare('INSERT OR IGNORE INTO location_backgrounds (location_id, filename) VALUES (?, ?)').run(req.params.id, filename);
+  db.prepare('UPDATE location_backgrounds SET is_default = 0 WHERE location_id = ?').run(req.params.id);
+  db.prepare('UPDATE location_backgrounds SET is_default = 1 WHERE location_id = ? AND filename = ?').run(req.params.id, filename);
+  db.prepare('UPDATE locations SET default_background = ? WHERE id = ?').run(filename, req.params.id);
   res.json({ ok: true });
 });
 
@@ -104,6 +115,11 @@ router.delete('/:id/backgrounds/:filename', function (req, res) {
   if (folder) {
     const filePath = path.join(BACKGROUNDS_DIR, folder, req.params.filename);
     try { fs.unlinkSync(filePath); } catch (_) {}
+  }
+  db.prepare('DELETE FROM location_backgrounds WHERE location_id = ? AND filename = ?')
+    .run(req.params.id, req.params.filename);
+  if (row.default_background === req.params.filename) {
+    db.prepare('UPDATE locations SET default_background = NULL WHERE id = ?').run(req.params.id);
   }
 
   res.json({ ok: true });

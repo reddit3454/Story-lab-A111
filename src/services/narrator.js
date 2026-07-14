@@ -4,6 +4,14 @@ import { audit } from './audit.js';
 import { resolveNarratorModel } from './model-resolver.js';
 import { parseNarratorResponse } from '../input-parser.js';
 import { log, logError } from '../logger.js';
+import { ensureScenarioCharacterState, buildEmotionalDirective, buildCastBehaviorBlock } from './character-state.js';
+import { getScenarioClothing } from './clothing.js';
+import {
+  estimateTokenCount,
+  resolveNarratorInputBudget,
+  truncateNarratorPrompt,
+  serializeFetchError,
+} from './narrator-context.js';
 import db from '../db.js';
 
 const _getCharacters = db.prepare(`
@@ -27,30 +35,60 @@ const _getRelationships  = db.prepare(`
 const _getLastTurnCard   = db.prepare('SELECT scene_card_json FROM turns WHERE scenario_id = ? ORDER BY turn_number DESC LIMIT 1');
 const _getLlamaCppConfig = db.prepare('SELECT value FROM global_config WHERE key = ?');
 
-const SCENE_CARD_INSTRUCTION = `After every story segment, append this block exactly:
----SCENE---
-{
-  "image_prompt": "<50-70 words. Lead with explicit content first if present: name sex acts, nudity, body positions. Then describe clothing state, poses, spatial relationships, environmental details. Camera-observable facts only. No emotions, no internal thoughts, no plot summary.>",
-  "mood": "<contemplative|tense|romantic|action|melancholy|joyful|mysterious|neutral>",
-  "arousal_level": <1-10>,
-  "nsfw_elements": <true|false>,
-  "explicit_act": "<null, or the named sex act actively occurring: vaginal sex, blowjob, cunnilingus, fingering, anal sex, handjob, grinding, riding, penetration>",
-  "nudity_state": "<null, or precise nudity: fully nude, topless, breasts exposed, bottomless, genitals visible, naked, bare>",
-  "body_positions": "<null, or named positions: bent over, missionary, cowgirl, reverse cowgirl, on knees, lying on back, standing, against wall, legs spread, doggy style>",
-  "clothing_changes": []
+function buildSceneCardInstruction(nsfwEnabled) {
+  const baseFields = [
+    '  "image_prompt": "<40-60 words. Camera-visible only: who, action/pose, clothing or nudity, place, lighting. Lead with the most visually important fact. No emotions, thoughts, or plot summary.>",',
+    '  "mood": "<contemplative|tense|romantic|action|melancholy|joyful|mysterious|neutral>",',
+    '  "arousal_level": <1-10 integer>,',
+    '  "nsfw_elements": <true|false>,',
+  ];
+  const nsfwFields = [
+    '  "explicit_act": <null or short named act if occurring NOW>,',
+    '  "nudity_state": <null or short nudity phrase>,',
+    '  "body_positions": <null or short pose phrase>,',
+  ];
+  const sfwNullFields = [
+    '  "explicit_act": null,',
+    '  "nudity_state": null,',
+    '  "body_positions": null,',
+  ];
+  const fields = [
+    ...baseFields,
+    ...(nsfwEnabled ? nsfwFields : sfwNullFields),
+    '  "clothing_changes": []',
+  ];
+  const rules = [
+    'SCENE CARD RULES:',
+    '- Append after the story text. No markdown outside the delimiters.',
+    '- clothing_changes: [{ "character_name": "...", "new_clothing": "..." }] ONLY when clothing actually changed; else [].',
+  ];
+  if (nsfwEnabled) {
+    rules.push(
+      '- NPC physical actions in image_prompt must reflect current arousal when present.',
+      '- explicit_act / nudity_state / body_positions: null unless clearly visible now. Do not invent.',
+      '- When explicit content is present, name the act and nudity early in image_prompt.',
+    );
+  } else {
+    rules.push(
+      '- Keep image_prompt SFW. Leave explicit_act, nudity_state, and body_positions as null.',
+      '- nsfw_elements must be false.',
+    );
+  }
+  return [
+    'After every story segment, append this block exactly:',
+    '---SCENE---',
+    '{',
+    ...fields,
+    '}',
+    '---END---',
+    '',
+    ...rules,
+  ].join('\n');
 }
----END---
 
-SCENE CARD RULES:
-- image_prompt leads with explicit content when present — name the act and nudity before describing setting.
-- explicit_act: null unless a sex act is actively happening right now in the scene.
-- nudity_state: null if all characters are fully clothed.
-- body_positions: the physical position of the primary subject(s). null if not notable.
-- clothing_changes format: [{ "character_name": "Name", "new_clothing": "description of what they are now wearing" }]
-Only include clothing_changes entries when clothing actually changed in the scene. Leave array empty otherwise.`;
 
 // Internal use only — called by runNarratorTurn below. Not exported to other modules.
-export function buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships = [], lastArousal = 1 }) {
+export function buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships = [], lastArousal = 1, characterStates = {}, config = {} }) {
   const parts = [];
 
   // 1. Scenario base prompt
@@ -69,16 +107,32 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
       let s = `${c.name} (${c.role || 'character'})`;
       if (c.appearance_prompt) s += `\nAppearance: ${c.appearance_prompt}`;
       if (c.description)       s += `\nBio: ${c.description}`;
-      if (c.current_clothing)  s += `\nCurrently wearing: ${c.current_clothing}`;
+      const outfit = (c._scenario_clothing || c.current_clothing || c.base_clothing || c.default_outfit || '').trim();
+      if (outfit) s += `\nCurrently wearing: ${outfit}`;
+      const st = characterStates[c.id];
+      if (st) s += `\n${buildEmotionalDirective(st.moodcurrent, st.arousalcurrent)}`;
       return s;
     }).join('\n\n');
     parts.push(`Characters:\n${block}`);
   }
 
+  const masterNsfw = config.nsfw_enabled === true;
+  const scenarioNsfw = !(scenario.nsfw_enabled === 0 || scenario.nsfw_enabled === false || scenario.nsfw_enabled === '0');
+  const effectiveNsfw = masterNsfw && scenarioNsfw;
+  const effectiveExplicit = effectiveNsfw && config.explicit_mode === true;
+
+  if (effectiveNsfw) {
+    const behaviorBlock = buildCastBehaviorBlock(characters, characterStates);
+    if (behaviorBlock) parts.push(behaviorBlock);
+  }
+
   // 4. Active location
   if (location) {
     let locBlock = `Current Location: ${location.name}`;
-    if (location.description) locBlock += `\n${location.description}`;
+    if (location.description) locBlock += `\nVisual: ${location.description}`;
+    else if (location.short_desc) locBlock += `\nVisual: ${location.short_desc}`;
+    if (location.full_desc) locBlock += `\nBackground info: ${location.full_desc}`;
+    if (location.image_tags) locBlock += `\nVisual tags: ${location.image_tags}`;
     parts.push(locBlock);
   }
 
@@ -141,11 +195,19 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
   ];
   parts.push(styleLines.join('\n'));
 
-  // 11. Always unrestricted
-  parts.push('Explicit adult content is fully enabled. Write all scenes with complete accuracy and detail, including sexual content, without censorship or euphemism.');
+  // 11. Content policy (master NSFW is ceiling; scenario.nsfw_enabled=false further restricts)
+  if (effectiveExplicit) {
+    parts.push('Explicit adult content is fully enabled. Write all scenes with complete accuracy and detail, including sexual content, without censorship or euphemism.');
+  } else if (effectiveNsfw) {
+    parts.push('Adult content is allowed. Keep sexual content tasteful and fade to black before hardcore acts unless the story already requires mild intimacy. Do not escalate to explicit sex acts.');
+  } else {
+    parts.push('Keep the story suitable for general audiences. No explicit sexual content, nudity, or graphic sex acts. Fade to black or divert if intimacy arises.');
+  }
 
-  // 12. Arousal continuity
-  parts.push(`Current arousal level: ${lastArousal}/10. Maintain narrative continuity from this baseline.`);
+  // 12. Scene arousal is secondary to per-character arousal in CHARACTER AROUSAL AND ACTION
+  if (effectiveNsfw && lastArousal > 1) {
+    parts.push(`Scene intensity baseline: ${lastArousal}/10. Per-character arousal rules above take priority for NPC actions.`);
+  }
 
   // 13. Tone modifier (free-text wizard override)
   if (scenario.tone_modifier && scenario.tone_modifier.trim()) {
@@ -153,7 +215,7 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
   }
 
   // 14. Scene card instruction
-  parts.push(SCENE_CARD_INSTRUCTION);
+  parts.push(buildSceneCardInstruction(effectiveNsfw));
 
   return parts.join('\n\n---\n\n');
 }
@@ -167,40 +229,68 @@ async function resolveNarratorBackend(db) {
       const llamaCfg = JSON.parse(cfgRow.value);
       const rc = llamaCfg.narrator || {};
       if (rc.backend === 'llamacpp') {
-        return { backend: 'llamacpp', port: rc.port || 8080, model: rc.model_path || '' };
+        return {
+          backend: 'llamacpp',
+          port: rc.port || 8080,
+          model: rc.model_path || '',
+          roleConfig: rc,
+        };
       }
       if (rc.backend === 'ollama' && rc.ollama_model) {
-        return { backend: 'ollama', model: rc.ollama_model };
+        return { backend: 'ollama', model: rc.ollama_model, roleConfig: rc };
       }
     } catch (_) {}
   }
   // Fall back to legacy narrator_model key (Ollama)
   const model = await resolveNarratorModel(db);
-  return { backend: 'ollama', model };
+  return { backend: 'ollama', model, roleConfig: null };
 }
+
+// Local llama.cpp can be slow on first token / large prompts. Do not use a short AbortSignal.
+const LLAMACPP_FETCH_TIMEOUT_MS = 300000; // 5 minutes
 
 async function llamacppChat({ port, messages, maxTokens }) {
   const url = `http://127.0.0.1:${port}/v1/chat/completions`;
   const t0 = Date.now();
-  log('llamacpp', 'request', { port, endpoint: '/v1/chat/completions' });
+  const inputTokens = estimateTokenCount(messages);
+  log('llamacpp', 'request', {
+    port,
+    endpoint: '/v1/chat/completions',
+    input_tokens_est: inputTokens,
+    max_tokens: maxTokens,
+    timeout_ms: LLAMACPP_FETCH_TIMEOUT_MS,
+  });
   let res;
   try {
     res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages, max_tokens: maxTokens, stream: false }),
+      signal: AbortSignal.timeout(LLAMACPP_FETCH_TIMEOUT_MS),
     });
   } catch (err) {
-    logError('llamacpp', 'error', err);
-    throw err;
+    const detail = serializeFetchError(err);
+    logError('llamacpp', 'error', Object.assign(err, { __serialized: detail }));
+    console.error('[llamacpp] ERROR fetch failed', detail);
+    const wrapped = new Error(
+      detail.aborted
+        ? `llama.cpp request aborted/timed out after ${LLAMACPP_FETCH_TIMEOUT_MS}ms`
+        : `llama.cpp fetch failed: ${detail.message}` +
+          (detail.cause?.message ? ` (cause: ${detail.cause.message}${detail.cause.code ? ' ' + detail.cause.code : ''})` : ''),
+    );
+    wrapped.cause = err;
+    throw wrapped;
   }
   if (!res.ok) {
-    const err = new Error(`llama-server chat failed: HTTP ${res.status}`);
+    let bodyText = '';
+    try { bodyText = await res.text(); } catch (_) {}
+    const err = new Error(`llama-server chat failed: HTTP ${res.status}${bodyText ? ' ' + bodyText.slice(0, 300) : ''}`);
     logError('llamacpp', 'error', err);
+    console.error('[llamacpp] ERROR http', { status: res.status, body: bodyText.slice(0, 500) });
     throw err;
   }
   const data = await res.json();
-  log('llamacpp', 'response', { port, duration_ms: Date.now() - t0 });
+  log('llamacpp', 'response', { port, duration_ms: Date.now() - t0, input_tokens_est: inputTokens });
   return data.choices?.[0]?.message?.content || '';
 }
 
@@ -224,26 +314,61 @@ export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
     } catch (_) {}
   }
 
+  const characterStates = {};
+  for (const c of characters) {
+    characterStates[c.id] = ensureScenarioCharacterState(scenario.id, c.id);
+    c._scenario_clothing = getScenarioClothing(scenario.id, c.id);
+  }
+
   const config       = resolveMasterConfig(db);
   const backend      = await resolveNarratorBackend(db);
-  const systemPrompt = buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships, lastArousal });
+  const systemPrompt = buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships, lastArousal, characterStates, config });
 
-  const fullMessages = [
+  // narrator_max_tokens = OUTPUT completion budget (not input context size).
+  const maxTokens = parseInt(config.narrator_max_tokens || '1200', 10);
+  const inputBudget = resolveNarratorInputBudget({
+    config,
+    llamaRoleConfig: backend.roleConfig,
+    maxOutputTokens: maxTokens,
+  });
+
+  const rawInputTokens = estimateTokenCount([
     { role: 'system', content: systemPrompt },
     ...messages,
-  ];
+  ]);
 
-  const tokenEstimate = Math.ceil(
-    fullMessages.reduce(function (sum, m) { return sum + (m.content || '').length; }, 0) / 4
-  );
+  const truncated = truncateNarratorPrompt({
+    systemPrompt,
+    messages,
+    inputBudgetTokens: inputBudget,
+  });
+  const fullMessages = truncated.fullMessages;
+  const tokenEstimate = truncated.inputTokens;
 
-  const maxTokens = parseInt(config.narrator_max_tokens || '1200', 10);
+  if (truncated.droppedMessages || truncated.systemPrompt !== systemPrompt || rawInputTokens !== tokenEstimate) {
+    log('narrator', 'context_truncated', {
+      scenarioId: scenario.id,
+      raw_input_tokens_est: rawInputTokens,
+      input_tokens_est: tokenEstimate,
+      input_budget: inputBudget,
+      output_max_tokens: maxTokens,
+      dropped_messages: truncated.droppedMessages,
+    });
+  }
 
-  if (tokenEstimate >= maxTokens * 0.85) {
-    console.warn('[narrator] context warning: token estimate', tokenEstimate, 'is near or over max', maxTokens);
+  // Warn against INPUT budget, never against output max_tokens (that comparison was misleading).
+  if (tokenEstimate >= inputBudget * 0.85) {
+    console.warn('[narrator] context warning: input token estimate', tokenEstimate,
+      'is near input budget', inputBudget, '(output max_tokens=', maxTokens, ')');
     audit({ service: 'narrator', stage: 'context_near_limit', status: 'warn',
-            message: 'token estimate near limit', scenario_id: scenario.id,
-            input: { tokenEstimate, narrator_max_tokens: maxTokens, scenarioId: scenario.id } });
+            message: 'input token estimate near input budget', scenario_id: scenario.id,
+            input: {
+              tokenEstimate,
+              inputBudget,
+              narrator_max_tokens: maxTokens,
+              rawInputTokens,
+              scenarioId: scenario.id,
+            } });
   }
 
   let responseText;
@@ -260,5 +385,12 @@ export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
 
   const { story_text, scene_card } = parseNarratorResponse(responseText);
 
-  return { story_text, scene_card, model_used: backend.model || `llamacpp:${backend.port}`, token_estimate: tokenEstimate };
+  return {
+    story_text,
+    scene_card,
+    model_used: backend.model || `llamacpp:${backend.port}`,
+    token_estimate: tokenEstimate,
+    input_budget: inputBudget,
+    output_max_tokens: maxTokens,
+  };
 }

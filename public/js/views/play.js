@@ -1,8 +1,18 @@
 import { state, chatColors, getNpcColor } from '../state.js';
 import { escapeHtml, formatStoryContent, avatarHtml, imageSrc } from '../utils.js';
 import { showToast, showConfirm, setLoading, openLightbox, setImgStatus, statusDotsHtml } from '../ui.js';
+import { setImageSummaryPanelDefault } from '../play/image-summary-panel.js';
+import {
+  initPromptPanel,
+  refreshPromptPreview,
+  reloadPromptPanelTargets,
+  onPromptPanelImageReady,
+} from '../play/prompt-panel.js';
 
 var _ws = null;
+var _turnInFlight = false;
+var _turnPollTimer = null;
+var _lastIngestedNarratorId = null;
 var _wsRetryDelay = 2000;
 var _reloadPortraitPanel = null;
 var _updateScenePresent   = null;
@@ -21,7 +31,7 @@ export function initPlay(scenarioId) {
       '<span class="play-title story-font" id="play-scenario-title">Loading...</span>' +
       '<div class="topbar-right">' +
         '<button class="btn btn-ghost btn-sm" id="btn-img-settings" title="Manage Image Styles">&#9881; Styles</button>' +
-        '<button class="btn btn-ghost btn-sm" id="btn-reset-models" title="Unload narrator and extractor models from VRAM">Reset Models</button>' +
+        '<button class="btn btn-ghost btn-sm" id="btn-reset-models" title="Unload A1111 + Ollama models from VRAM to free GPU memory">Free VRAM</button>' +
         '<button class="btn btn-ghost btn-sm" id="btn-scene-info">Scene Info</button>' +
         '<button class="btn btn-ghost btn-sm" id="btn-reset-scene">Reset Scene</button>' +
         '<button class="btn btn-danger btn-sm" id="btn-end-story">End Story</button>' +
@@ -55,9 +65,9 @@ export function initPlay(scenarioId) {
                 '<textarea class="guidance-input" id="guidance-input" placeholder="Guidance (optional) — steer what happens next..." rows="2" autocomplete="off"></textarea>' +
                 '<button class="btn btn-ghost btn-sm guidance-enhance-btn" id="btn-enhance-guidance" title="Enhance guidance with AI">Enhance</button>' +
               '</div>' +
-              '<div class="filter-rules-wrap">' +
-                '<label class="filter-rules-label" for="filter-rules-input">Filter Rules</label>' +
-                '<textarea class="filter-rules-input" id="filter-rules-input" placeholder="e.g. Keep to 2 paragraphs. Stop before next character responds." rows="2" autocomplete="off"></textarea>' +
+              '<div class="filter-rules-wrap filter-rules-disabled" title="Not wired in this build">' +
+                '<label class="filter-rules-label" for="filter-rules-input">Filter Rules (not used)</label>' +
+                '<textarea class="filter-rules-input" id="filter-rules-input" rows="2" disabled autocomplete="off" placeholder="Not available — use Scenario settings for reply length / NSFW / tone."></textarea>' +
               '</div>' +
               '<button class="lock-toggle" id="lock-toggle" title="Lock: guidance becomes the literal submission" aria-pressed="false">' +
                 '<span class="lock-icon">&#128275;</span>' +
@@ -74,32 +84,36 @@ export function initPlay(scenarioId) {
         '</div>' +
       '</div>' +
 
-      '<div class="play-portrait-panel' + (state.portraitPanelOpen ? '' : ' collapsed') + '" id="play-portrait-panel">' +
-        '<button class="portrait-toggle-btn" id="portrait-toggle">' + (state.portraitPanelOpen ? '&raquo;' : '&laquo;') + '</button>' +
-        '<div class="portrait-panel-inner" id="portrait-panel-inner">' +
-          '<div class="portrait-panel-header">' +
-            '<button class="cast-mgr-btn" id="btn-cast-add" title="Add a character to this scenario">+ Add</button>' +
-            '<button class="cast-mgr-btn" id="btn-cast-remove" title="Remove a character from this scenario">- Remove</button>' +
-          '</div>' +
-          '<div class="cast-picker-bar" id="cast-picker-bar" style="display:none"></div>' +
-          '<div class="portrait-guidance-wrap">' +
-            '<textarea id="portrait-guidance" class="portrait-guidance-input" rows="2" placeholder="Optional direction for next image..."></textarea>' +
-          '</div>' +
-          '<div class="portrait-list" id="portrait-list"><div class="loading-state" style="font-size:11px;padding:8px;grid-column:span 2">Loading...</div></div>' +
-          '<div class="portrait-status-bar">' +
-            '<button class="portrait-status-btn" id="btn-portrait-status" title="Toggle scene presence edit mode — click portraits to mark who is in the scene">Status</button>' +
-            '<button class="portrait-status-all" id="btn-portrait-all" title="Mark all characters as present in scene">All In</button>' +
+      '<div class="play-prompt-panel' + (state.portraitPanelOpen ? '' : ' collapsed') + '" id="play-prompt-panel">' +
+        '<button class="prompt-toggle-btn" id="prompt-toggle">' + (state.portraitPanelOpen ? '&raquo;' : '&laquo;') + '</button>' +
+        '<div class="prompt-panel-inner" id="prompt-panel-inner">' +
+          '<div class="prompt-panel-header">Image Prompt</div>' +
+          '<p class="prompt-empty-hint text-muted" id="prompt-empty-hint">Continue the story to build a prompt.</p>' +
+          '<div class="prompt-target-list" id="prompt-target-list"></div>' +
+          '<label class="prompt-field-label" id="prompt-plain-label">Plain English Summary</label>' +
+          '<textarea id="prompt-plain" class="form-input prompt-plain" rows="4" placeholder="Character visual brief (pose/action) or scene moment"></textarea>' +
+          '<label class="prompt-field-label" id="prompt-tags-label">Image Prompt Tags</label>' +
+          '<textarea id="prompt-tags" class="form-input prompt-tags" rows="3" placeholder="Comma-separated tags"></textarea>' +
+          '<div class="prompt-actions">' +
+            '<button type="button" class="btn btn-ghost btn-sm" id="prompt-save-btn">Save</button>' +
+            '<button type="button" class="btn btn-ghost btn-sm" id="prompt-regenerate-btn">Update tags</button><button type="button" class="btn btn-ghost btn-sm" id="prompt-history-btn">History</button><button type="button" class="btn btn-ghost btn-sm" id="prompt-reset-btn">Reset</button>' +
+            '<button type="button" class="btn btn-primary btn-sm" id="prompt-generate-btn">Generate Image</button>' +
           '</div>' +
         '</div>' +
-        '<div class="portrait-resize-handle" id="portrait-resize-handle"></div>' +
+        '<div class="prompt-resize-handle" id="prompt-resize-handle"></div>' +
       '</div>' +
 
     '</div>';
 
   /* Load data */
-  Promise.all([API.getScenario(scenarioId), API.getTurns(scenarioId)])
+  Promise.all([
+    API.getScenario(scenarioId),
+    API.getTurns(scenarioId),
+    API.getConfig().catch(function () { return {}; }),
+  ])
     .then(function (results) {
       var scenResp = results[0];
+      setImageSummaryPanelDefault((results[2] && results[2].image_summary_panel_default) || 'visible');
       state.currentScenario = Object.assign(
         { characters: scenResp.characters || [] },
         scenResp.scenario || scenResp
@@ -121,6 +135,7 @@ export function initPlay(scenarioId) {
       }
 
       renderAllTurns();
+      initPromptPanel(scenarioId);
       _populateSceneImageHistory();
       renderCharacterFocusButtons(scenarioId);
       loadSidebarTab(state.currentSidebarTab, scenarioId);
@@ -130,18 +145,20 @@ export function initPlay(scenarioId) {
       // Auto-submit default_start on fresh scenarios (no turns yet)
       var _defStart = state.turns.length === 0 && state.currentScenario && state.currentScenario.default_start;
       if (_defStart) {
+        if (!_beginTurnSubmit()) return;
         addTypingIndicator();
+        var prevCount = state.turns.length;
         API.postTurn(scenarioId, _defStart)
-          .then(function (response) {
+          .then(function (response) { ingestTurnResponse(response); })
+          .catch(function (e) {
+            var msg = e && e.message ? e.message : '';
+            if (msg.indexOf('already in progress') >= 0) {
+              _pollForTurnCompletion(scenarioId, null, prevCount);
+              return;
+            }
+            _finishTurnSubmit();
             removeTypingIndicator();
-            var turns = [];
-            if (response && response.user_turn) turns.push(Object.assign({ speaker: 'user' }, response.user_turn));
-            if (response && response.narrator_turn) turns.push(Object.assign({ speaker: 'narrator' }, response.narrator_turn));
-            state.turns = turns;
-            renderAllTurns();
-            scrollThreadToBottom();
-          })
-          .catch(function () { removeTypingIndicator(); });
+          });
       }
     })
     .catch(function (e) {
@@ -402,6 +419,158 @@ function createTurnElement(turn) {
   return div;
 }
 
+
+
+
+function _handlePostTurnError(scenarioId, optimId, prevCount, guidanceInput, guidanceText, e) {
+  var msg = e && e.message ? e.message : String(e);
+  if (msg.indexOf('already in progress') >= 0) {
+    _pollForTurnCompletion(scenarioId, optimId, prevCount);
+    return;
+  }
+  _finishTurnSubmit();
+  removeTypingIndicator();
+  _removeOptimisticTurn(optimId);
+  if (guidanceInput && guidanceText) guidanceInput.value = guidanceText;
+  showToast('Submit failed: ' + msg, 'error');
+}
+
+function _submitPostTurn(scenarioId, contentText, optimId, prevCount, guidanceInput, guidanceText) {
+  return API.postTurn(scenarioId, contentText)
+    .then(function (response) { ingestTurnResponse(response, optimId); })
+    .catch(function (e) { _handlePostTurnError(scenarioId, optimId, prevCount, guidanceInput, guidanceText, e); });
+}
+
+function _mapTurnsFromApi(rawTurns) {
+  var raw = Array.isArray(rawTurns) ? rawTurns : (rawTurns && rawTurns.turns) || [];
+  return raw.map(function (t) { return Object.assign({ speaker: t.role }, t); });
+}
+
+function _syncTurnsFromServer(scenarioId, optimId) {
+  return API.getTurns(scenarioId).then(function (rawTurns) {
+    _removeOptimisticTurn(optimId);
+    state.turns = _mapTurnsFromApi(rawTurns);
+    sortTurns();
+    renderAllTurns();
+    scrollThreadToBottom();
+    refreshPromptPreview();
+  });
+}
+
+function _pollForTurnCompletion(scenarioId, optimId, prevCount) {
+  if (_turnPollTimer) clearTimeout(_turnPollTimer);
+  var attempts = 0;
+  var maxAttempts = 60;
+  function tick() {
+    attempts += 1;
+    API.getTurns(scenarioId).then(function (rawTurns) {
+      var mapped = _mapTurnsFromApi(rawTurns);
+      if (mapped.length > prevCount || attempts >= maxAttempts) {
+        _turnInFlight = false;
+        removeTypingIndicator();
+        _removeOptimisticTurn(optimId);
+        state.turns = mapped;
+        sortTurns();
+        renderAllTurns();
+        scrollThreadToBottom();
+        refreshPromptPreview();
+        _turnPollTimer = null;
+        if (mapped.length > prevCount) {
+          showToast('Story updated.', 'info');
+        }
+        return;
+      }
+      _turnPollTimer = setTimeout(tick, 2000);
+    }).catch(function () {
+      if (attempts < maxAttempts) {
+        _turnPollTimer = setTimeout(tick, 2000);
+      } else {
+        _turnInFlight = false;
+        removeTypingIndicator();
+        _turnPollTimer = null;
+      }
+    });
+  }
+  showToast('Still generating... waiting for the story to finish.', 'info');
+  _turnPollTimer = setTimeout(tick, 2000);
+}
+
+function _beginTurnSubmit() {
+  if (_turnInFlight) return false;
+  _turnInFlight = true;
+  if (_turnPollTimer) { clearTimeout(_turnPollTimer); _turnPollTimer = null; }
+  return true;
+}
+
+function _finishTurnSubmit() {
+  _turnInFlight = false;
+}
+
+function _upsertTurnInState(turn) {
+  if (!turn || turn.id == null) return;
+  var idx = state.turns.findIndex(function (t) { return String(t.id) === String(turn.id); });
+  if (idx >= 0) state.turns[idx] = turn; else state.turns.push(turn);
+}
+
+function _removeOptimisticTurn(optimId) {
+  if (!optimId) return;
+  var optEl = document.querySelector('[data-turn-id="' + optimId + '"]');
+  if (optEl && optEl.parentNode) optEl.parentNode.removeChild(optEl);
+}
+
+function _normalizeTurn(turn, fallbackSpeaker) {
+  if (!turn) return null;
+  return Object.assign({}, turn, { speaker: turn.speaker || turn.role || fallbackSpeaker });
+}
+
+function ingestTurnResponse(response, optimId) {
+  removeTypingIndicator();
+  _finishTurnSubmit();
+  if (!response) return;
+  try {
+    _removeOptimisticTurn(optimId);
+    if (response.user_turn) {
+      _upsertTurnInState(_normalizeTurn(response.user_turn, 'user'));
+    }
+    if (response.narrator_turn) {
+      _upsertTurnInState(_normalizeTurn(response.narrator_turn, 'narrator'));
+      _lastIngestedNarratorId = response.narrator_turn.id;
+    }
+    sortTurns();
+    renderAllTurns();
+    scrollThreadToBottom();
+    if (response.clothing_updates && response.clothing_updates.length && state.currentScenario) {
+      handleClothingUpdate({ scenarioId: state.currentScenario.id, characters: response.clothing_updates });
+    }
+    refreshPromptPreview();
+  } catch (err) {
+    console.error('[play] ingestTurnResponse failed:', err);
+    showToast('Turn display failed: ' + err.message, 'error');
+  }
+}
+
+function ingestNarratorTurnFromWs(turn, scenarioId) {
+  if (!turn || !state.currentScenario) return;
+  if (Number(scenarioId) !== Number(state.currentScenario.id)) return;
+  if (_lastIngestedNarratorId != null && String(_lastIngestedNarratorId) === String(turn.id)) return;
+  removeTypingIndicator();
+  _finishTurnSubmit();
+  _syncTurnsFromServer(scenarioId).catch(function (err) {
+    console.error('[play] ingestNarratorTurnFromWs sync failed:', err);
+    try {
+      var narTurn = Object.assign({ speaker: turn.role || 'narrator' }, turn);
+      _upsertTurnInState(narTurn);
+      _lastIngestedNarratorId = turn.id;
+      sortTurns();
+      renderAllTurns();
+      scrollThreadToBottom();
+      refreshPromptPreview();
+    } catch (innerErr) {
+      console.error('[play] ingestNarratorTurnFromWs fallback failed:', innerErr);
+    }
+  });
+}
+
 function appendTurnToThread(turn) {
   var thread = document.getElementById('play-thread');
   if (!thread) return;
@@ -484,7 +653,7 @@ function setupPlayInteractions(scenarioId) {
       if (!charId || !baseVal) return;
       e.stopPropagation();
       resetBtn.disabled = true;
-      API.updateCharacterClothing(charId, { current_clothing: baseVal })
+      API.updateCharacterClothing(charId, { current_clothing: baseVal, scenario_id: state.currentScenario && state.currentScenario.id, runtime: true })
         .then(function () {
           if (!state.characterStates[charId]) state.characterStates[charId] = {};
           state.characterStates[charId].current_clothing = baseVal;
@@ -518,30 +687,48 @@ function setupPlayInteractions(scenarioId) {
   }
 
   /* Portrait panel toggle */
-  var portraitToggleBtn = document.getElementById('portrait-toggle');
+  var portraitToggleBtn = document.getElementById('prompt-toggle');
   if (portraitToggleBtn) {
     portraitToggleBtn.addEventListener('click', function () {
       state.portraitPanelOpen = !state.portraitPanelOpen;
       localStorage.setItem('story-lab-portraits', state.portraitPanelOpen);
-      var pp = document.getElementById('play-portrait-panel');
+      var pp = document.getElementById('play-prompt-panel');
       if (pp) {
         pp.classList.toggle('collapsed', !state.portraitPanelOpen);
         if (!state.portraitPanelOpen) {
           pp.style.width = '';
         } else {
-          var savedPp = localStorage.getItem('story-lab-portrait-width');
-          if (savedPp) pp.style.width = savedPp + 'px';
+          var savedPp = localStorage.getItem('story-lab-prompt-width');
+          var ppW = savedPp ? clampPromptPanelWidth(savedPp) : null;
+          if (ppW) pp.style.width = ppW + 'px';
         }
       }
       portraitToggleBtn.innerHTML = state.portraitPanelOpen ? '&raquo;' : '&laquo;';
     });
   }
 
-  /* Reset Models button -- not implemented in A1111 backend */
+  /* Free VRAM -- unloads A1111 checkpoint + all loaded Ollama models */
   var resetModelsBtn = document.getElementById('btn-reset-models');
   if (resetModelsBtn) {
     resetModelsBtn.addEventListener('click', function () {
-      showToast('Reset Models is not available in this version.', 'info');
+      resetModelsBtn.disabled = true;
+      resetModelsBtn.textContent = 'Freeing...';
+      API.freeVram()
+        .then(function (result) {
+          var nOllama = (result && result.freed && result.freed.ollama && result.freed.ollama.length) || 0;
+          var a1111 = (result && result.freed && result.freed.a1111) || 'done';
+          showToast('VRAM freed. A1111: ' + a1111 + ', Ollama: ' + nOllama, 'success');
+          resetModelsBtn.textContent = 'Freed';
+          setTimeout(function () {
+            resetModelsBtn.textContent = 'Free VRAM';
+            resetModelsBtn.disabled = false;
+          }, 3000);
+        })
+        .catch(function (err) {
+          showToast('Free VRAM failed: ' + err.message, 'error');
+          resetModelsBtn.textContent = 'Free VRAM';
+          resetModelsBtn.disabled = false;
+        });
     });
   }
 
@@ -588,156 +775,14 @@ function setupPlayInteractions(scenarioId) {
   }
 
   /* Load character portraits */
-  _reloadPortraitPanel = function () { loadPortraitPanel(); };
+  _reloadPortraitPanel = function () { reloadPromptPanelTargets(); refreshPromptPreview(); };
   _updateScenePresent = function (added, removed) {
     if (!_scenePresent) return;
     (added || []).forEach(function (c) { _scenePresent.add(c.name.toLowerCase()); });
     (removed || []).forEach(function (c) { _scenePresent.delete(c.name.toLowerCase()); });
     _saveScenePresent();
   };
-  function loadPortraitPanel() {
-    var list = document.getElementById('portrait-list');
-    if (!list) return;
 
-    var sceneCardHtml =
-      '<div class="portrait-card portrait-scene-card" id="portrait-scene-card" title="Generate a scene image from the latest story turn (no character focus)">' +
-        '<div class="portrait-initial portrait-scene-initial">Scene</div>' +
-        '<div class="portrait-name">Scene</div>' +
-      '</div>';
-
-    Promise.all([
-      API.getScenarioCharacters(scenarioId),
-      Promise.resolve({ states: [] }),
-      Promise.resolve({ clothing: [] })
-    ]).then(function (results) {
-      var chars    = Array.isArray(results[0]) ? results[0] : [];
-      var states   = results[1].states || [];
-      var clothing = results[2].clothing || [];
-      // Seed clothing from character rows (current_clothing lives on the character record)
-      chars.forEach(function (c) {
-        if (!state.characterStates[c.id]) state.characterStates[c.id] = {};
-        if (c.current_clothing) state.characterStates[c.id].current_clothing = c.current_clothing;
-        state.characterStates[c.id].base_clothing = c.base_clothing || '';
-      });
-      states.forEach(function (s) {
-        if (!state.characterStates[s.characterId]) state.characterStates[s.characterId] = {};
-        state.characterStates[s.characterId].moodcurrent    = s.moodcurrent;
-        state.characterStates[s.characterId].arousalcurrent = s.arousalcurrent;
-      });
-      clothing.forEach(function (c) {
-        if (!state.characterStates[c.characterId]) state.characterStates[c.characterId] = {};
-        state.characterStates[c.characterId].current_clothing = c.current_clothing || null;
-      });
-      var charsHtml = chars.map(function (c) {
-        var imgSrc = c.reference_image_path ? imageSrc(c.reference_image_path) : '';
-        var initial = escapeHtml((c.name || '?')[0].toUpperCase());
-        var isNpc = !c.is_user_character;
-        return '<div class="portrait-card" data-char-name="' + escapeHtml(c.name) + '" data-char-id="' + c.id + '" title="Generate image of ' + escapeHtml(c.name) + '">' +
-          (imgSrc
-            ? '<img class="portrait-img" src="' + escapeHtml(imgSrc) + '" alt="' + escapeHtml(c.name) + '" loading="lazy" ' +
-              'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">' +
-              '<div class="portrait-initial" style="display:none">' + initial + '</div>'
-            : '<div class="portrait-initial">' + initial + '</div>') +
-          '<div class="portrait-name">' + escapeHtml(c.name) + '</div>' +
-          (isNpc ? _buildMoodBarsHtml(c.id) + _buildClothingHtml(c.id) : '') +
-        '</div>';
-      }).join('');
-      list.innerHTML = charsHtml + sceneCardHtml;
-
-      // Keep currentScenario.characters in sync so focus buttons stay populated
-      if (state.currentScenario) state.currentScenario.characters = chars;
-      renderCharacterFocusButtons(scenarioId);
-
-      // Initialize scene presence tracking
-      _loadScenePresent(chars.map(function(c){ return c.name; }));
-      _refreshPortraitPresence();
-
-      // Status toggle button
-      var statusBtn = document.getElementById('btn-portrait-status');
-      if (statusBtn) {
-        statusBtn.onclick = function() {
-          _statusMode = !_statusMode;
-          _refreshPortraitPresence();
-        };
-      }
-      // "All In" button — puts everyone back in the scene
-      var allInBtn = document.getElementById('btn-portrait-all');
-      if (allInBtn) {
-        allInBtn.onclick = function() {
-          chars.forEach(function(c){ _scenePresent.add(c.name.toLowerCase()); });
-          _saveScenePresent();
-          _refreshPortraitPresence();
-        };
-      }
-
-      // Delegated click: mood +/- buttons inside portrait cards
-      list.addEventListener('click', function (ev) {
-        var moodBtn = ev.target.closest ? ev.target.closest('.mood-adj-btn') : null;
-        if (moodBtn && !moodBtn.disabled) {
-          ev.stopPropagation();
-          var charId  = Number(moodBtn.dataset.charId);
-          var field   = moodBtn.dataset.field;
-          var dir     = Number(moodBtn.dataset.dir);
-          var cs      = state.characterStates[charId];
-          if (!cs) return;
-          var current = field === 'mood' ? Number(cs.moodcurrent) : Number(cs.arousalcurrent);
-          var ceiling = field === 'arousal' ? 10 : 5;
-          var newVal  = Math.min(ceiling, Math.max(1, current + dir));
-          if (newVal === current) return;
-          var updated = { moodcurrent: cs.moodcurrent, arousalcurrent: cs.arousalcurrent };
-          updated[field === 'mood' ? 'moodcurrent' : 'arousalcurrent'] = newVal;
-          state.characterStates[charId] = updated;
-          document.querySelectorAll('.mood-bars[data-char-id="' + charId + '"]').forEach(function (el) {
-            el.outerHTML = _buildMoodBarsHtml(charId);
-          });
-          // Mood state is session-local only (no backend endpoint in A1111 version)
-          return;
-        }
-      });
-
-      // Delegated click: character card or scene card
-      list.addEventListener('click', function (ev) {
-        var card = ev.target.closest('.portrait-card');
-        if (!card) return;
-        var pScenId = state.currentScenario && state.currentScenario.id;
-        if (!pScenId) return;
-
-        if (card.classList.contains('portrait-scene-card')) {
-          if (_statusMode) return; // ignore scene card in status mode
-          generateSceneImage(pScenId);
-          return;
-        }
-
-        var charName = card.dataset.charName;
-        if (!charName) return;
-
-        // Status mode: toggle this character's presence
-        if (_statusMode) {
-          var key = charName.toLowerCase();
-          if (_scenePresent.has(key)) _scenePresent.delete(key);
-          else _scenePresent.add(key);
-          _saveScenePresent();
-          _refreshPortraitPresence();
-          return;
-        }
-
-        var charId = Number(card.dataset.charId);
-        var narratorTurns = (state.turns || []).filter(function (t) { return t.speaker === 'narrator'; });
-        var latestTurn = narratorTurns.length ? narratorTurns[narratorTurns.length - 1] : null;
-        setImgStatus('Preparing character image...');
-        fetch('/api/scenarios/' + pScenId + '/images/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'character', characterId: charId, turn_id: latestTurn ? latestTurn.id : null }),
-        }).catch(function (e) { showToast('Image failed: ' + e.message, 'error'); });
-      });
-    }).catch(function () {
-      var list2 = document.getElementById('portrait-list');
-      if (list2) list2.innerHTML = sceneCardHtml;
-    });
-  }
-
-  loadPortraitPanel();
 
   /* Cast Add / Remove buttons */
   (function () {
@@ -805,7 +850,7 @@ function setupPlayInteractions(scenarioId) {
           API.addCharacterToScenario(scenarioId, id)
             .then(function () {
               showToast((char ? char.name : 'Character') + ' added to story.', 'success');
-              loadPortraitPanel();
+              reloadPromptPanelTargets(); refreshPromptPreview();
             })
             .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
         });
@@ -825,7 +870,7 @@ function setupPlayInteractions(scenarioId) {
           API.removeCharacterFromScenario(scenarioId, id)
             .then(function () {
               showToast((char ? char.name : 'Character') + ' removed.', 'info');
-              loadPortraitPanel();
+              reloadPromptPanelTargets(); refreshPromptPreview();
             })
             .catch(function (err) { showToast('Failed to remove: ' + err.message, 'error'); });
         });
@@ -855,18 +900,21 @@ function setupPlayInteractions(scenarioId) {
       if (!btn) return;
       var cmd = btn.dataset.cmd;
       if (cmd === '[image]') { generateSceneImage(scenarioId); return; }
+      if (!_beginTurnSubmit()) { showToast('Already generating a turn. Please wait...', 'info'); return; }
+      addTypingIndicator();
+      var prevCount = state.turns.length;
       API.postTurn(scenarioId, cmd)
-        .then(function (response) {
-          if (response && response.narrator_turn) {
-            var nt = response.narrator_turn;
-            var narTurn = { id: nt.id, speaker: 'narrator', content_text: nt.content_text, turn_number: nt.turn_number, user_rating: 0 };
-            appendTurnToThread(narTurn);
-            if (response.user_turn) state.turns.push(Object.assign({ speaker: 'user' }, response.user_turn));
-            state.turns.push(narTurn);
-            sortTurns();
+        .then(function (response) { ingestTurnResponse(response); })
+        .catch(function (e) {
+          var msg = e && e.message ? e.message : String(e);
+          if (msg.indexOf('already in progress') >= 0) {
+            _pollForTurnCompletion(scenarioId, null, prevCount);
+            return;
           }
-        })
-        .catch(function (e) { showToast('Command failed: ' + e.message, 'error'); });
+          _finishTurnSubmit();
+          removeTypingIndicator();
+          showToast('Command failed: ' + msg, 'error');
+        });
     };
   }
 
@@ -938,15 +986,11 @@ function setupPlayInteractions(scenarioId) {
   if (endBtn) {
     endBtn.onclick = function () {
       showConfirm('End Story', 'This will wrap up the narrative and mark the story as ended.', function () {
+        if (!_beginTurnSubmit()) { showToast('Already generating a turn. Please wait...', 'info'); return; }
+        addTypingIndicator();
         API.postTurn(scenarioId, '[end]')
           .then(function (response) {
-            if (response && response.narrator_turn) {
-              var nt = response.narrator_turn;
-              appendTurnToThread({
-                id: nt.id, speaker: 'narrator',
-                content_text: nt.content_text, turn_number: nt.turn_number, user_rating: 0
-              });
-            }
+            ingestTurnResponse(response);
             showToast('Story ended.', 'info');
             return API.getScenario(scenarioId);
           })
@@ -978,11 +1022,10 @@ function setupPlayInteractions(scenarioId) {
     };
   }
 
-  /* Image Profiles button — styles removed, use Settings > Profiles */
   var imgSettingsBtn = document.getElementById('btn-img-settings');
   if (imgSettingsBtn) {
     imgSettingsBtn.onclick = function () {
-      showToast('Use Settings > Profiles to manage image generation profiles.', 'info');
+      location.hash = '#styles?scenario=' + scenarioId;
     };
   }
 
@@ -992,14 +1035,21 @@ function setupPlayInteractions(scenarioId) {
 // -------------------------------------------------------------------------
 // initResizablePanels — drag-to-resize sidebar and portrait panel
 // -------------------------------------------------------------------------
+function clampPromptPanelWidth(width) {
+  var PP_MAX = 360;
+  var w = parseInt(width, 10);
+  if (isNaN(w)) return null;
+  return Math.min(PP_MAX, Math.max(220, w));
+}
+
 function initResizablePanels() {
   var SB_MIN = 140, SB_MAX = 500;
-  var PP_MIN = 52,  PP_MAX = 600;
+  var PP_MIN = 100, PP_MAX = 200;
 
   var sbHandle = document.getElementById('sidebar-resize-handle');
-  var ppHandle = document.getElementById('portrait-resize-handle');
+  var ppHandle = document.getElementById('prompt-resize-handle');
   var sidebar  = document.getElementById('play-sidebar');
-  var portrait = document.getElementById('play-portrait-panel');
+  var portrait = document.getElementById('play-prompt-panel');
 
   // Restore saved widths on load (only when expanded)
   var savedSbWidth = localStorage.getItem('story-lab-sidebar-width');
@@ -1008,7 +1058,13 @@ function initResizablePanels() {
     sidebar.style.width = parseInt(savedSbWidth, 10) + 'px';
   }
   if (state.portraitPanelOpen && savedPpWidth && portrait) {
-    portrait.style.width = parseInt(savedPpWidth, 10) + 'px';
+    var ppW = clampPromptPanelWidth(savedPpWidth);
+    if (ppW) {
+      portrait.style.width = ppW + 'px';
+      if (String(ppW) !== String(parseInt(savedPpWidth, 10))) {
+        localStorage.setItem('story-lab-portrait-width', String(ppW));
+      }
+    }
   }
 
   function setupDrag(handle, panel, growLeft, min, max, storageKey) {
@@ -1278,6 +1334,10 @@ function setupTurnFooterListeners() {
 // focusTarget: character name | 'narrator' | 'continue'
 // ---------------------------------------------------------------------------
 function submitGuidanceTurn(scenarioId, focusTarget) {
+  if (!_beginTurnSubmit()) {
+    showToast('Already generating a turn. Please wait...', 'info');
+    return;
+  }
   var guidanceInput = document.getElementById('guidance-input');
   var lockToggle    = document.getElementById('lock-toggle');
   var guidanceText  = guidanceInput ? guidanceInput.value.trim() : '';
@@ -1299,9 +1359,11 @@ function submitGuidanceTurn(scenarioId, focusTarget) {
   } else if (guidanceText) {
     contentText = isCharacter ? '[' + focusTarget + '] ' + guidanceText : guidanceText;
   } else if (isCharacter) {
-    contentText = 'Continue, focusing on ' + focusTarget + '.';
+    contentText = 'Respond as ' + focusTarget + '. Write their dialogue, actions, and reactions for this beat.';
+  } else if (focusTarget === 'narrator') {
+    contentText = 'Continue as pure narration (no character dialogue unless brief).';
   } else {
-    contentText = 'Continue the story.';
+    contentText = 'Continue the story coherently in whatever manner fits best.';
   }
 
   // Optimistic user turn label
@@ -1316,28 +1378,8 @@ function submitGuidanceTurn(scenarioId, focusTarget) {
 
   if (guidanceInput) guidanceInput.value = '';
 
-  API.postTurn(scenarioId, contentText)
-    .then(function (response) {
-      removeTypingIndicator();
-      if (response && response.narrator_turn) {
-        var nt = response.narrator_turn;
-        var narTurn = { id: nt.id, speaker: 'narrator', content_text: nt.content_text, turn_number: nt.turn_number, user_rating: 0 };
-        appendTurnToThread(narTurn);
-        state.turns.push(Object.assign({ speaker: 'user' }, response.user_turn || optimTurn));
-        state.turns.push(narTurn);
-        sortTurns();
-      }
-    })
-    .catch(function (e) {
-      removeTypingIndicator();
-      var thread = document.getElementById('play-thread');
-      if (thread) {
-        var opt = thread.querySelector('[data-turn-id="' + optimId + '"]');
-        if (opt && opt.parentNode) opt.parentNode.removeChild(opt);
-      }
-      if (guidanceInput && guidanceText) guidanceInput.value = guidanceText;
-      showToast('Submit failed: ' + e.message, 'error');
-    })
+  var prevTurnCount = state.turns.length;
+  _submitPostTurn(scenarioId, contentText, optimId, prevTurnCount, guidanceInput, guidanceText)
     .finally(function () {
       allFocusBtns.forEach(function (b) { b.disabled = false; });
       if (guidanceInput) guidanceInput.disabled = false;
@@ -1361,7 +1403,7 @@ function renderCharacterFocusButtons(scenarioId) {
     btn.className = 'focus-btn char-focus-btn';
     btn.dataset.charId = char.id;
     btn.dataset.charName = char.name;
-    btn.title = 'Focus next beat on ' + char.name;
+    btn.title = 'Have the narrator respond as ' + char.name;
 
     var initial = char.name ? char.name[0].toUpperCase() : '?';
 
@@ -2432,12 +2474,18 @@ function renderRulesTab(container, scenarioId) {
 }
 
 function renderCastTab(container, scenarioId) {
-  API.getScenarioCharacters(scenarioId).then(function (data) {
+  _loadCharacterStates(scenarioId).then(function () {
+    return API.getScenarioCharacters(scenarioId);
+  }).then(function (data) {
     var chars = Array.isArray(data) ? data : [];
     chars.forEach(function (c) {
       if (!state.characterStates[c.id]) state.characterStates[c.id] = {};
-      if (c.current_clothing) state.characterStates[c.id].current_clothing = c.current_clothing;
-      state.characterStates[c.id].base_clothing = c.base_clothing || '';
+      state.characterStates[c.id].current_clothing = String(c.scenario_clothing || c.current_clothing || c.starting_clothing || '').trim();
+      state.characterStates[c.id].base_clothing = String(c.starting_clothing || c.base_clothing || '').trim();
+      state.characterStates[c.id].starting_clothing = String(c.starting_clothing || '').trim();
+      state.characterStates[c.id].starting_clothing_set_name = c.starting_clothing_set_name || null;
+      if (state.characterStates[c.id].moodcurrent == null) state.characterStates[c.id].moodcurrent = c.moodbaseline != null ? c.moodbaseline : 3;
+      if (state.characterStates[c.id].arousalcurrent == null) state.characterStates[c.id].arousalcurrent = 1;
     });
 
     var rosterIds = chars.map(function (c) { return c.id; });
@@ -2499,6 +2547,16 @@ function renderCastTab(container, scenarioId) {
       document.querySelectorAll('.mood-bars[data-char-id="' + charId + '"]').forEach(function (el) {
         el.outerHTML = _buildMoodBarsHtml(charId);
       });
+      API.updateScenarioCharacterState(scenarioId, charId, {
+        moodcurrent: updated.moodcurrent,
+        arousalcurrent: updated.arousalcurrent
+      }).catch(function (err) {
+        state.characterStates[charId][field === 'mood' ? 'moodcurrent' : 'arousalcurrent'] = current;
+        document.querySelectorAll('.mood-bars[data-char-id="' + charId + '"]').forEach(function (el) {
+          el.outerHTML = _buildMoodBarsHtml(charId);
+        });
+        showToast('Failed to update mood: ' + err.message, 'error');
+      });
     });
 
     // Remove buttons
@@ -2516,7 +2574,7 @@ function renderCastTab(container, scenarioId) {
             .then(function () {
               showToast(charName + ' removed.', 'info');
               renderCastTab(container, scenarioId);
-              if (_reloadPortraitPanel) _reloadPortraitPanel();
+              if (_reloadPortraitPanel) reloadPromptPanelTargets(); refreshPromptPreview();
             })
             .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
         });
@@ -2555,7 +2613,7 @@ function renderCastTab(container, scenarioId) {
               .then(function () {
                 showToast(b.dataset.charName + ' added!', 'success');
                 renderCastTab(container, scenarioId);
-                if (_reloadPortraitPanel) _reloadPortraitPanel();
+                if (_reloadPortraitPanel) reloadPromptPanelTargets(); refreshPromptPreview();
               })
               .catch(function (err) { b.disabled = false; showToast('Failed: ' + err.message, 'error'); });
           };
@@ -2803,8 +2861,28 @@ function renderLocationTab(container, scenarioId) {
    ============================================================ */
 
 // Fetches current character states for a scenario and caches them in state.characterStates
-function _loadCharacterStates() {
-  return Promise.resolve(); // no character-states endpoint in this version
+function _loadCharacterStates(scenarioId) {
+  if (!scenarioId) return Promise.resolve();
+  return API.getScenarioCharacterStates(scenarioId).then(function (data) {
+    var states = (data && data.states) || [];
+    states.forEach(function (s) {
+      if (!state.characterStates[s.characterId]) state.characterStates[s.characterId] = {};
+      state.characterStates[s.characterId].moodcurrent = s.moodcurrent;
+      state.characterStates[s.characterId].arousalcurrent = s.arousalcurrent;
+      if (s.current_clothing != null) {
+        state.characterStates[s.characterId].current_clothing = String(s.current_clothing || '').trim();
+      }
+      if (s.starting_clothing != null) {
+        state.characterStates[s.characterId].base_clothing = String(s.starting_clothing || '').trim();
+        state.characterStates[s.characterId].starting_clothing = String(s.starting_clothing || '').trim();
+      }
+      if (s.starting_clothing_set_name != null) {
+        state.characterStates[s.characterId].starting_clothing_set_name = s.starting_clothing_set_name;
+      }
+    });
+  }).catch(function (err) {
+    console.warn('[play] character states load failed', err);
+  });
 }
 
 // Returns compact mood + arousal bar HTML with manual +/- override buttons
@@ -2859,30 +2937,27 @@ function _buildClothingHtml(charId) {
   var clothing = cs && cs.current_clothing ? String(cs.current_clothing).trim() : '';
   var base     = cs && cs.base_clothing   ? String(cs.base_clothing).trim()    : '';
   var canReset = base && clothing && base !== clothing;
-  return '<div class="clothing-state-wrap" data-char-id="' + charId + '" data-base-clothing="' + escapeHtml(base) + '"' +
-    (clothing ? '' : ' style="display:none"') + '>' +
-    '<span class="clothing-state-text" title="' + (clothing ? 'Current clothing: ' + escapeHtml(clothing) : '') + '">' +
-    escapeHtml(clothing) + '</span>' +
+  var display  = clothing || 'not set';
+  return '<div class="clothing-state-wrap" data-char-id="' + charId + '" data-base-clothing="' + escapeHtml(base) + '">' +
+    '<span class="clothing-state-text' + (clothing ? '' : ' text-muted') + '" title="' + (clothing ? 'Current clothing: ' + escapeHtml(clothing) : 'No clothing set') + '">' +
+    escapeHtml(display) + '</span>' +
     '<button class="clothing-edit-btn" title="Override clothing" type="button">&#9998;</button>' +
-    (canReset ? '<button class="clothing-reset-btn" title="Reset to base outfit" type="button">&#8635;</button>' : '') +
+    (canReset ? '<button class="clothing-reset-btn" title="Reset to starting outfit" type="button">&#8635;</button>' : '') +
     '</div>';
 }
 
 // Handles clothingupdate WS event — updates in-memory state and patches .clothing-state-wrap nodes.
 function handleClothingUpdate(data) {
   if (!data || !Array.isArray(data.characters)) return;
-  if (!state.currentScenario || state.currentScenario.id !== data.scenarioId) return;
+  if (!state.currentScenario || Number(state.currentScenario.id) !== Number(data.scenarioId)) return;
   data.characters.forEach(function (c) {
-    if (!state.characterStates[c.characterId]) state.characterStates[c.characterId] = {};
-    state.characterStates[c.characterId].current_clothing = c.current_clothing || null;
-    var clothing = (c.current_clothing || '').trim();
-    document.querySelectorAll('.clothing-state-wrap[data-char-id="' + c.characterId + '"]').forEach(function (el) {
-      el.style.display = clothing ? '' : 'none';
-      var span = el.querySelector('.clothing-state-text');
-      if (span) {
-        span.textContent = clothing;
-        span.title = clothing ? 'Current clothing: ' + clothing : '';
-      }
+    var charId = c.characterId;
+    if (!charId) return;
+    if (!state.characterStates[charId]) state.characterStates[charId] = {};
+    var clothing = String(c.current_clothing || '').trim();
+    state.characterStates[charId].current_clothing = clothing;
+    document.querySelectorAll('.clothing-state-wrap[data-char-id="' + charId + '"]').forEach(function (el) {
+      _restoreClothingWrap(el, charId, clothing);
     });
   });
 }
@@ -2893,6 +2968,7 @@ function _startClothingEdit(wrap) {
   var span     = wrap.querySelector('.clothing-state-text');
   var charId   = parseInt(wrap.getAttribute('data-char-id'), 10);
   var current  = span ? span.textContent.trim() : '';
+  if (current === 'not set') current = '';
   wrap.innerHTML =
     '<input class="clothing-edit-input" value="' + escapeHtml(current) + '" />' +
     '<button class="clothing-save-btn" title="Save" type="button">&#10003;</button>' +
@@ -2914,7 +2990,7 @@ function _commitClothingEdit(wrap) {
   var scenId  = state.currentScenario && state.currentScenario.id;
   if (!input || !charId || !scenId) { _cancelClothingEdit(wrap); return; }
   var newVal  = input.value.trim();
-  API.updateCharacterClothing(scenId, charId, { current_clothing: newVal })
+  API.updateCharacterClothing(charId, { current_clothing: newVal, scenario_id: scenId, runtime: true })
     .then(function () {
       if (!state.characterStates[charId]) state.characterStates[charId] = {};
       state.characterStates[charId].current_clothing = newVal;
@@ -2936,19 +3012,20 @@ function _cancelClothingEdit(wrap) {
 function _restoreClothingWrap(wrap, charId, clothing) {
   var base     = wrap.getAttribute('data-base-clothing') || '';
   var canReset = base && clothing && base !== clothing;
+  var display  = clothing || 'not set';
   wrap.setAttribute('data-base-clothing', base);
   wrap.innerHTML =
-    '<span class="clothing-state-text" title="' + (clothing ? 'Current clothing: ' + escapeHtml(clothing) : '') + '">' +
-    escapeHtml(clothing) + '</span>' +
+    '<span class="clothing-state-text' + (clothing ? '' : ' text-muted') + '" title="' + (clothing ? 'Current clothing: ' + escapeHtml(clothing) : 'No clothing set') + '">' +
+    escapeHtml(display) + '</span>' +
     '<button class="clothing-edit-btn" title="Override clothing" type="button">&#9998;</button>' +
-    (canReset ? '<button class="clothing-reset-btn" title="Reset to base outfit" type="button">&#8635;</button>' : '');
-  wrap.style.display = clothing ? '' : 'none';
+    (canReset ? '<button class="clothing-reset-btn" title="Reset to starting outfit" type="button">&#8635;</button>' : '');
+  wrap.style.display = '';
 }
 
 // Handles moodupdate WS event — updates in-memory state and refreshes bars in DOM
 function handleMoodUpdate(data) {
   if (!data || !Array.isArray(data.characters)) return;
-  if (!state.currentScenario || state.currentScenario.id !== data.scenarioId) return;
+  if (!state.currentScenario || Number(state.currentScenario.id) !== Number(data.scenarioId)) return;
   data.characters.forEach(function (c) {
     if (!state.characterStates[c.characterId]) state.characterStates[c.characterId] = {};
     state.characterStates[c.characterId].moodcurrent    = c.moodcurrent;
@@ -2980,7 +3057,7 @@ function handleImageReady(data) {
     return;
   }
 
-  var turn = state.turns.find(function (t) { return t.id === turnId; });
+  var turn = state.turns.find(function (t) { return String(t.id) === String(turnId); });
   if (!turn) { console.warn('handleImageReady: turn not found in state', turnId); return; }
   turn.image_filename      = imageFilename;
   turn.image_visual_prompt = data.visualPrompt || '';
@@ -3008,6 +3085,7 @@ function handleImageReady(data) {
   }
 
   setImgStatus(null);
+  onPromptPanelImageReady({ turnId: turnId, imageId: imageId, filename: imageFilename, scenarioId: scenarioId });
   scrollThreadToBottom();
 }
 
@@ -3020,7 +3098,7 @@ function handleSceneImageReady(data) {
 
   if (!state.currentScenario) return;
 
-  var turn = state.turns.find(function (t) { return t.id === turnId; });
+  var turn = state.turns.find(function (t) { return String(t.id) === String(turnId); });
   if (!turn) { console.warn('handleSceneImageReady: turn not found in state', turnId); return; }
   turn.image_filename      = filename;
   turn.image_id            = imageId;
@@ -3047,6 +3125,10 @@ function handleSceneImageReady(data) {
   }
 
   setImgStatus(null);
+  if (imageId) {
+    onPromptPanelImageReady({ turnId: turnId, imageId: imageId, filename: filename, scenarioId: state.currentScenario.id });
+  }
+  scrollThreadToBottom();
 }
 
 function handleVideoStatus(data) {
@@ -3176,17 +3258,18 @@ export function connectWs() {
         break;
 
       case 'turn_complete': {
-        if (data.turn && state.currentScenario && data.scenarioId === state.currentScenario.id) {
-          var tcTurn = data.turn;
-          var tcEl = document.querySelector('[data-turn-id="' + tcTurn.id + '"]');
-          if (!tcEl) {
-            var narTurnObj = Object.assign({ speaker: tcTurn.role }, tcTurn);
-            appendTurnToThread(narTurnObj);
-            if (!state.turns.find(function(t) { return t.id === tcTurn.id; })) {
-              state.turns.push(narTurnObj);
-              sortTurns();
-            }
-          }
+        var tcPayload = data.payload || data;
+        if (tcPayload.clothing_updates && tcPayload.clothing_updates.length) {
+          handleClothingUpdate({ scenarioId: tcPayload.scenarioId, characters: tcPayload.clothing_updates });
+        }
+        ingestNarratorTurnFromWs(tcPayload.turn, tcPayload.scenarioId);
+        break;
+      }
+
+      case 'scene_summary_ready': {
+        var ssPayload = data.payload || data;
+        if (ssPayload.turn && state.currentScenario && ssPayload.scenarioId === state.currentScenario.id) {
+          refreshPromptPreview();
         }
         break;
       }
@@ -3212,19 +3295,13 @@ export function connectWs() {
         break;
       }
 
-      case 'moodupdate':
-        if (!Array.isArray(data.characters)) break;
-        data.characters.forEach(function (c) {
-          if (!state.characterStates) state.characterStates = {};
-          state.characterStates[c.characterId] = {
-            moodcurrent:    c.moodcurrent,
-            arousalcurrent: c.arousalcurrent
-          };
-          document.querySelectorAll('.mood-bars[data-char-id="' + c.characterId + '"]').forEach(function (el) {
-            if (window._buildMoodBarsHtml) el.outerHTML = window._buildMoodBarsHtml(c.characterId);
-          });
-        });
+      case 'moodupdate': {
+        var muPayload = data.payload || data;
+        if (state.currentScenario && Number(muPayload.scenarioId) === Number(state.currentScenario.id)) {
+          handleMoodUpdate(muPayload);
+        }
         break;
+      }
 
       case 'videostatus': {
         var vsId = data.imageId;
@@ -3270,19 +3347,18 @@ export function connectWs() {
         break;
       }
 
-      case 'clothingupdate':
-        if (state.currentScenario && data.scenarioId === state.currentScenario.id) {
-          handleClothingUpdate(data);
-          if (state.currentSidebarTab === 'clothing') {
-            loadSidebarTab('clothing', data.scenarioId);
-          }
+      case 'clothingupdate': {
+        var cuPayload = data.payload || data;
+        if (state.currentScenario && Number(cuPayload.scenarioId) === Number(state.currentScenario.id)) {
+          handleClothingUpdate(cuPayload);
         }
         break;
+      }
 
       case 'presencechange':
         if (state.currentScenario && data.scenarioId === state.currentScenario.id) {
           if (_updateScenePresent) _updateScenePresent(data.added, data.removed);
-          if (_reloadPortraitPanel) _reloadPortraitPanel();
+          if (_reloadPortraitPanel) reloadPromptPanelTargets(); refreshPromptPreview();
           renderCharacterFocusButtons();
           if (data.added && data.added.length) {
             data.added.forEach(function (c) { showToast(c.name + ' has entered the scene.', 'info'); });
@@ -3312,7 +3388,7 @@ export function connectWs() {
       }
 
       case 'logline':
-        if (window._debugConsole && typeof window._debugConsole.push === 'function') window._debugConsole.push(data);
+        if (window._debugConsole && typeof window._debugConsole.push === 'function') window._debugConsole.push(data.payload || data);
         break;
 
       case 'image_prompt':

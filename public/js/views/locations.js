@@ -144,13 +144,20 @@ function _formHtml(loc) {
       '<input type="text" class="form-input" id="lf-name" value="' + escapeHtml(l.name || '') + '" placeholder="e.g. Maya\'s Apartment, Rooftop Bar">' +
     '</div>' +
     '<div class="form-group">' +
-      '<label class="form-label">Description</label>' +
-      '<textarea class="form-input" id="lf-description" rows="3" placeholder="Narrator description of the location.">' +
-        escapeHtml(l.description || '') +
+      '<label class="form-label">Visual description</label>' +
+      '<textarea class="form-input" id="lf-description" rows="3" placeholder="What it looks like for the narrator and images.">' +
+        escapeHtml(l.description || l.short_desc || '') +
       '</textarea>' +
     '</div>' +
     '<div class="form-group">' +
-      '<label class="form-label">Image Tags for AI generation</label>' +
+      '<label class="form-label">Background info</label>' +
+      '<textarea class="form-input" id="lf-full_desc" rows="3" placeholder="e.g. the local park in the center of town, open 24 hours">' +
+        escapeHtml(l.full_desc || '') +
+      '</textarea>' +
+      '<div class="form-hint" style="font-size:11px;color:var(--text-muted);margin-top:4px">Story context for the narrator (not required for image tags).</div>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label class="form-label">Location tags (for AI images)</label>' +
       '<textarea class="form-input" id="lf-image_tags" rows="2" placeholder="e.g. apartment interior, city lights, warm lighting">' +
         escapeHtml(l.image_tags || '') +
       '</textarea>' +
@@ -186,6 +193,7 @@ function _wireForm(loc) {
     var data = {
       name:              (document.getElementById('lf-name').value || '').trim(),
       description:       (document.getElementById('lf-description').value || '').trim() || null,
+      full_desc:         (document.getElementById('lf-full_desc').value || '').trim() || null,
       image_tags:        (document.getElementById('lf-image_tags').value || '').trim() || null,
       time_of_day:       document.getElementById('lf-time_of_day').value || null,
       background_folder: (document.getElementById('lf-background_folder').value || '').trim() || null,

@@ -37,6 +37,7 @@
     getHealth:       function () { return request('GET', '/api/health'); },
     getHealthOllama: function () { return request('GET', '/api/health/ollama'); },
     getHealthA1111:  function () { return request('GET', '/api/health/a1111'); },
+    freeVram:        function () { return request('POST', '/api/health/free-vram'); },
 
     /* Scenarios */
     getScenarios:   function ()      { return request('GET',    '/api/scenarios'); },
@@ -52,13 +53,25 @@
     updateCharacter: function (id, d) { return request('PUT',    '/api/characters/' + id, d); },
     deleteCharacter: function (id)    { return request('DELETE', '/api/characters/' + id); },
     updateCharacterClothing: function (charId, d) {
+      // CF-10: when d.scenario_id is set, d.runtime must be an explicit boolean
       return request('PATCH', '/api/characters/' + charId + '/clothing', d);
     },
 
     /* Scenario ↔ Character roster */
     getScenarioCharacters:       function (sid)         { return request('GET',    '/api/scenarios/' + sid + '/characters'); },
-    addCharacterToScenario:      function (sid, charId) { return request('POST',   '/api/scenarios/' + sid + '/characters/' + charId); },
-    removeCharacterFromScenario: function (sid, charId) { return request('DELETE', '/api/scenarios/' + sid + '/characters/' + charId); },
+    addCharacterToScenario:      function (sid, charId, opts) {
+      return request('POST', '/api/scenarios/' + sid + '/characters/' + charId, opts || {});
+    },
+    setScenarioCharacterClothing: function (sid, charId, opts) {
+      // CF-10: body.runtime must be an explicit boolean (true=runtime, false=starting)
+      var body = opts || {};
+      if (typeof opts === 'string') body = { clothing: opts };
+      return request('PATCH', '/api/scenarios/' + sid + '/characters/' + charId + '/clothing', body);
+    },
+  removeCharacterFromScenario: function (sid, charId) { return request('DELETE', '/api/scenarios/' + sid + '/characters/' + charId); },
+
+    getScenarioCharacterStates:   function (sid) { return request('GET', '/api/scenarios/' + sid + '/character-states'); },
+    updateScenarioCharacterState: function (sid, charId, d) { return request('PUT', '/api/scenarios/' + sid + '/character-states/' + charId, d); },
 
     /* Character References & Full-Body Images */
     getReferences:      function (charId)        { return request('GET',    '/api/characters/' + charId + '/references'); },
@@ -118,11 +131,23 @@
     getTurns:   function (sid)                { return request('GET',    '/api/scenarios/' + sid + '/turns'); },
     postTurn:   function (sid, contentText)   { return request('POST',   '/api/scenarios/' + sid + '/turns', { role: 'user', content_text: contentText }); },
     deleteTurn: function (sid, turnId)        { return request('DELETE', '/api/scenarios/' + sid + '/turns/' + turnId); },
+    patchSceneSummary: function (sid, turnId, body) { return request('PATCH', '/api/scenarios/' + sid + '/turns/' + turnId + '/scene-summary', body); },
+    getSummaryHistory: function (sid, turnId) { return request('GET', '/api/scenarios/' + sid + '/turns/' + turnId + '/summary-history'); },
+    postRegenerateTags: function (sid, turnId, body) { return request('POST', '/api/scenarios/' + sid + '/turns/' + turnId + '/regenerate-tags', body || {}); },
 
     /* Images — scenario-scoped */
     getImages: function (sid, turnId) {
       var qs = turnId ? '?turn_id=' + turnId : '';
       return request('GET', '/api/scenarios/' + sid + '/images' + qs);
+    },
+    postPromptPreview: function (sid, body) {
+      return request('POST', '/api/scenarios/' + sid + '/images/prompt-preview', body || {});
+    },
+    generateImage: function (sid, body) {
+      return request('POST', '/api/scenarios/' + sid + '/images/generate', body || {});
+    },
+    patchImageRatings: function (sid, imageId, body) {
+      return request('PATCH', '/api/scenarios/' + sid + '/images/' + imageId + '/ratings', body || {});
     },
     generateSceneImage: function (sid, turnId) {
       var body = turnId ? { turn_id: turnId } : undefined;
@@ -179,9 +204,13 @@
     getA1111Status:     function ()     { return request('GET',  '/api/a1111/status'); },
     getA1111Models:     function ()     { return request('GET',  '/api/a1111/models'); },
     getA1111Loras:      function ()     { return request('GET',  '/api/a1111/loras'); },
-    getA1111Samplers:   function ()     { return request('GET',  '/api/a1111/samplers'); },
-    getA1111Schedulers: function ()     { return request('GET',  '/api/a1111/schedulers'); },
-    setA1111Model:      function (name) { return request('POST', '/api/a1111/model', { model_name: name }); },
+    getA1111Samplers:        function ()     { return request('GET',  '/api/a1111/samplers'); },
+    getA1111Schedulers:      function ()     { return request('GET',  '/api/a1111/schedulers'); },
+    getA1111Upscalers:       function ()     { return request('GET',  '/api/a1111/upscalers'); },
+    getA1111ControlNetModels: function ()    { return request('GET',  '/api/a1111/controlnet-models'); },
+    getA1111ControlNetModules: function ()   { return request('GET',  '/api/a1111/controlnet-modules'); },
+    getA1111ADetailerModels: function ()     { return request('GET',  '/api/a1111/adetailer-models'); },
+    setA1111Model:           function (name) { return request('POST', '/api/a1111/model', { model_name: name }); },
 
     /* Audit log */
     getAuditLog: function (filters) {

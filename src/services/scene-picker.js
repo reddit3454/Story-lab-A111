@@ -1,5 +1,34 @@
 import { chat } from './ollama.js';
 
+export function buildPickerJsonSchema(nsfwEnabled = false) {
+  const properties = {
+    summary: { type: 'string' },
+    mainSubject: { type: 'string' },
+    visibleAction: { type: 'string' },
+    setting: { type: 'string' },
+    shotType: { type: 'string' },
+    imageabilityScore: { type: 'number' },
+    penaltyReason: { type: ['string', 'null'] },
+  };
+  const required = ['summary', 'mainSubject', 'visibleAction', 'setting', 'shotType', 'imageabilityScore', 'penaltyReason'];
+  if (nsfwEnabled) {
+    properties.bodyPosition = { type: ['string', 'null'] };
+    properties.explicitAct = { type: ['string', 'null'] };
+    properties.nudityState = { type: ['string', 'null'] };
+    properties.clothingState = { type: ['string', 'null'] };
+    required.push('bodyPosition', 'explicitAct', 'nudityState', 'clothingState');
+  }
+  return { type: 'object', properties, required, additionalProperties: false };
+}
+
+const PICKER_SYSTEM = [
+  'You select ONE camera shot from the provided story excerpt for image generation.',
+  'Return ONLY a single JSON object matching the requested schema (no markdown, no prose).',
+  'mainSubject MUST be a character name from the Characters list when any match; else a short subject phrase.',
+  'visibleAction MUST be a concrete physical verb phrase (not "standing there" or empty).',
+  'If unsure, still return valid JSON with a lower imageabilityScore and a penaltyReason.',
+].join(' ');
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -138,6 +167,19 @@ function parseCandidateResponse(rawText) {
 // Returns: candidate object { visibleAction, setting, shotType, ... } or null
 // Never throws.
 // ---------------------------------------------------------------------------
+
+/**
+ * Build the story-turn list passed to pickBestMoment.
+ * When the user clicks [Img] on a specific narrator turn, that turn's text is the
+ * focal source - do NOT flood the picker with other recent turns or it may select
+ * a generic standing/sitting moment from elsewhere in the thread.
+ */
+export function resolvePickerContextTurns({ focalTurnText = null, recentTurnsChronological = [] } = {}) {
+  const focal = String(focalTurnText || '').trim();
+  if (focal) return [focal];
+  return (recentTurnsChronological || []).map((s) => String(s || '').trim()).filter(Boolean);
+}
+
 export async function pickBestMoment(contextTurns, activeCharacters, recentImageCards, pickerModel, nsfwEnabled = false) {
   if (!contextTurns || !contextTurns.length || !pickerModel) return null;
 
@@ -150,10 +192,15 @@ export async function pickBestMoment(contextTurns, activeCharacters, recentImage
 
   let res;
   try {
-    res = await chat({ model: pickerModel, messages: [
-      { role: 'system', content: 'You are a visual scene selection assistant. Return only valid JSON.' },
-      { role: 'user', content: prompt },
-    ], options: { num_predict: 500 } });
+    res = await chat({
+      model: pickerModel,
+      messages: [
+        { role: 'system', content: PICKER_SYSTEM },
+        { role: 'user', content: prompt },
+      ],
+      format: buildPickerJsonSchema(!!nsfwEnabled),
+      options: { temperature: 0.1, top_p: 0.9, num_predict: 500 },
+    });
   } catch (_) {
     return null;
   }

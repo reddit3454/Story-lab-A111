@@ -1,7 +1,13 @@
 import { state } from '../state.js';
 import { escapeHtml, imageSrc } from '../utils.js';
 import { showToast, setLoading } from '../ui.js';
-import { buildImageModelOptions } from './scenario-setup.js';
+import { IMAGE_MODELS } from '../constants.js';
+
+function buildImageModelOptions(selectedModel) {
+  return IMAGE_MODELS.map(function (m) {
+    return '<option value="' + escapeHtml(m.value) + '"' + (m.value === (selectedModel || '') ? ' selected' : '') + '>' + escapeHtml(m.label) + '</option>';
+  }).join('');
+}
 
 const SUPPORTED_SAMPLERS = [
   'euler', 'euler_ancestral', 'heun', 'heunpp2', 'dpm_2', 'dpm_2_ancestral',
@@ -20,6 +26,17 @@ export function initStyles(scenarioIdStr) {
   var scenarioId = Number(scenarioIdStr);
   var el = document.getElementById('view-styles');
   var loraList = [];
+  // Styles CRUD backend is not implemented (use Settings > Image Profiles instead)
+  el.innerHTML = '<div class="page-header"><h1 class="page-title story-font">Image Styles</h1>' +
+    '<div class="header-actions"><a href="#dashboard" class="btn btn-ghost btn-sm">&larr; Back</a></div></div>' +
+    '<div class="empty-state"><div class="empty-state-icon">S</div>' +
+    '<p class="empty-state-text">The Styles library backend is not available in this build.</p>' +
+    '<p class="empty-state-text" style="margin-top:8px">Use <strong>Settings &rarr; Image Profiles</strong> for prompt prefixes, suffixes, and LoRAs.</p>' +
+    '<div style="margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">' +
+    '<a href="#settings" class="btn btn-primary">Open Settings</a>' +
+    (scenarioId ? '<a href="#play?scenario=' + scenarioId + '" class="btn btn-ghost">Back to Story</a>' : '<a href="#dashboard" class="btn btn-ghost">Dashboard</a>') +
+    '</div></div>';
+  return;
   if (!scenarioId) {
     el.innerHTML = '<div class="page-header"><h1 class="page-title story-font">Image Styles</h1>' +
       '<div class="header-actions"><a href="#dashboard" class="btn btn-ghost btn-sm">&larr; Back</a></div></div>' +

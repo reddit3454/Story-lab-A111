@@ -4,10 +4,15 @@
   "description": "AI story and roleplay app with A1111 image generation",
   "main": "src/server.js",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node --experimental-sqlite src/server.js",
-    "dev": "node --experimental-sqlite --watch src/server.js"
+    "dev": "node --experimental-sqlite --watch src/server.js",
+    "test": "node --experimental-sqlite --experimental-test-module-mocks --test",
+    "audit": "node scripts/audit.js",
+    "import-characters": "node scripts/import-characters-from-story-lab.js"
   },
   "dependencies": {
     "express": "^4.18.3",

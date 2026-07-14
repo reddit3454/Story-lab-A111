@@ -14,9 +14,9 @@ export function defaultWizardData() {
     default_start: '',
     user_character_id: null,
     active_location_id: null,
-    reply_length: 'medium', lust_level: 3,
-    explicitness_level: 'moderate', pacing: 'normal',
-    narrative_pov: 'third', violence_level: 'mild',
+    reply_length: 'medium', lust_level: 5,
+    explicitness_level: 'explicit', pacing: 'normal',
+    narrative_pov: 'third', violence_level: 'graphic',
     tone_modifier: '',
     nsfw_enabled: 1,
     narrator_presence_enabled: 0,
@@ -260,6 +260,60 @@ function _renderCastUI(container, roster, allChars, sid) {
     if (body) renderStep2(body);
   }
 
+
+  function _parseClothingSets(raw) {
+    if (!raw) return [];
+    try {
+      var arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!Array.isArray(arr)) return [];
+      return arr.filter(function (x) {
+        return x && String(x.name || '').trim() && String(x.description || '').trim();
+      }).map(function (x) {
+        return { name: String(x.name).trim(), description: String(x.description).trim() };
+      });
+    } catch (_) { return []; }
+  }
+
+  function _setsForChar(c) {
+    if (c.outfit_sets_parsed && Array.isArray(c.outfit_sets_parsed)) return c.outfit_sets_parsed;
+    return _parseClothingSets(c.outfit_sets);
+  }
+
+  function _selectedSetName(c) {
+    if (c.starting_clothing_set_name) return c.starting_clothing_set_name;
+    if (c._selected_clothing_set_name) return c._selected_clothing_set_name;
+    var sets = _setsForChar(c);
+    if (c.default_outfit_name) {
+      var found = sets.find(function (x) { return x.name === c.default_outfit_name; });
+      if (found) return found.name;
+    }
+    return sets.length ? sets[0].name : '';
+  }
+
+  function _clothingSelectHtml(c) {
+    var sets = _setsForChar(c);
+    var selected = _selectedSetName(c);
+    if (!sets.length) {
+      return '<p style="font-size:11px;color:var(--text-muted);margin:0">No saved clothing sets. Add them on Characters, then pick a starting set here.</p>';
+    }
+    var opts = sets.map(function (set) {
+      var sel = set.name === selected ? ' selected' : '';
+      return '<option value="' + escapeHtml(set.name) + '"' + sel + '>' + escapeHtml(set.name) + '</option>';
+    }).join('');
+    var desc = '';
+    var cur = sets.find(function (x) { return x.name === selected; });
+    if (cur) desc = cur.description;
+    else if ((c.starting_clothing || '').trim()) desc = c.starting_clothing;
+    return '<label style="font-size:11px;color:var(--text-muted)">Starting clothing set</label>' +
+      '<div style="display:flex;gap:6px;align-items:center">' +
+        '<select class="form-input cast-outfit-select" data-id="' + c.id + '" style="font-size:12px;flex:1">' + opts + '</select>' +
+        '<button type="button" class="btn btn-ghost btn-xs cast-outfit-save" data-id="' + c.id + '">Set</button>' +
+      '</div>' +
+      '<div class="cast-outfit-desc" data-id="' + c.id + '" style="font-size:11px;color:var(--text-muted);margin-top:4px">' +
+        escapeHtml(desc) +
+      '</div>';
+  }
+
   function renderView() {
     var filtered = filterText
       ? available.filter(function (c) { return c.name.toLowerCase().indexOf(filterText) !== -1; })
@@ -273,16 +327,19 @@ function _renderCastUI(container, roster, allChars, sid) {
             (roster.length
               ? roster.map(function (c) {
                   var sub = [c.gender, c.age_range].filter(Boolean).join(', ');
-                  return '<div class="cast-item" data-id="' + c.id + '">' +
+                  return '<div class="cast-item cast-item-with-outfit" data-id="' + c.id + '" style="flex-wrap:wrap">' +
                     '<div class="char-avatar small">' + escapeHtml(c.name[0].toUpperCase()) + '</div>' +
                     '<div style="flex:1;min-width:0">' +
                       '<div style="font-weight:500">' + escapeHtml(c.name) + '</div>' +
                       (sub ? '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(sub) + '</div>' : '') +
                     '</div>' +
                     '<button class="btn btn-ghost btn-xs remove-cast-btn" data-id="' + c.id + '" data-name="' + escapeHtml(c.name) + '" style="flex-shrink:0">Remove</button>' +
+                    '<div style="flex-basis:100%;margin-top:6px">' +
+                      _clothingSelectHtml(c) +
+                    '</div>' +
                   '</div>';
                 }).join('')
-              : '<div class="empty-state small">No characters in this story yet.</div>'
+              : '<div class="empty-state small">No characters in this story yet. Add cast, then choose a starting clothing set for each.</div>'
             ) +
           '</div>' +
         '</div>' +
@@ -337,18 +394,73 @@ function _renderCastUI(container, roster, allChars, sid) {
       };
     });
 
+    function _applyOutfitSelection(charId, setName, persist) {
+      var row = roster.find(function (c) { return c.id === charId; }) ||
+        (state.wizardCast || []).find(function (c) { return c.id === charId; });
+      var sets = row ? _setsForChar(row) : [];
+      var found = sets.find(function (x) { return x.name === setName; });
+      var descEl = container.querySelector('.cast-outfit-desc[data-id="' + charId + '"]');
+      if (descEl) descEl.textContent = found ? found.description : '';
+      if (row) {
+        row.starting_clothing_set_name = setName || null;
+        row._selected_clothing_set_name = setName || null;
+        row.starting_clothing = found ? found.description : '';
+        row.current_clothing = found ? found.description : '';
+      }
+      if (!persist) return Promise.resolve();
+      if (!sid) {
+        showToast('Starting set noted (saved when scenario is created).', 'info');
+        return Promise.resolve();
+      }
+      return API.setScenarioCharacterClothing(sid, charId, { clothing_set_name: setName, runtime: false })
+        .then(function () {
+          showToast('Starting clothing set saved for this story.', 'success');
+        });
+    }
+
+    container.querySelectorAll('.cast-outfit-select').forEach(function (sel) {
+      sel.onchange = function () {
+        // Persist immediately when editing an existing scenario so reopen shows the choice
+        _applyOutfitSelection(Number(sel.dataset.id), sel.value, !!sid)
+          .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
+      };
+    });
+
+    container.querySelectorAll('.cast-outfit-save').forEach(function (btn) {
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        var charId = Number(btn.dataset.id);
+        var sel = container.querySelector('.cast-outfit-select[data-id="' + charId + '"]');
+        var setName = sel ? sel.value : '';
+        if (!setName) {
+          showToast('This character has no clothing sets. Add them on the Characters page.', 'error');
+          return;
+        }
+        btn.disabled = true;
+        _applyOutfitSelection(charId, setName, true)
+          .then(function () { btn.disabled = false; })
+          .catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
+      };
+    });
+
     container.querySelectorAll('.add-cast-btn').forEach(function (btn) {
       btn.onclick = function () {
         var charId = Number(btn.dataset.id);
         if (sid) {
           btn.disabled = true;
-          API.addCharacterToScenario(sid, charId)
+          var avail = allChars.find(function (c) { return c.id === charId; });
+          var defName = avail ? _selectedSetName(avail) : '';
+          var body = defName ? { clothing_set_name: defName } : {};
+          API.addCharacterToScenario(sid, charId, body)
             .then(refresh)
             .catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
         } else {
           var char = allChars.find(function (c) { return c.id === charId; });
           if (char && !state.wizardCast.some(function (c) { return c.id === charId; })) {
-            state.wizardCast.push(char);
+            var copy = Object.assign({}, char);
+            copy._selected_clothing_set_name = _selectedSetName(copy);
+            copy.starting_clothing_set_name = copy._selected_clothing_set_name;
+            state.wizardCast.push(copy);
           }
           refresh();
         }
@@ -663,7 +775,9 @@ function submitWizard() {
       if (!state.wizardCast.length) return newSid;
       return Promise.all(
         state.wizardCast.map(function (c) {
-          return API.addCharacterToScenario(newSid, c.id).catch(function () {});
+          var setName = c.starting_clothing_set_name || c._selected_clothing_set_name || '';
+          var body = setName ? { clothing_set_name: setName } : {};
+          return API.addCharacterToScenario(newSid, c.id, body).catch(function () {});
         })
       ).then(function () { return newSid; });
     });

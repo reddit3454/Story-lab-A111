@@ -26,6 +26,14 @@
 > **Design spec:** `docs/superpowers/specs/2026-06-10-story-lab-a1111-design.md`
 > **Original reference:** `E:\TheHub\projects\story-lab\` (do not modify)
 
+
+> **Visual brief 2026-07-13h:** Per-turn `scene_card_json.visual_brief` replaces image-oriented scene summarization. `main_subject` drives scene focus/FaceID. Character images use stored brief chain (current→prior→generic). `image_prompt` is legacy fallback only.
+>
+> **Local-model prompts 2026-07-13g:** Ollama `format` transport; schema JSON for scene-picker + emotion tracker; shared `tag-dialect`; NSFW-gated slim narrator scene card; short story-enhancer 3-line contract.
+>
+> **Audit fixes 2026-07-13 (top-8):** NSFW arousal gating enforced in `prompt-builder`; boot no longer force-sets nsfw/explicit/learning true; FaceID reads `reference_image_path`; scenario backgrounds register into `location_backgrounds`; learning snapshots written + ratings SELECT fixed; enhancer re-applies LoRAs/master negative; narrator+picker honor NSFW flags; Styles/Images UI quarantined (use Settings Image Profiles). Plan: `docs/superpowers/plans/2026-07-13-top8-audit-fixes.md`. Owner plain-English walkthrough: docs/OWNER-APP-BEHAVIOR-WALKTHROUGH.md.
+
+
 ---
 
 ## What This Project Is
@@ -184,7 +192,7 @@ story-lab-a1111/
       memory.js                  shouldGenerateMemory(), generateMemory(), getRecentMemories()
       extractor.js               [PLANNED] separate scene card extractor (narrator does it inline now)
       enhancer.js                [PLANNED] SDXL prompt enhancer via Ollama
-      clothing.js                [PLANNED] clothing state resolution per character
+      clothing.js                [LIVE] scenario-scoped clothing; character outfit_sets library
       character.js               [PLANNED] character appearance block builder
     routes/
       health.js                  /health, /health/a1111, /health/ollama
@@ -228,7 +236,7 @@ These files exist on disk but are not loaded by `index.html` and are not importe
 | `public/js/locations-init.js` | Removed from index.html; called stale global `/api/locations` |
 | `public/js/style-picker-patch.js` | Not loaded; patched a UI that no longer exists |
 | `public/js/style-creator.js` | Import removed from play.js; called `/api/styles` which has no backend route |
-| `public/js/views/styles.js` | View file; not routed to; styles backend not yet implemented |
+| `public/js/views/styles.js` | Routed (`#styles`) but UI quarantined 2026-07-13: no styles backend; use Settings Image Profiles |
 
 ---
 
@@ -588,9 +596,9 @@ POST returns HTTP 409 on duplicate pair (UNIQUE constraint violation).
 The narrator reads these via `runNarratorTurn` and injects them as a "Character Relationships"
 block in the system prompt (section 3, between Characters and Rules).
 
-### Tables NOT yet created (planned)
+### Scenario clothing state (created)
 
-- `character_states` — per-scenario clothing/emotion state; clothing currently stored on `characters.current_clothing`
+- `scenario_character_state` — per-scenario runtime clothing (and related state). Authoritative for play; see `getScenarioClothing` / clothing.js. This replaced the earlier planned `character_states` table. Do **not** treat `characters.current_clothing` as scenario runtime clothing.
 
 Indexed on: `pipeline_run_id`, `(scenario_id, created_at DESC)`, `status WHERE failed`.
 
@@ -619,13 +627,13 @@ Filter `WHERE pipeline_run_id = 'x'` to see the complete trace for any image.
 
 ### Using the audit log
 
-- **"Why was that image bad?"** — open `scene_images` row, read `prompt_parts_json`
+- **"Why was that image bad?"** — filter `audit_log` / `logs/audit.jsonl` for that `pipeline_run_id` (prompt parts are audit/in-memory data, not a `scene_images` column)
 - **"Did the enhancer run?"** — check `enhance_skipped` and `enhance_output`
 - **"Which model was used?"** — check `a1111_model_hash` (catches silent model switches)
 - **"What seed was that?"** — `a1111_seed` — actual A1111 seed, always reproducible
 - **"Where did it fail?"** — filter `audit_log WHERE pipeline_run_id = 'x' AND status = 'failed'`
 - **"Were the LoRAs applied?"** — `scene_images.loras_json`
-- **"What was her clothing state?"** — `scene_images.character_states_json`
+- **"What was her clothing state?"** — `scenario_character_state.current_clothing` for the scenario, and/or clothing fields on the matching audit events (there is no `scene_images.character_states_json` column)
 - **Replay any image** — `a1111_request_json` is the complete payload; POST it directly to A1111
 
 ---
@@ -634,14 +642,23 @@ Filter `WHERE pipeline_run_id = 'x'` to see the complete trace for any image.
 
 ### src/services/ollama.js
 
-Ollama HTTP client. All calls log via audit.
+Ollama HTTP client (`http://127.0.0.1:11434`). All calls log duration via `logger`.
 
 ```js
-chat(model, messages, options)    // → { content, duration_ms, token_estimate }
-generate(model, prompt, options)  // → { content, duration_ms }
-toolCall(model, messages, tools)  // → { result, raw, duration_ms }
-listModels()                      // → string[] — cached 60s
+chat({ model, messages, options = {}, format, keep_alive })
+// POST /api/chat with stream:false. `options` are Ollama sampler options (temperature, top_p, num_predict, stop, ...).
+// `format` is forwarded natively when provided: `'json'` or a JSON Schema object (structured outputs).
+// `keep_alive` forwarded when provided.
+
+generate({ model, prompt, system, options = {}, format, keep_alive })
+// POST /api/generate with stream:false. Same `format` / `options` / `keep_alive` contract as chat().
+
+listModels()   // GET /api/tags
+checkHealth()  // GET /
+unloadAllModels()
 ```
+
+**Structured JSON roles (2026-07-13g):** `scene-picker` and `character-state` emotional updates pass JSON Schema via `format` plus low `temperature` (0.1) so malformed JSON / silent generic fallbacks are less likely. Prompt-only JSON instructions are not the primary enforcement mechanism for those roles.
 
 ### src/services/a1111.js
 
@@ -725,6 +742,15 @@ runNarratorTurn({ db, scenario, messages, turnNumber })
 // Parses ---SCENE--- block. Never throws on parse failure — returns defaultSceneCard().
 ```
 
+
+**Scene card instruction (2026-07-13g):** `buildSceneCardInstruction(effectiveNsfw)` replaces the old always-on NSFW-heavy `SCENE_CARD_INSTRUCTION`. Machine fields stay minimal (`image_prompt`, `mood`, `arousal_level`, `nsfw_elements`, NSFW triad, `clothing_changes`). When master+scenario NSFW is off, explicit/nudity/body fields are instructed as `null` and `nsfw_elements` must be false. When NSFW is on, those fields may be filled only from what is clearly visible now.
+
+**Context sizing (2026-07-13i):** 
+arrator_max_tokens is OUTPUT-only (max_tokens / 
+um_predict). Input is truncated via 
+arrator-context.js to 
+arrator_context_tokens (default 8192) minus output minus margin — optionally overridden by llamacpp_config.narrator.n_ctx. The old log comparing ~5000 input tokens to max 1200 was a category error. llamacppChat uses a 5-minute AbortSignal and logs fetch cause/code/abort detail.
+
 ### src/services/memory.js
 
 ```js
@@ -751,9 +777,14 @@ buildPrompt({ sceneCard, characters, location, scenario, config, isImg2img=false
 // parts: { mode, prefix, scene_image_prompt, location_tags, atmosphere_tags,
 //           character_block, clothing_block, suffix, nsfw_tier, nsfw_tags,
 //           lora_tags, negative }
+
+composeEnhancedScenePrompt({ prefix, body, clothingBlock, suffix, loraTags })
+// → string — joins segments in order, skipping empty ones. Used by image-pipeline.js
+// to re-assemble the scene-image prompt after story-enhancer's advisory rewrite so the
+// resolved scenario clothing block always survives (see "Post-audit fixes 2026-07-13d").
 ```
 
-Clothing comes from `characters[].current_clothing` (flat string on the character row).
+Clothing comes from scenario read order via `getScenarioClothing` (runtime -> starting -> character default).
 Mood → atmosphere lookup table lives in prompt-builder.js (8 entries + aliases).
 Arousal gating: levels 1–3 always SFW; 4–5 add suggestive tags if nsfw_enabled;
 6–7 add explicit tags; 8–10 add explicit+hardcore. All gated behind `config.nsfw_enabled`.
@@ -783,20 +814,152 @@ Pipeline stages (each writes an audit event with the same `pipeline_run_id`):
 Background mode saves to `BACKGROUNDS_DIR/{locationSlug}/{timestamp}.png`. The calling
 route saves the generated file into `BACKGROUNDS_DIR/{background_folder}/`.
 
-### src/services/extractor.js — NOT YET IMPLEMENTED
+`buildA1111Payload(config, prompt, negative, referenceImageBase64=null)` and
+`callA1111(baseUrl, mode, payload, savePath)` (retry-on-VAE-failure wrapper) are exported
+from this module and reused by `routes/characters.js` for Character Editor reference-image
+and full-body generation, so those paths get the same VAE override and retry behavior as
+scene/character generation instead of a separately-maintained payload builder (see
+"Post-audit fixes 2026-07-13d").
 
-Planned: separate LLM call to extract structured scene card. Currently the narrator
-writes the `---SCENE---` block inline; `input-parser.parseNarratorResponse()` parses it.
+### src/services/prompt-preview.js - LIVE
 
-### src/services/enhancer.js — NOT YET IMPLEMENTED
+```js
+buildPromptPreview(db, { scenarioId, turnId, target, characterId })
+// target: 'scene' | 'character'
+// → { summary_plain, summary_tags, turn_id, target, character_id? }
+```
+Backs `POST /api/scenarios/:id/images/prompt-preview`, called from the Play view's Prompt
+Panel (`public/js/play/prompt-panel.js`) when a character chip is selected. For
+`target: 'character'`, the character row is passed through
+`applyResolvedClothing(rawChar, getScenarioClothing(scenarioId, rawChar.id))`
+(`src/services/prompt-resolution.js`) before extraction, so the preview text reflects the
+same scenario-scoped clothing the actual generation pipeline uses rather than the legacy
+`characters.current_clothing` card field (see "Post-audit fixes 2026-07-13d").
 
-Planned: Ollama-based SDXL prompt enhancement. Currently prompts are assembled
-deterministically by prompt-builder with no LLM rewriting.
+Regression-tested (CF-3, 2026-07-13e): `src/services/__tests__/prompt-preview.test.js`
+captures the actual text sent to the extractor's Ollama call and asserts it contains the
+scenario-resolved clothing, not the legacy card field; also asserts `prompt-preview.js`
+and `image-pipeline.js` produce identical output from `applyResolvedClothing`/
+`getScenarioClothing` for the same scenario+character (one clothing source, not two).
 
-### src/services/clothing.js — NOT YET IMPLEMENTED
 
-Planned: layered clothing state resolution. Currently `characters.current_clothing`
-(flat string) is used directly by prompt-builder.
+### src/services/visual-brief.js - LIVE (2026-07-13h)
+
+**Job change (not storage-only):** Extracts structured camera-visible state after every narrator turn (after clothing apply). Stored at `turns.scene_card_json.visual_brief` — exact column name `scene_card_json`.
+
+**Replaces scene summarization for image generation.** `image_prompt` / prose `summary_plain` as image fodder are **legacy fallback only**.
+
+Schema fields: `main_subject`, `moment_summary`, `setting_brief`, `shot_hint`, `character_briefs[]` (sparse; include only visible/involved/relevant characters; `character_id` attached when name resolves).
+
+Extractor input includes resolved current clothing via `resolveScenarioClothingMap`.
+
+Consumers:
+- `turns.js` — extract + persist post-clothing
+- `image-pipeline.js` — scene: prefer brief (`main_subject` = FaceID/focus priority); character: current-turn brief → prior brief → generic (description + clothing + location + simple pose). No live picker when brief present.
+- `prompt-preview.js` — scene/character panels read stored brief; no whole-scene LLM summary when brief exists
+
+**Play Character Image UI (`prompt-panel.js`):** Plain English Summary = selected `character_brief` (current → prior → generic pose). Image Prompt Tags = locked description + resolved clothing + brief + setting/shot. No whole-scene re-summarization when a stored brief exists.
+
+### src/services/scene-picker.js - LIVE (Phase 9 Stage 2a)
+
+Advisory visual-moment selector for scene images. `pickBestMoment()` calls Ollama `chat()` with:
+- stronger system contract (`PICKER_SYSTEM`)
+- `format: buildPickerJsonSchema(nsfwEnabled)` (JSON Schema structured output)
+- `options.temperature: 0.1`
+
+Returns a candidate object or `null` (never throws). `resolvePickerContextTurns()` prefers the clicked `[Img]` turn text over flooding recent turns.
+
+### src/services/tag-dialect.js - LIVE (2026-07-13g)
+
+Shared SD tag dialect helpers used by `prompt-extractor` and `regenerate-tags` (`buildSceneTagSystem`, `buildCharacterTagSystem`, `buildRegenTagSystem`, forbidden-gaze list, count bounds).
+
+### src/services/character-state.js - emotional updates (2026-07-13g)
+
+`processEmotionalUpdateAfterTurn` calls Ollama `generate()` with a separate `system` prompt, `format: EMOTION_JSON_SCHEMA` (`{ updates: [{ characterId, moodDelta, arousalDelta }] }`), and `temperature: 0.1`. Parser accepts the wrapped `{ updates: [...] }` shape (and still tolerates a bare array if the model returns one).
+
+### src/services/prompt-extractor.js - LIVE
+
+Ollama `generate()` image prompt / tag extraction (character preview, regenerate-tags, advisory fallbacks).
+Narrator still writes the ---SCENE--- block inline; `input-parser.parseNarratorResponse()` parses it.
+Legacy filename `extractor.js` was never created.
+
+**Tag dialect (2026-07-13g):** scene + character tag system prompts are built from `src/services/tag-dialect.js` (`buildSceneTagSystem`, `buildCharacterTagSystem`) so gaze bans (`looking at viewer` / `looking at camera` / `facing camera` / `posing`), tag-count bounds, duration bans, and environment rules stay identical across entry points. Prefer averted / off-screen gaze; do not allow viewer-gaze as a character exception.
+
+### src/services/story-enhancer.js - LIVE (Phase 9 Stage 2b)
+
+Advisory SDXL prompt rewrite after deterministic prompt-builder assembly.
+On success, image-pipeline re-wraps with master/profile prefix, suffix, LoRA tags, and master_negative.
+On failure / no model: falls back to the deterministic prompt.
+
+**System prompt contract (2026-07-13g):** `SDXL_STORY_SYSTEM_PROMPT` is a short rigid 3-line output contract (positive / blank / `Negative prompt:`) with one `BREAK`, <=100 words, <=3 weights - not a tutorial-style encoder essay. `NSFW_ADDENDUM` remains a short explicitness addendum when NSFW is active. Existing output validators still apply.
+
+**Clothing preservation (2026-07-13d):** `story-enhancer` only ever receives clothing as
+loose scene-description context (`pickedMoment.clothingState`, often absent) — it is
+advisory prose, not authoritative. The re-wrap step in `image-pipeline.js` always appends
+the scenario-resolved `parts.clothing_block` (captured from `buildPrompt()` before this
+stage runs) via `composeEnhancedScenePrompt()`, regardless of what the enhancer wrote.
+This guarantees `getScenarioClothing`'s read order (below) actually reaches the final
+A1111 prompt for scene-image generation, not just the pre-enhancer draft. The `build_prompt`
+audit event now also logs `enhancer_applied` plus pre/post prompt snippets so this is
+verifiable from the audit trail instead of only inspecting `parts`.
+Legacy filename nhancer.js was never created.
+
+
+### src/services/clothing.js - LIVE (scenario-scoped)
+
+**Character clothing-set JSON** (`characters.outfit_sets`):
+```json
+[
+  { "name": "Bathing suit", "description": "skimpy blue and white striped 2 piece bikini" },
+  { "name": "Towel", "description": "a white towel wrapped around their chest with nothing underneath" }
+]
+```
+Optional `underwear` boolean may be present. Managed on the Character editor (add / edit / delete / reorder / set default). Also stored: `default_outfit_name`, `default_outfit` (description of the default set).
+
+**Raw JSON save validation (CF-5, fixed 2026-07-13e):** the Character Editor's advanced
+raw-JSON textarea (`#char-outfit-sets-json`) is validated on save via
+`resolveOutfitSetsForSave(rawText, fallbackOutfitSets)` in
+`public/js/outfit-sets-validation.js` (pure, DOM-free — imported by
+`public/js/views/characters.js`'s submit handler). Empty/whitespace textarea uses the
+structured editor's in-memory `_outfitSets` state; non-empty text that fails to parse, or
+parses to something other than a JSON array, now **aborts the save with an error toast**
+(`showToast(result.error, 'error')`) instead of the pre-fix behavior of silently discarding
+the invalid input and falling back to `_outfitSets` while still showing "Character saved!".
+Regression-tested in `public/js/__tests__/outfit-sets-validation.test.js`.
+
+**Scenario starting outfit** (`scenario_characters`):
+- `starting_clothing_set_name` - name of the chosen set
+- `starting_clothing` - description copy at selection time
+Chosen in Scenario setup UI (dropdown of that character's saved sets). `POST /api/scenarios/:sid/characters/:cid` accepts `clothing_set_name`. `PATCH .../clothing` with `clothing_set_name` resets starting + runtime to that set.
+
+**Scenario runtime clothing** (`scenario_character_state.current_clothing`):
+Narrator `clothing_changes` and Play manual edits write here via `applyClothingChanges` / `setScenarioRuntimeClothing`. They do **not** mutate `characters.outfit_sets` or other character-card wardrobe fields.
+
+**Read order** (`getScenarioClothing` / narrator / scene + character image prompts):
+1. `scenario_character_state.current_clothing` (runtime)
+2. `scenario_characters.starting_clothing` (setup selection)
+3. Character default (`default_outfit` / matching set in `outfit_sets`)
+
+This read order is guaranteed to reach the final A1111 prompt as of 2026-07-13d — see
+"Clothing preservation" under `story-enhancer.js` above. Before that fix, scene-image
+generation (the default/auto path) could silently lose this resolved clothing when the
+advisory story-enhancer stage rewrote the prompt; character-focused generation was
+never affected (it bypasses story-enhancer entirely).
+
+Regression-tested (CF-1, 2026-07-13e): `src/services/__tests__/image-pipeline.integration.test.js`
+calls the real `generate()` end-to-end (mocked A1111/Ollama, real in-memory DB) and asserts
+the final prompt/`scene_images.prompt_used` still contains the authoritative clothing after
+Stage 2b, that character mode never calls the picker/enhancer at all, and that the
+`build_prompt` audit event's `enhancer_applied`/snippet fields are accurate. See "Testing" above.
+
+Exports: `parseClothingSets`, `findClothingSet`, `getScenarioClothing`, `setScenarioRuntimeClothing`, `setScenarioStartingOutfit`, `resolveScenarioClothingMap`, `applyClothingChanges`.
+
+`src/services/prompt-resolution.js` (new, 2026-07-13d) holds pure helpers shared between
+`image-pipeline.js` and `prompt-preview.js` that consume `getScenarioClothing`'s output:
+`applyResolvedClothing(character, clothing)` — returns a copy of `character` with
+`current_clothing`/`base_clothing` set to the resolved value — and
+`resolvePrimaryCharacterForReference(...)` (see FaceID section below).
+
 
 ### src/services/audit.js
 
@@ -815,13 +978,13 @@ All nested routers use `mergeParams: true` so `:scenarioId` is accessible inside
 
 | Route file | Mount point | Endpoints |
 | --- | --- | --- |
-| `health.js` | /api/health | GET /, /ollama, /a1111 |
+| `health.js` | /api/health | GET /, /ollama, /a1111, POST /test-log (broadcasts one `logline` event — manual/automated verification for the WS log panel) |
 | `config.js` | /api/config | GET /, POST /, POST /batch |
 | `profiles.js` | /api/profiles | GET /, POST /, PUT /:id, DELETE /:id, POST /:id/activate, DELETE /active |
 | `scenarios.js` | /api/scenarios | GET / (enriched: character_count, last_turn_at, characters[]), POST /, GET /:id, PUT /:id (dynamic SET), DELETE /:id, GET /:id/scene-card (debug), POST /:id/reset-scene (clear latest scene_card_json) |
 | `turns.js` | /api/scenarios/:id/turns | GET /, POST /, DELETE /:id |
 | `characters.js` | /api/characters | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, PATCH /:id/clothing, GET /:id/references, DELETE /:id/references/faceid, DELETE /:id/references/:refId, POST /:id/references/generate, POST /:id/references/upload, POST /:id/references/:ref/accept, PATCH /:id/faceid-config, GET /:id/fullbody, POST /:id/fullbody/generate, DELETE /:id/fullbody/:fbId, POST /:id/fullbody/:fbId/set-default, POST /:id/fullbody/:fbId/use-as-ref |
-| `scenario-characters.js` | /api/scenarios/:scenarioId/characters | GET / (roster list), POST /:charId (add), DELETE /:charId (remove) |
+| `scenario-characters.js` | /api/scenarios/:scenarioId/characters | GET / (roster + starting/runtime clothing), POST /:charId (add + `clothing_set_name`), PATCH /:charId/clothing, DELETE /:charId |
 | `locations.js` | /api/scenarios/:id/locations | GET /, POST /, GET /:id, PUT /:id, DELETE /:id, GET /:id/backgrounds, POST /:id/generate-background, POST /:id/backgrounds/:f/set-default, DELETE /:id/backgrounds/:f |
 | `memories.js` | /api/scenarios/:id/memories | GET /, POST /, DELETE /:id |
 | `world.js` | /api/scenarios/:id/world | GET /, POST /, PUT /:id, DELETE /:id |
@@ -833,7 +996,7 @@ All nested routers use `mergeParams: true` so `:scenarioId` is accessible inside
 
 Static routes: `/story-images` → `H:\MEDIA\Story_Lab\images`, `/story-backgrounds` → `H:\MEDIA\Story_Lab\backgrounds`
 
-Routes NOT yet implemented: `/api/styles`, character portrait generation.
+Routes NOT implemented: /api/styles (Styles UI quarantined — use Image Profiles). Character portrait/fullbody generation EXISTS via /api/characters/... but uses a simpler direct A1111 path (not the full scene pipeline).
 
 ### turns POST detail
 
@@ -859,18 +1022,210 @@ Images are NOT auto-generated on turn advance. Trigger via POST /api/scenarios/:
 
 ---
 
+## Testing
+
+**Run the suite:** `npm test` (runs `node --experimental-sqlite --experimental-test-module-mocks --test` with no path arguments — Node's built-in test runner recursively discovers every `*.test.js` file under the repo on its own; no glob patterns are passed, so this works identically in cmd.exe/PowerShell/bash). As of the clothing/FaceID audit wrap-up the suite is 98 tests across 14 files, all green, zero real external dependencies (no A1111, no Ollama, no writes to the real `story-lab.db`).
+
+**Stack:** `node:test` + `node:assert/strict` only — no Vitest, no Jest, no Supertest, no jsdom. This is a deliberate project rule (`CLAUDE.md`: "No new npm dependencies. Core stack: express, ws, cors only"), not an oversight. Route tests use Node's built-in `http.createServer` + global `fetch` instead of Supertest.
+
+**Two required experimental flags** (already baked into `npm test`, but needed if you invoke `node --test` directly):
+
+- `--experimental-sqlite` — required by `db.js` (`node:sqlite`'s `DatabaseSync`), same as `npm start`.
+- `--experimental-test-module-mocks` — required for `node:test`'s `mock.module()`, used to redirect `src/paths.js`'s `DB_PATH` to `':memory:'` in DB-touching tests (see below). Without this flag `mock.module` doesn't exist on the mock tracker and those test files throw `TypeError: mock.module is not a function` immediately.
+
+**Test file layout:**
+
+- `src/services/__tests__/*.test.js` — service-layer unit and integration tests.
+- `src/routes/__tests__/*.test.js` — Express route tests (real router, real HTTP, mocked A1111/Ollama).
+- `public/js/__tests__/*.test.js` — pure browser-view logic extracted into DOM-free modules (e.g. `outfit-sets-validation.js`) so it's testable the same way as backend code; these files are also imported directly by the browser view, unmodified.
+
+**The "redirect the real DB to `:memory:`" pattern** (used by any test that needs `characters`/`scenarios`/`turns`/etc. rows) — this is the one non-obvious piece of infrastructure in the suite, worth understanding before adding a new DB-touching test:
+
+```js
+import { test, mock } from 'node:test';
+// ... build a temp dir + DIRS object (images/backgrounds/audio/data) ...
+mock.module('../../paths.js', {   // path relative to THIS test file — resolves to the
+  namedExports: {                  // same canonical src/paths.js regardless of which
+    DB_PATH: ':memory:',           // module (db.js, image-pipeline.js, ...) imports it
+    IMAGES_DIR: dirs.images, /* ...all other paths.js exports... */
+  },
+});
+const { default: db } = await import('../../db.js');       // NOW import — see below
+const { generate } = await import('../image-pipeline.js');  // dynamically, after mocking
+```
+
+`db.js` does `new DatabaseSync(DB_PATH)` and runs its full real `CREATE TABLE` schema at
+module-import time. Pointing `DB_PATH` at `:memory:` before that first import gives every
+test file a completely real, always-in-sync (zero schema drift) but fully isolated
+database — nothing is hand-faked or duplicated.
+
+**Two ordering rules that matter — get either wrong and tests silently do the wrong thing without failing loudly:**
+
+1. **`mock.module()` must run, and the target module must be dynamically `import()`-ed, before any other code in the file imports it.** Static `import db from '../../db.js'` at the top of a test file executes during module linking, *before* any of the file's own top-level statements (including a `mock.module()` call) run — so a static import would load the real production DB regardless of a mock declared below it. Every DB-touching test file in this suite uses `await import(...)` (dynamic, after the mock) instead of a static `import` for `db.js` and anything that transitively imports it.
+2. **`mock.module()` only takes effect once per resolved module URL, at first import, for the life of the process/test file.** Node caches ES modules by URL; calling `mock.module()` again later in the *same file* does not retroactively change an already-loaded module's already-resolved bindings. Concretely: mock `paths.js`/`db.js`/`ollama.js` **once**, at the top of the file (module scope, not inside individual `test()` callbacks), and have every `test()` in that file share the one resulting DB/module instance, scoping each test's own assertions by the specific scenario/character IDs it just seeded (never assume "the only row"). An earlier draft of `scene-picker.test.js` got this wrong — it called `t.mock.module('../ollama.js', ...)` *inside* each `test()` body; the first test's import of `scene-picker.js` cached its `chat` binding permanently, so every later test's "fresh" mock was silently ignored and those tests were actually hitting the real (unreachable) Ollama endpoint at `127.0.0.1:11434` and passing only because a 404/connection failure happened to also produce the `null` return value the test expected. Fixed by mocking `globalThis.fetch` per-test instead (see next point) — the bug is called out in a comment in that file as a warning against reintroducing the pattern.
+
+**Mocking the actual network boundary (A1111 / Ollama):** both `src/services/a1111.js` and `src/services/ollama.js` call the **global** `fetch()` directly (not a wrapped/injectable client). This is what makes per-test mocking reliable: `t.mock.method(globalThis, 'fetch', async (url, init) => {...})` replaces a plain global property lookup, which every caller re-reads at call time — unlike `mock.module()`, this correctly resets between tests via `t`'s own auto-restore, so each `test(async (t) => {...})` in a file can install its own distinct fetch behavior. Route-level tests capture the local Express server's *own* real, pre-mock `fetch` reference (`const realFetch = globalThis.fetch` at file top, before any mocking) to call the server under test, since the mocked global `fetch` is reserved for intercepting the route's *internal* outbound A1111 call.
+
+**What is and isn't covered:**
+
+- CF-1 (story-enhancer clothing preservation), CF-2 (FaceID reference character selection), CF-3 (Prompt Preview clothing source), and CF-4 (shared A1111 payload/call helpers) each have dedicated regression tests — pure-function tests where sufficient, real `generate()`/route-level integration tests where the guarantee is about orchestration/wiring, not just an isolated helper. See "Post-audit fixes" sections below for exactly which files.
+- CF-5 (Character Editor's raw outfit-sets JSON silently discarding invalid input) is fixed and tested — see `public/js/outfit-sets-validation.js`.
+- CF-A1 through CF-A6 (the A1111-native FaceID/IP-Adapter rewrite: explicit module resolution, no fabricated model default, fail-open ControlNet retry, honest single-reference-only, per-mode weight/timing, TTL-bound preflight validation) are fixed and tested — see `src/services/ipadapter-resolution.js`, `src/services/__tests__/ipadapter-resolution.test.js`, `src/services/__tests__/a1111-payload.test.js`, `src/services/__tests__/a1111-call.test.js`, `src/services/__tests__/image-pipeline.integration.test.js`, and `public/js/__tests__/faceid-ui-honesty.test.js`. See the "FaceID / IP-Adapter" section under Image Generation Architecture for the full behavior.
+- CF-8 (dead Images-page gallery code) and CF-10 (opposite clothing-route `runtime` defaults) are **fixed + tested** in the wrap-up pass — see `images-quarantine.test.js` and `clothing-runtime.routes.test.js`. CF-6/CF-9 closed in the earlier docs alignment. CF-7 resolved in 2026-07-13f (UI removal). CF-11 fixed+tested in 2026-07-13f. **Remaining intentional tech debt: CF-12** (misc unused helpers / reset-scene clothing scope) — documented below under "Current Status / How to test" and in the audit status overlay.
+- No browser/E2E testing exists or is planned here; UI wiring beyond the extracted pure `outfit-sets-validation.js`/`faceid-ui-honesty.test.js`-guarded logic (e.g. Character Editor DOM behavior, Play UI rendering of `controlnetFallback`, Settings module/model dropdowns) is unverified by this suite and still requires manual testing per this project's one-function-workflow discipline. In particular: nobody has run a real generation against a live A1111 + ControlNet instance since the `ip-adapter-auto` → explicit-module change — see the completion notes in "Post-audit fixes (2026-07-13f)" below for what should be manually verified first. For the final done/optional split, see **Handoff / Current Status** at the end of this doc.
+
+---
+
 ## Image Generation Architecture
 
-### Core Rule: One Pipeline for All Image Types
 
-ALL image generation in story-lab-a1111 passes through the same pipeline regardless of image type. Character portraits, scene/story images, full-body images, and any future image type all use:
+**FaceID / IP-Adapter (corrected 2026-07-13, A1111-native rewrite 2026-07-13f):** Accepting a character reference stores the relative path on `characters.reference_image_path` (and syncs `reference_image`). `image-pipeline` loads `reference_image_path || reference_image` from under `IMAGES_DIR` when `ipadapter_enabled` is on. Missing files are logged and skipped (generate continues without FaceID).
 
-- the same `image-pipeline.js` entry point
-- the same `config-resolver.js` config resolution chain
-- the same `a1111.js` HTTP client
-- the same `prompt-builder.js` assembly logic
+**A1111 ControlNet unit shape (2026-07-13f — this is the real submitted payload, read this before touching any FaceID code):**
 
-The only difference between image types is the **mode** passed into the pipeline, which controls which prompt-building path is used (e.g. portrait vs. scene). The core infrastructure is shared.
+```js
+payload.alwayson_scripts.controlnet = {
+  args: [{
+    enabled:        true,
+    module,          // resolveIpAdapterModule() — see below. Never 'ip-adapter-auto'.
+    model:           config.ipadapter_model,   // verbatim; never a fabricated default
+    weight,          // ipAdapterTuningForMode() — differs by mode, see below
+    image:           referenceImageBase64,
+    guidance_start,  // ipAdapterTuningForMode()
+    guidance_end,    // ipAdapterTuningForMode()
+    control_mode:    0,   // "Balanced"
+    pixel_perfect:   true,
+  }],
+};
+```
+
+- **module** — `src/services/ipadapter-resolution.js`'s `resolveIpAdapterModule({ configModule, checkpointModel })`. Config override (`config.ipadapter_module`, Settings dropdown fed live from `/controlnet/module_list`) always wins; otherwise falls back to `ip-adapter_clip_sdxl` or `ip-adapter_clip_sd15` based on whether `config.a1111_model`'s filename implies SDXL (`/xl/i` heuristic). **Never `'ip-adapter-auto'`** — that WebUI-only preprocessor alias is not reliably usable through the raw `/sdapi/v1/txt2img` API endpoint (confirmed against the sd-webui-controlnet extension's own API reference and real working API payload examples, which use explicit CLIP-vision module names — see `docs/audits/` for the research trail). If you're tempted to reintroduce it because it "works in the WebUI," that's exactly the trap: the WebUI's own JS resolves "auto" client-side before submission; the raw HTTP API does not.
+- **model** — `config.ipadapter_model` verbatim, straight from Settings (`GET /controlnet-models`, live A1111 catalog). No fabricated default exists anywhere in this codebase anymore — an empty value means FaceID is treated as fully unconfigured (see preflight below), never submitted as a guessed model name.
+- **weight / guidance_start / guidance_end** — `ipAdapterTuningForMode(mode, { weight, guidanceEnd })`. `mode === 'character'` (portrait/full-body, face fills more of the frame) uses the configured weight/`guidance_end` as-is. Any other mode (scene — wider, often multi-subject shots) multiplies weight by 0.7 and caps `guidance_end` at 0.5, so the reference can't overpower the whole composition. This is deliberately simple (one multiplier, one cap) — not per-shot-type-tuned beyond the character/scene split.
+- **control_mode** — always `0` ("Balanced"). Not currently configurable.
+
+**Preflight validation (2026-07-13f):** `getControlNetCatalog(baseUrl, { now, forceRefresh })` in `image-pipeline.js` fetches both `/controlnet/model_list` and `/controlnet/module_list` (via `a1111.js`'s `getControlNetModels`/`getControlNetModules`) and TTL-caches the result for 5 minutes (`CONTROLNET_CACHE_TTL_MS`) — a bad/offline first result does **not** stick forever (this replaces the old permanent-cache bug). `validateIpAdapterAgainstCatalog({ model, module }, catalog)` in `ipadapter-resolution.js` confirms both the configured model AND the resolved module actually exist in that catalog. `generate()` sets `config._controlnet_ready` from this check before calling `buildA1111Payload` — the controlnet block is only ever added when `_controlnet_ready === true`. If `config.ipadapter_model` is empty, the catalog fetch is skipped entirely (cheap early-out — there's nothing to validate). If validation fails for any other reason, FaceID is skipped for that image and the reason is logged (`ipadapter_skipped`) — never sent as a best-guess unit.
+
+**Fail-open on payload rejection (2026-07-13f):** preflight validation catches most misconfiguration, but not everything (A1111 restarted mid-session, a stale cache within the 5-minute window, a ControlNet-extension-internal error). `callA1111()` in `image-pipeline.js` now classifies failures: if the payload included a controlnet unit AND the error message matches `/controlnet|ip.?adapter|preprocessor|script.*not found/i`, it retries **once** with only the `alwayson_scripts.controlnet` key stripped (preserving ADetailer/Hires/refiner — narrower than the pre-existing VAE-failure strip-everything retry) and returns `{ ..., controlnetFallback: true, controlnetFallbackReason }`. The image still generates, just without a face reference for that one call. This flag propagates to: `generate()`'s return value (`{ ok, imageId, filename, savePath, controlnetFallback }`), the `build_prompt`... `a1111_call` audit event (`controlnet_fallback`/`controlnet_fallback_reason`), and the `image_ready` WebSocket broadcast payload (`controlnetFallback`) — so the Play UI has what it needs to show "generated without FaceID" if it chooses to. Before this fix, any ControlNet-unit-level rejection killed the entire image generation (no distinction from a VAE/checkpoint failure).
+
+**Reference character selection (2026-07-13d, corrected 2026-07-13e):** which character's
+reference image is submitted is decided by `resolvePrimaryCharacterForReference({ mode,
+resolvedChar, characters, mainSubject })` in `src/services/prompt-resolution.js`:
+
+- `mode === 'character'` — always the character actually being generated (the same `char`
+  object the prompt builder used, via `resolvedChar`), never a scene-based guess. Unaffected
+  by `mainSubject` entirely — it's not even read on this branch.
+- otherwise (scene mode) — matches a cast member's name against `mainSubject`, a **real**
+  field: `scene-picker.js`'s `pickBestMoment()` always requests `mainSubject: 'primary
+  character(s) or subject'` from the picker LLM (`baseSchema`, not nsfw-gated) and returns
+  whatever the model produces. `image-pipeline.js` computes this in Stage 2a
+  (`pickedMoment`) for every non-character, non-background generation where the picker
+  actually runs, and passes `pickedMoment?.mainSubject` into the resolver at the FaceID
+  reference-resolution call site. Matching is case-insensitive substring search over cast
+  names, tried in cast (alphabetical) order — so if `mainSubject` names two cast members,
+  whichever sorts first by name wins, not whichever appears first in the text.
+- Falls back to the first non-player cast member (by name) when `pickedMoment` is null
+  (picker skipped via `skipAdvisory`, no recent narrator turns, no picker model configured,
+  or the Ollama call failed) or when `mainSubject` doesn't name any cast member.
+
+**Corrected 2026-07-13e:** the 2026-07-13d fix originally read `sceneCard.characters_present`
+instead of `mainSubject`. That field is never written by any code path — `narrator.js`'s
+`SCENE_CARD_INSTRUCTION` schema and `scene-picker.js`'s schema both omit it — so every real
+scene-mode generation silently took the fallback branch, reproducing the exact
+alphabetical-first-NPC bug this fix was meant to close. Verified against 108 real
+`scene_card_json` rows in the live DB: 0 contained `characters_present`. The resolver no
+longer reads that field at all (there is a regression test guarding this:
+`prompt-resolution.test.js` — "ignores a legacy/unused characters_present field").
+
+Before either fix, FaceID always used `characters.find(c => c.role !== 'player') ||
+characters[0]` — i.e. the alphabetically-first NPC — regardless of which character was
+being generated or was actually in the scene. This is still a **single-reference**
+system: only one IP-Adapter image slot exists, so multi-character scenes always submit
+one character's face.
+
+**Known limitation:** when the picker is skipped/unconfigured/fails, or when `mainSubject`
+doesn't name a cast member in a way the substring match catches (e.g. a nickname, a
+pronoun-only description, or multiple unnamed subjects), scene-mode generation still falls
+back to the same first non-player cast member (by name) for every image — i.e. per-scene,
+per-character FaceID accuracy for multi-NPC scenes depends entirely on the picker actually
+running and naming someone in `mainSubject`. This is a real, disclosed limitation, not a
+hidden one — do not describe this as "always picks the correct scene subject."
+
+Regression-tested (CF-2, 2026-07-13e): `src/services/__tests__/image-pipeline.integration.test.js`
+seeds a 2-NPC scenario where the alphabetically-first NPC is deliberately NOT the intended
+subject, and asserts (via the base64 image bytes actually submitted in the ControlNet
+payload) that character mode always matches the target character, that scene mode matches
+the `mainSubject`-named character over the alphabetical one, that a legacy
+`sceneCard.characters_present` value is ignored even when present, and that the documented
+fallback (first non-player cast member) fires when no picker signal exists.
+
+**Single-reference only, decided honestly (2026-07-13f):** `characters.faceid_ref_count` /
+`faceid_ref_order` were saved by a "FaceID Slot Config" UI in the Character Editor
+(slot-count dropdown + drag-to-reorder list) but were **never read anywhere** in
+`image-pipeline.js` — only a single reference image (`reference_image_path`) was ever
+submitted. That UI has been **removed**, not implemented, after tracing its actual origin:
+its copy literally read *"How many reference images ComfyUI uses (matches
+IPAAdapterFaceIDBatch inputcount)"* and *"will be sent to ComfyUI"* — unmodified
+ComfyUI-era text referencing a ComfyUI custom node, left over from before this project
+became A1111-only (see "Files NOT Carried Over from story-lab" — ComfyUI was dropped
+entirely). Implementing real multi-reference support would require first resolving which
+field is authoritative (`reference_image_path` vs. `faceid_ref_order`) and how per-unit
+weight should be distributed across multiple simultaneous ControlNet units — a real
+design decision, not a mechanical fix, so it was deliberately not attempted in this pass.
+`characters.faceid_ref_count`/`faceid_ref_order` columns and the `PATCH
+/:id/faceid-config` route remain in the schema/backend (harmless, unread) so no stray
+caller 404s; do not build new features on them without implementing real multi-reference
+ControlNet support end-to-end first. Regression-tested:
+`public/js/__tests__/faceid-ui-honesty.test.js` fails loudly if the UI, the ComfyUI
+copy, or the "InstantID" naming (a different, never-implemented face-consistency
+technique that had also leaked into the UI copy) are reintroduced.
+
+### Core Rule: One Pipeline for All Image Types — narrowed 2026-07-13f, read this carefully
+
+**What is actually shared** (this part of the claim is true and regression-tested):
+`image-pipeline.js`'s `buildA1111Payload()` and `callA1111()` are the single implementation
+of "construct an A1111 request and call it, with retry-on-failure" — used by `generate()`
+for scene/character-mode images AND by `routes/characters.js`'s reference/full-body
+generation. There is exactly one place that knows how to build an A1111 payload
+(`sd_vae` override, Hires.fix, ADetailer, refiner, ControlNet/IP-Adapter gating) and
+exactly one place that knows how to call A1111 with VAE- and ControlNet-failure retry
+logic. `config-resolver.js`'s config resolution chain is also shared by both callers.
+
+**What is NOT shared** (the old wording implied more than this — corrected 2026-07-13f):
+prompt construction, FaceID reference-character resolution, and persistence are **not**
+unified. `routes/characters.js`'s reference/full-body routes build their prompt via a
+separate `_assembleCharacterPrompt(char)` function (never `buildCharacterPrompt`/
+`buildPrompt` from `prompt-builder.js`), never call `resolvePrimaryCharacterForReference`
+(deliberately — always pass `referenceImageBase64 = null`, since a character can't
+IP-Adapter-reference itself), and persist to `character_references`/`character_fullbodies`
+(never `scene_images`). There is no `mode: 'fullbody'` or `mode: 'portrait'` value ever
+passed into `generate()` — "full-body generation" is not a mode of the main pipeline at
+all, it is a fully parallel code path that, as of 2026-07-13d/f, happens to share the
+outbound-A1111-call layer with `generate()`. When `buildA1111Payload` is called from
+these routes, `mode` defaults to `'scene'` (its 5th parameter) — harmless here since
+`referenceImageBase64` is always `null` for these calls, so the mode-based IP-Adapter
+weight/timing split (see FaceID section above) never actually applies to them.
+
+**Character Editor reference/full-body generation (2026-07-13d, extended 2026-07-13f):**
+`routes/characters.js`'s `POST /:id/references/generate` and `POST /:id/fullbody/generate`
+previously built their own separate A1111 payload and called `a1111.txt2img()` directly,
+missing the `sd_vae` override and VAE-failure retry logic that `image-pipeline.js` has.
+They now import and call the same `buildA1111Payload()` / `callA1111()` exported from
+`image-pipeline.js` (with `referenceImageBase64 = null`), closing that gap. This is the
+one place outside `generate()` itself that touches A1111 payload construction, and it is
+now backed by the same code, not a duplicate — see "What is NOT shared" above for the
+parts of the pipeline this does *not* extend to.
+
+Regression-tested (CF-4, 2026-07-13e/f): `src/services/__tests__/a1111-payload.test.js`
+(pure `buildA1111Payload` behavior — sd_vae/Hires.fix/ADetailer/refiner/controlnet
+gating, module resolution, per-mode tuning, `getControlNetCatalog` TTL caching),
+`src/services/__tests__/a1111-call.test.js` (`callA1111`'s retry-on-VAE-failure path AND
+retry-on-ControlNet-failure path, mocked fetch), and
+`src/routes/__tests__/characters.routes.test.js` (both routes driven over real HTTP,
+asserting the outbound A1111 payload actually carries the shared builder's `sd_vae`
+override, that no self-referencing FaceID image is ever submitted, that a transient
+ControlNet failure retries and succeeds, and that no local `_buildPayload` duplicate
+exists in the route file's source).
 
 ### Config Resolution Chain
 
@@ -954,7 +1309,7 @@ The prose and the `---SCENE---` block are separated by the delimiter. The narrat
 | `mood` | string | Scene mood word — mapped to atmosphere tags by prompt-builder.js |
 | `arousal_level` | 1–10 | Explicit content intensity. Gated by master NSFW settings. |
 | `nsfw_elements` | boolean | True if the scene contains NSFW elements |
-| `clothing_changes` | array | `[{ character, change_description }]` applied to character_states |
+| `clothing_changes` | array | `[{ character_name, new_clothing }]` applied to `scenario_character_state.current_clothing` via `applyClothingChanges` (also accepts `character_id`) |
 
 ### arousal_level tiers
 
@@ -977,6 +1332,20 @@ If the narrator response has no `---SCENE---` block, or the JSON fails to parse:
 - Generation continues — no hard failure
 
 ---
+
+
+## NSFW and Explicit Gating (actual as of 2026-07-13)
+
+**Precedence:** Master `global_config.nsfw_enabled` is the hard ceiling. Scenario `nsfw_enabled=0` (Safe Mode in wizard) further restricts even when master is on. Effective NSFW = master ON **and** scenario ON. Effective explicit = effective NSFW **and** master `explicit_mode`.
+
+| Layer | Behavior |
+|---|---|
+| Narrator system prompt | Explicit / adult / SFW copy branched; cast arousal ACTION block only when effective NSFW |
+| Scene picker | Receives `config.nsfw_enabled === true` (not hardcoded) |
+| Prompt-builder arousal tags | L1-3 empty; L4-7 need NSFW; L8-10 need NSFW+explicit; missing arousal defaults to **1** (not 8) |
+| Settings UI | Scenario Safe Mode is in the wizard. Global `nsfw_enabled` / `explicit_mode` are in `global_config` (seeded true) and persist across restart, but there is **no** dedicated Image Generation toggle for them — change via `POST /api/config` or DB until a Settings control is added |
+
+Boot no longer force-updates these keys to true.
 
 ## Prompt Assembly
 
@@ -1017,7 +1386,9 @@ Unrecognized mood strings fall through to `neutral`. The table lives as a plain 
 {master_negative}, {profile.negative_additions}, {scene.negative_prompt_additions}
 ```
 
-### Parts breakdown (stored in scene_images.prompt_parts_json)
+### Parts breakdown (audit / in-memory only — not a `scene_images` column)
+
+`parts` is attached to the in-memory `audit()` call and related audit-log events. It is **not** persisted as `scene_images.prompt_parts_json` (that column does not exist). `mode` is `"txt2img"` or `"img2img"` depending on whether a location background was resolved for the shot.
 
 ```json
 {
@@ -1040,6 +1411,9 @@ Unrecognized mood strings fall through to `neutral`. The table lives as a plain 
 ## Location Background Images
 
 Locations can store 1–5 pre-generated background images. When a background is available, the image pipeline switches from txt2img to img2img, passing the background as the init image. This improves environment consistency without needing to describe the location in full detail each time.
+
+
+**Pipeline resolve (corrected 2026-07-13):** `_resolveBackground` reads `location_backgrounds` for the location (prefer `is_default`). If the table is empty but `locations.default_background` is set and the file exists on disk, that file is used and back-filled into the table. Missing files are skipped (`existsSync`). Scenario routes `generate-background` / set-default / delete maintain both the filesystem and `location_backgrounds`.
 
 ### Storage path
 
@@ -1144,7 +1518,7 @@ LoRAs are injected into the prompt string: `<lora:SDXL-TouchofRealismV2-0506:0.6
 
 Connect: `ws://localhost:4090`
 
-On connect: `{ type: "queue_state", data: { active: null, queued: 0 } }`
+On connect: log only — no `queue_state` payload (corrected 2026-07-13).
 
 Server → client events:
 
@@ -1153,10 +1527,24 @@ Server → client events:
 | `image_status` | `{ message, scenarioId }` — progress update |
 | `image_ready` | `{ filename, turnId, scenarioId, imageId }` |
 | `image_error` | `{ error, scenarioId }` |
-| `command_response` | `{ message, success }` |
-| `memory_saved` | `{ scenarioId, text }` |
+| `turn_complete` | `{ scenarioId, turn, clothing_updates }` |
+| `clothingupdate` | `{ scenarioId, characters }` |
+| `moodupdate` | `{ scenarioId, characters }` |
+| `logline` | logger payloads (`{ cat, msg, ts }`) |
 
 No client → server WS messages.
+
+**Fixed 2026-07-13:** `play.js`'s `case 'logline':` was pushing the raw broadcast envelope
+(`{ type, payload, ts }`) straight to `_debugConsole.push()` instead of unwrapping
+`data.payload` first — every other case in that switch does `data.payload || data`, but
+this one didn't. Result: `debug-console.js`'s `_makeLine()` read `entry.cat`/`entry.msg`
+off the envelope instead of the payload, both `undefined`, so the log window (Ctrl+`)
+rendered blank lines instead of the actual log text. Fixed by unwrapping the same way as
+every other case. Regression tests: `src/__tests__/logline-ws.test.js` (server→client
+shape contract), `public/js/__tests__/logline-panel-wiring.test.js` (source-pattern check
+on the unwrap). Manual verification path: `POST /api/health/test-log` broadcasts one
+`logline` event on demand — open the log window and hit that endpoint to confirm it
+renders live without a reload.
 
 ---
 
@@ -1257,7 +1645,7 @@ API.uploadReference(charId, file)         // multipart POST via upload() helper
 API.acceptReference(charId, ref)          // ref = numeric character_references.id or filename
 API.deleteReference(charId, refId)
 API.clearFaceId(charId)                   // DELETE /references/faceid (route ordered before /:refId)
-API.saveFaceIdConfig(charId, data)        // PATCH /faceid-config — saves slot count + order
+API.saveFaceIdConfig(charId, data)        // DEPRECATED/orphaned: PATCH /faceid-config still writes faceid_ref_* columns, but no UI calls this and generation never reads those fields (single-reference only; see FaceID section)
 API.getFullbodies(charId)
 API.generateFullbody(charId, body)
 API.deleteFullbody(charId, fbId)
@@ -1344,6 +1732,14 @@ API.getAuditRun(runId)
 
 ---
 
+
+## Image Summary Learning (actual as of 2026-07-13)
+
+On successful scene image persist, `image-pipeline` freezes:
+- `summary_plain_snapshot`, `summary_tags_snapshot`, `style_context_snapshot`
+
+`PATCH .../images/:id/ratings` selects those columns (plus `turn_id`). If snapshots are empty (older images), it falls back to the turn's `scene_card_json`. `promoteExemplarsFromRating` respects boolean `summary_learning_enabled`. Exemplars feed later tag regeneration when learning is enabled.
+
 ## Known Stubs and Unimplemented Features
 
 **Rule:** Stubs are last resort. Any code that exists but does not perform its stated job
@@ -1356,7 +1752,13 @@ Never report a stub or an absent file as implemented.
 | Service | Why absent | What handles it instead |
 | --- | --- | --- |
 | `src/services/extractor.js` | Eliminated from design | Narrator writes `---SCENE---` block inline; `input-parser.parseNarratorResponse()` parses it |
-| `src/services/clothing.js` | Not yet built | `characters.current_clothing` flat string used directly by `prompt-builder.js` |
+| `src/services/clothing.js` | LIVE (scenario-scoped) | See clothing.js section; prompts use `getScenarioClothing` | FIXED note was: `prompt-builder.js` |
+
+### Code stubs present (marked `// STUB` in source — not functional)
+
+| Stub | Location | Notes |
+| --- | --- | --- |
+| `resolveClothing()` | `src/services/clothing.js` | Marked `// STUB: layered resolve unused...`. Unused; scenario runtime uses `applyClothingChanges` + `getScenarioClothing`. Do not delete in docs-only passes. |
 
 ### Routes — absent from disk (no file)
 
@@ -1373,10 +1775,12 @@ Never report a stub or an absent file as implemented.
 
 ### Frontend features — confirmed stubs (present in UI, not functional)
 
+**Quarantined 2026-07-13:** #styles and #images show honest unavailable UI (no crash). Use Settings Image Profiles; scene images in Play. Face refs and fullbody management on the Characters page are **live** (not a stub) — generate/grid/accept/use-as-ref paths work via `/api/characters/...`.
+
+
 | Feature | Location | Stub behavior |
 | --- | --- | --- |
 | Styles / style creator | settings.js, play.js | Toast: "not available in this version" |
-| Full-body image management | characters.js `loadFullbodies` | Renders "not available in this version" empty state |
 | enhancePromptLab | settings.js | Pass-through only — copies raw prompt to enhanced textarea, no LLM call |
 | Prompt Lab → Send to A1111 | settings.js `pl-send-btn` | Toast: "not available from Prompt Lab in this version" |
 | Global rules | settings.js `loadGlobalRules` | Guidance message: "Rules are managed per-scenario" |
@@ -1885,3 +2289,308 @@ A1111 txt2img / img2img (unchanged)
 | `src/routes/pose-library.js` | Dropped for MVP |
 | `src/routes/prompt-lab.js` | Dropped for MVP |
 | All ComfyUI workflow JSON references | Not applicable to A1111 |
+
+### Top-8 audit fixes (2026-07-13) - COMPLETE
+
+Runtime behavior changes (see `docs/superpowers/plans/2026-07-13-top8-audit-fixes.md`):
+1. `prompt-builder.getArousalTags` - levels 1-3 empty; missing arousal defaults to 1; gates on `nsfw_enabled` / `explicit_mode`.
+2. Removed `db.js` boot force-true for nsfw/explicit/learning. `summary_learning_enabled` is in `BOOLEAN_KEYS`.
+3. FaceID/IP-Adapter reads `reference_image_path` (accept syncs both path columns).
+4. Scenario location BG generate/set-default/delete maintain `location_backgrounds`; resolver falls back to `default_background` + existsSync.
+5. Scene image insert writes learning snapshot columns; ratings SELECT includes them (+ turn card fallback).
+6. After story-enhancer success, pipeline re-wraps with master/profile prefix, suffix, LoRAs, master negative.
+7. Narrator content policy + cast arousal block gated by master NSFW ceiling and scenario `nsfw_enabled`; picker uses `config.nsfw_enabled`.
+8. Styles and Images gallery UIs show unavailable stubs; Settings Image Profiles remain the supported path.
+
+### Desired-functionality gap closure (2026-07-13b)
+
+Aligned to `desired_functionality.md`:
+
+1. **Turn-offs in narration:** `moodtriggersneg` (and positive mood triggers when mood is low) are injected into cast behavior directives alongside `arousaltriggers`. Character UI labels clarify these feed the narrator.
+2. **Scenario clothing model (sets + scoped runtime):** Character editor manages named `outfit_sets`. Scenario setup picks a starting set per cast member. Runtime clothing lives on `scenario_character_state`; Play edits / narrator changes are scenario-scoped only.
+3. **Location background info:** Locations UI exposes Visual description + Background info (`full_desc`). Narrator location block includes visual, background info, and image tags.
+4. **Honest Play UI:** Filter Rules disabled with “not used” label (reply length/NSFW/tone live in Scenario settings). Character / Narrator / Continue empty submissions use clearer respond-as / narrate / continue instructions.
+5. **Character image edits drive generate:** Prompt panel sends `directPrompt` + `rawPrompt` from edited tags/plain; character mode prefers that for action context (and rejects missing cast character arrays).
+
+Still intentional gaps vs desire doc: Filter Rules not implemented; Enhance guidance still toasted unavailable; video still stubbed.
+
+### Scenario-scoped clothing model (2026-07-13c) - COMPLETE
+
+Implements `clothing_functionality.md`:
+
+| Layer | Storage | UI |
+| --- | --- | --- |
+| Character clothing sets | `characters.outfit_sets` JSON array `{name, description}` + `default_outfit_name` / `default_outfit` | Characters page: Clothing Sets manager (add/edit/delete/reorder/default); raw JSON advanced |
+| Scenario starting outfit | `scenario_characters.starting_clothing_set_name`, `starting_clothing` | Scenario setup cast: Starting clothing set dropdown + Set; persists when editing scenario |
+| Scenario runtime | `scenario_character_state.current_clothing` | Play cast sidebar: live clothing, inline edit, reset to starting; WS `clothingupdate` |
+| Narrator / images | `getScenarioClothing` read order | Narrator `Currently wearing`; scene + character image pipelines use `resolveScenarioClothingMap` |
+
+Isolation: changing clothing in scenario A never writes character `outfit_sets` and does not affect scenario B runtime state.
+
+### Post-audit fixes (2026-07-13d) - COMPLETE (top 4 of 16)
+
+Source: `docs/audits/clothing-faceid-image-pipeline-audit-2026-07-13.md` (full findings CF-1
+through CF-12). **Historical note (2026-07-13d):** this pass fixed the 4 highest-severity findings only; CF-5 through CF-12 were still open at that moment. Living status: see **Handoff / Current Status** (CF-1—CF-11 closed; CF-12 intentional debt).
+
+New file: `src/services/prompt-resolution.js` — pure helpers (`applyResolvedClothing`,
+`resolvePrimaryCharacterForReference`) with no DB/network access, shared between
+`image-pipeline.js` and `prompt-preview.js`. Tested in
+`src/services/__tests__/prompt-resolution.test.js` (9 tests, node:test, no deps).
+
+New export: `prompt-builder.js` → `composeEnhancedScenePrompt()`. Tested in
+`src/services/__tests__/prompt-builder.compose.test.js` (4 tests, node:test, no deps).
+
+1. **CF-1 (Critical) — story-enhancer no longer discards resolved scenario clothing.**
+   `image-pipeline.js`'s Stage 2b re-wrap now goes through `composeEnhancedScenePrompt()`,
+   which always re-injects `parts.clothing_block` (captured before the enhancer runs).
+   Previously the enhancer's LLM output unconditionally replaced `prompt`, and since its
+   own fallback text has no clothing field, this fired on effectively every default
+   scene-image generation. Character-focused generation was already unaffected (bypasses
+   Stage 2b). Audit event `build_prompt` now logs `enhancer_applied` and pre/post prompt
+   snippets.
+2. **CF-2 (High) — FaceID reference now matches the character being generated.**
+   `image-pipeline.js`'s IP-Adapter reference resolution now calls
+   `resolvePrimaryCharacterForReference()` instead of always picking
+   `characters.find(c => c.role !== 'player') || characters[0]` (alphabetically-first NPC).
+   Character mode was fixed correctly in this pass. **Scene mode's fix in this pass was
+   broken** — it read `sceneCard.characters_present`, a field nothing ever writes, so scene
+   mode still always fell through to the alphabetical-first-NPC fallback. This was caught by
+   a follow-up verification audit (2026-07-13, re-audit) and corrected in
+   **2026-07-13e** — see that section below and "Reference character selection" under Image
+   Generation Architecture above for the real (`mainSubject`-based) resolution order and its
+   documented limitation.
+3. **CF-3 (High) — Prompt Preview now shows scenario-resolved clothing.**
+   `prompt-preview.js`'s `target: 'character'` branch now resolves
+   `getScenarioClothing(scenarioId, characterId)` through `applyResolvedClothing()` before
+   calling the extractors, instead of reading the legacy `characters.current_clothing`
+   card field. Matches what `image-pipeline.js` already did correctly for actual generation.
+4. **CF-4 (High) — Character Editor reference/full-body generation no longer drifts from
+   the main pipeline.** `routes/characters.js` removed its own `_buildPayload()` +
+   `a1111.txt2img()` call and now imports `buildA1111Payload()` / `callA1111()` from
+   `image-pipeline.js` (exported for this purpose). Gets the same `sd_vae` override and
+   VAE-failure retry as scene/character generation.
+
+Not changed in this pass (still true after these fixes, unlike before): character mode's
+`char.current_clothing` assignment in `image-pipeline.js` now goes through
+`applyResolvedClothing()` too (returns a copy instead of mutating the row in place) —
+behavior-equivalent, no functional change, just reuses the same helper as CF-3.
+
+Verification performed: new pure-function tests (RED confirmed before implementation, all
+GREEN after); read-only script against the live `story-lab.db` confirming (a) a real
+multi-NPC scenario's `clothing_block` survives a simulated enhancer overwrite, (b) scene-mode
+reference resolution picks a hand-constructed `characters_present`-named subject instead of
+the alphabetically-first NPC on real cast data, (c) character-mode resolution is unaffected
+by scene-card content, (d) `buildA1111Payload()` produces the VAE-override payload Character
+Editor generation now uses. Full live A1111/Ollama generation was not exercised (would
+create real files and DB rows) — logic was verified deterministically instead.
+
+**Caveat found in re-audit (see 2026-07-13e below):** check (b) above used a
+hand-constructed `sceneCard.characters_present` value, not output any real code path
+produces — the "real cast data" in that check referred to the character rows, not the
+scene-subject signal. This distinction was not disclosed at the time and made the fix look
+more verified than it was; scene mode was not actually exercised end-to-end with real
+`pickedMoment` data before being marked FIXED.
+
+### Post-audit fixes (2026-07-13e) - COMPLETE
+
+Follow-up correction to CF-2 from 2026-07-13d, found by an independent re-audit (see "CF-2"
+above and `docs/audits/clothing-faceid-image-pipeline-audit-2026-07-13.md`).
+
+**Root cause:** `resolvePrimaryCharacterForReference()`'s scene-mode branch read
+`sceneCard.characters_present`. Nothing writes that field — confirmed by reading
+`narrator.js`'s `SCENE_CARD_INSTRUCTION` and `scene-picker.js`'s response schema (neither
+includes it) and by querying the live DB (0 of 108 recent `scene_card_json` rows contain
+it). Every real scene-mode generation therefore took the `presentNames.length === 0`
+fallback branch — `npcs[0]`, the alphabetically-first NPC — identical output to the
+pre-2026-07-13d bug.
+
+**Fix:** `resolvePrimaryCharacterForReference({ mode, resolvedChar, characters,
+mainSubject })` — `sceneCard` parameter removed entirely; replaced with `mainSubject`, a
+string sourced from `pickedMoment?.mainSubject` in `image-pipeline.js`. `pickedMoment`
+comes from `pickBestMoment()` (`scene-picker.js`), which actually requests `mainSubject:
+'primary character(s) or subject'` from the picker LLM in its `baseSchema` (unconditional,
+not nsfw-gated) and is already computed in Stage 2a for every scene-mode generation where
+the picker runs — no new schema field, no new DB write, no new LLM call. Matching is
+case-insensitive substring search of cast names against the `mainSubject` text, tried in
+cast (name) order. Falls back to the first non-player cast member when `mainSubject` is
+absent or names nobody in the cast — same fallback value as before, but now honestly
+documented as the limitation it is rather than an unreachable "rare" branch.
+
+Files changed:
+
+- `src/services/prompt-resolution.js` — `resolvePrimaryCharacterForReference()` scene-mode
+  logic rewritten; `sceneCard`/`characters_present` reading removed.
+- `src/services/image-pipeline.js` — FaceID reference call site now passes
+  `mainSubject: pickedMoment?.mainSubject` instead of `sceneCard`.
+- `src/services/__tests__/prompt-resolution.test.js` — rewritten scene-mode test cases
+  around `mainSubject`; added a regression test asserting `characters_present` is ignored
+  even when present on `sceneCard`.
+
+Character-mode logic is untouched — same `resolvedChar` early-return, verified by a test
+asserting it ignores `mainSubject` entirely.
+
+Verification performed: TDD (RED confirmed — 3 of 12 existing/updated tests failed against
+the pre-fix implementation for the exact behavior being changed — then GREEN, 16/16).
+Read-only script against the live `story-lab.db` on a real 4-NPC scenario (cast order Jib,
+Lorey, Riley, Sarah) confirming: scene mode with a `mainSubject` naming "Riley" picks Riley,
+not alphabetical-first Jib; scene mode with no `mainSubject` falls back to Jib (documented
+limitation, not silently "fixed"); character mode with `resolvedChar` = Riley picks Riley
+regardless of what `mainSubject` says; scene mode with a legacy `characters_present: Sarah`
+value but no `mainSubject` correctly ignores it and falls back to Jib. Confirmed no
+circular import by loading `image-pipeline.js` and `routes/characters.js` together.
+
+**Remaining known limitation (disclosed, not fixed):** scene-mode FaceID accuracy for
+multi-NPC scenes depends on the picker running and `mainSubject` naming a cast member by
+name. When the picker is skipped (`skipAdvisory`), unconfigured, fails, or names someone
+ambiguously, scene mode still submits the same first non-player cast member's face for
+every image in that scenario. This is a single-reference system; true per-character,
+per-scene FaceID for multi-companion scenes is not implemented.
+
+### Lean regression suite (2026-07-13e) - COMPLETE
+
+Built the first automated regression suite for this project (previously 14 pure-function
+tests across 2 files, one of which — `scene-picker.test.js` — was silently broken at
+import time). Now 61 tests across 9 files, all green, `npm test`. See "Testing" near the
+top of this doc for the full runbook (mocking pattern, ordering rules, what is/isn't
+covered) — this section is the dated changelog entry; that one is the living reference.
+
+**New/changed test files:**
+
+- `src/services/__tests__/image-pipeline.integration.test.js` (new, 7 tests) — CF-1 and
+  CF-2 via real `generate()` calls (mocked A1111/Ollama, in-memory DB).
+- `src/services/__tests__/prompt-preview.test.js` (new, 3 tests) — CF-3.
+- `src/services/__tests__/a1111-payload.test.js` (new, 8 tests) — `buildA1111Payload`,
+  pure.
+- `src/services/__tests__/a1111-call.test.js` (new, 4 tests) — `callA1111` retry behavior,
+  mocked fetch.
+- `src/routes/__tests__/characters.routes.test.js` (new, 5 tests) — CF-4 at the route/HTTP
+  level, plus a static "no duplicate payload builder" source check.
+- `public/js/__tests__/outfit-sets-validation.test.js` (new, 6 tests) — CF-5.
+- `src/services/__tests__/scene-picker.test.js` (rewritten, 7 tests) — see "Stale test
+  fixed" below.
+- `src/services/__tests__/prompt-resolution.test.js`, `prompt-builder.compose.test.js`,
+  `story-enhancer.test.js` — unchanged, still passing (21 tests).
+
+**New non-test files:**
+
+- `public/js/outfit-sets-validation.js` — CF-5 fix (see `clothing.js` section above).
+
+**Stale test fixed:** `scene-picker.test.js` imported `buildMotionPrompt` from
+`scene-picker.js`, which has not existed in that module since an earlier rewrite (it only
+ever exports `pickBestMoment`). This was a hard `SyntaxError` at import time — the whole
+file failed before a single assertion ran, on every `node --test` invocation, for however
+long ago that rewrite landed. Removed the dead tests; replaced with real coverage of
+`pickBestMoment` (null-return guards, successful parse, malformed/missing-field response,
+network failure), all against the actual current export.
+
+**Infrastructure discovered and documented, not just used once:** the "redirect
+`paths.js`'s `DB_PATH` to `:memory:` before dynamically importing `db.js`" pattern, and
+the two ordering footguns around it (static-vs-dynamic import timing, and `mock.module()`
+not being safely re-callable per-test once a module is cached) — see "Testing" above.
+These aren't one-off notes; any future test that needs real DB rows should follow the same
+pattern rather than re-deriving it.
+
+**Verification performed:** `npm test` — 61/61 passing, clean output (no unmocked-network
+errors, no unexpected console noise). Confirmed zero writes to the real `story-lab.db`
+(every DB-touching test redirects `DB_PATH` to `:memory:` before first import). Confirmed
+no real A1111/Ollama network calls are possible from within the suite — the fetch mock
+throws loudly on any unrecognized URL rather than silently passing through, so an
+un-mocked call is a visible test failure, not a real request.
+
+**Explicitly not covered by this pass** (historical note for the 2026-07-13e lean suite — 61/61 across 9 files; see "Testing" above for the living 92/12 count, and
+`docs/audits/clothing-faceid-image-pipeline-audit-2026-07-13.md` for the full list):
+at the time of this 13e pass, CF-6 through CF-12 were still open (master-doc schema contradiction, stale CLAUDE.md stub list, unused
+`faceid_ref_count`/`faceid_ref_order`, dead Images-page reference UI, two clothing routes
+with opposite `runtime`-omitted defaults, ControlNet-availability cache never invalidating,
+misc dead code). **Later (2026-07-13f):** CF-7 was resolved by removing the FaceID slot-config UI (fields remain unread), and CF-11 was fixed+tested via TTL-bound `getControlNetCatalog`. CF-6/CF-9 closed in docs alignment; CF-8/CF-10 closed in the wrap-up pass (quarantine stub + explicit `runtime` boolean). Remaining intentional tech debt: CF-12. No browser/E2E coverage exists or is planned.
+
+### Post-audit fixes (2026-07-13f) - COMPLETE
+
+A1111-native FaceID / IP-Adapter rewrite (CF-A1 through CF-A6), plus cleanup of two related CF items:
+
+- Explicit ControlNet module resolution (never `ip-adapter-auto`); no fabricated IP-Adapter model default; fail-open ControlNet retry; honest single-reference-only; per-mode weight/timing; TTL-bound ControlNet catalog preflight (`getControlNetCatalog`).
+- **CF-7:** misleading FaceID Slot Config UI removed (fields/`PATCH .../faceid-config` remain but are unread by generation).
+- **CF-11:** ControlNet catalog cache is TTL-bound (5 minutes) + `forceRefresh`; regression tests in `src/services/__tests__/a1111-payload.test.js`.
+
+Living behavior details: "FaceID / IP-Adapter" and "Core Rule: One Pipeline for All Image Types" under Image Generation Architecture. Test inventory: `## Testing` (92/12 as of this pass). Manual still required: a real generation against live A1111 + ControlNet since the module change; Play UI display of `controlnetFallback`; Settings module/model dropdowns.
+
+After 13f + docs alignment + wrap-up: CF-6/CF-7/CF-8/CF-9/CF-10/CF-11 closed. **CF-12 remains as intentional low-risk tech debt** (see "Current Status / How to test").
+
+---
+
+## Handoff / Current Status (clothing / FaceID / image-pipeline audit)
+
+**Safe to pause here.** Automated audit work is complete. Remaining items are either intentional tech debt or human manual smoke checks. Do not reopen CF-1…CF-11 unless a new regression appears.
+
+
+### Local-model prompt contracts (2026-07-13g)
+
+| Change | Where |
+| --- | --- |
+| Ollama `format` + `keep_alive` passthrough | `src/services/ollama.js` |
+| Schema-enforced picker JSON + temp 0.1 | `src/services/scene-picker.js` |
+| Schema-enforced emotion JSON + system split | `src/services/character-state.js` |
+| Shared tag dialect (gaze/count/env) | `src/services/tag-dialect.js` -> extractor + regen |
+| NSFW-gated slim scene card | `src/services/narrator.js` `buildSceneCardInstruction` |
+| Short 3-line SDXL enhancer contract | `src/services/story-enhancer.js` |
+
+
+### Visual brief SoT (2026-07-13h)
+
+| Rule | Detail |
+| --- | --- |
+| Storage | `turns.scene_card_json.visual_brief` |
+| Job | Structured visual extraction (not prose summarizer) |
+| Scene images | `main_subject` + briefs + setting; FaceID priority = `main_subject` |
+| Character images | current-turn brief → prior brief → generic |
+| Legacy | `image_prompt` fallback only |
+
+### Done in this audit (shippable)
+
+| Area | Outcome |
+| --- | --- |
+| Clothing on default scene path (CF-1) | Preserved through story-enhancer; tested |
+| FaceID character selection (CF-2) | `mainSubject`-based; known multi-NPC fallback documented |
+| Prompt Preview clothing (CF-3) | Scenario-resolved; tested |
+| Shared A1111 payload path (CF-4) | Character Editor uses `buildA1111Payload` / `callA1111` |
+| Outfit JSON save (CF-5) | No silent discard; tested |
+| Docs schema / stubs (CF-6, CF-9) | `clothing_changes` + Known Stubs aligned |
+| FaceID slot UI honesty (CF-7) | Misleading UI removed; honesty tests |
+| Images page dead code (CF-8) | Quarantine stub only; tested |
+| Clothing `runtime` contract (CF-10) | Explicit boolean required; callers + route tests |
+| ControlNet catalog TTL (CF-11) | 5-minute TTL; tested |
+| FaceID/IP-Adapter rewrite (CF-A1…A6) | Explicit module, no fabricated model, fail-open retry, tested |
+
+### Tests
+
+- **Command:** `npm test`
+- **Current count:** **128/128** after Character Image UI visual-brief field wiring. No A1111/Ollama/real DB.
+
+### Intentional tech debt (CF-12) — not release-blocking
+
+| Item | Why safe |
+| --- | --- |
+| Unused `enrichSceneCardPrompts()` | Live path uses `applyNarratorSummaryOnly` |
+| Unused `a1111.getOptions()` | Dead export; harmless |
+| Legacy `resolveClothing` / `resetClothing` | Stub/legacy; `resolveClothing` listed in Known Stubs |
+| `reset-scene` does not clear runtime clothing | Intentional until a product decision says otherwise |
+| Cast-add runtime double-write | Idempotent / cosmetic |
+
+### Manual smoke checks still required
+
+1. Live A1111 + ControlNet: one scene image with FaceID on — confirm identity OR `controlnetFallback`.
+2. Play: inline clothing edit + WS update (`runtime: true`).
+3. Scenario setup: change starting outfit, reload (`runtime: false`).
+4. Images page: quarantine empty-state only.
+5. Characters: accept face ref + generate fullbody.
+
+### Optional later (not required to resume play)
+
+- Delete unused helpers (`getOptions`, etc.) in a dedicated cleanup.
+- Product decision: should `reset-scene` also reset runtime clothing?
+- Browser/E2E suite (never planned for this audit).
+
+### Pointers
+
+- Living behavior: `## Testing`, FaceID / IP-Adapter, Core Rule (this file).
+- Historical FAIL snapshot + status overlay: `docs/audits/clothing-faceid-image-pipeline-audit-2026-07-13.md`.

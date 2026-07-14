@@ -22,7 +22,9 @@ import rulesRouter      from './routes/rules.js';
 import imagesRouter     from './routes/images.js';
 import a1111Router      from './routes/a1111.js';
 import auditRouter             from './routes/audit.js';
+import learningRouter           from './routes/learning.js';
 import relationshipsRouter    from './routes/character-relationships.js';
+import characterStatesRouter    from './routes/character-states.js';
 
 const PORT = process.env.PORT || 4090;
 
@@ -44,6 +46,7 @@ wss.on('connection', function (ws, req) {
 
 /* ── Phase 2 routes ──────────────────────────────────────────────────── */
 
+app.use('/api/learning', learningRouter);
 app.use('/api/health',   healthRouter);
 app.use('/api/config',   configRouter);
 app.use('/api/profiles', profilesRouter);
@@ -70,6 +73,7 @@ app.use('/api/scenarios/:scenarioId/memories',   memoriesRouter);
 app.use('/api/scenarios/:scenarioId/world',      worldRouter);
 app.use('/api/scenarios/:scenarioId/rules',         rulesRouter);
 app.use('/api/scenarios/:scenarioId/relationships', relationshipsRouter);
+app.use('/api/scenarios/:scenarioId/character-states', characterStatesRouter);
 
 /* ── Phase 4 image pipeline routes ──────────────────────────────────── */
 

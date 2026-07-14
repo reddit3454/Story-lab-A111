@@ -33,12 +33,23 @@ export function log(service, event, data, detail) {
 
 export function logError(service, event, err) {
   const ts = new Date().toISOString();
-  const entry = { ts, level: 'error', service, event, detail: { message: err?.message, stack: err?.stack } };
-  console.error(`[${ts}] [${service}] ERROR ${event}`, err?.message);
+  const detail = {
+    message: err?.message,
+    name: err?.name || null,
+    code: err?.code || err?.cause?.code || null,
+    stack: err?.stack,
+    cause: err?.cause
+      ? { message: err.cause.message, name: err.cause.name, code: err.cause.code }
+      : (err?.__serialized || null),
+    serialized: err?.__serialized || null,
+  };
+  const entry = { ts, level: 'error', service, event, detail };
+  console.error(`[${ts}] [${service}] ERROR ${event}`, detail.message, detail.cause || detail.serialized || '');
   try { fs.appendFileSync(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n'); } catch (_) {}
   broadcast.send('logline', {
     cat: 'ERROR',
-    msg: `[${service}] ${event}: ${err?.message || ''}`,
+    msg: `[${service}] ${event}: ${detail.message || ''}` +
+      (detail.cause?.message ? ` | cause: ${detail.cause.message}${detail.cause.code ? ' (' + detail.cause.code + ')' : ''}` : ''),
     ts:  ts.slice(11, 19),
   });
 }

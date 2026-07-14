@@ -117,6 +117,26 @@ export async function getSchedulers(baseUrl) {
   return Array.isArray(data) ? data.map(s => s.name || s.label).filter(Boolean) : [];
 }
 
+export async function getUpscalers(baseUrl) {
+  const data = await _fetch(baseUrl, '/sdapi/v1/upscalers', { _timeout: INFO_TIMEOUT_MS });
+  return Array.isArray(data) ? data.map(u => u.name).filter(Boolean) : [];
+}
+
+export async function getControlNetModels(baseUrl) {
+  const data = await _fetch(baseUrl, '/controlnet/model_list', { _timeout: INFO_TIMEOUT_MS });
+  return Array.isArray(data?.model_list) ? data.model_list : [];
+}
+
+export async function getControlNetModules(baseUrl) {
+  const data = await _fetch(baseUrl, '/controlnet/module_list', { _timeout: INFO_TIMEOUT_MS });
+  return Array.isArray(data?.module_list) ? data.module_list : [];
+}
+
+export async function getADetailerModels(baseUrl) {
+  const data = await _fetch(baseUrl, '/adetailer/v1/model_list', { _timeout: INFO_TIMEOUT_MS });
+  return Array.isArray(data?.model_list) ? data.model_list : [];
+}
+
 // ORPHAN: not imported anywhere — safe to delete if unneeded
 export async function getOptions(baseUrl) {
   return _fetch(baseUrl, '/sdapi/v1/options', { _timeout: INFO_TIMEOUT_MS });
@@ -129,6 +149,25 @@ export async function checkHealth(baseUrl) {
     try {
       const res = await fetch(`${baseUrl}/sdapi/v1/sd-models`, { signal: controller.signal });
       return { ok: res.ok };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function unloadCheckpoint(baseUrl) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(`${baseUrl}/sdapi/v1/unload-checkpoint`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      });
+      return { ok: res.ok, status: res.status };
     } finally {
       clearTimeout(timer);
     }

@@ -1,6 +1,7 @@
 import { state } from '../state.js';
 import { escapeHtml, avatarHtml, traitSelect, imageSrc } from '../utils.js';
 import { showToast, showConfirm, setLoading, openLightbox } from '../ui.js';
+import { resolveOutfitSetsForSave } from '../outfit-sets-validation.js';
 
 var RELATIONSHIP_TYPES = [
   'friend', 'romantic partner', 'rival', 'enemy', 'colleague',
@@ -159,7 +160,7 @@ function renderCharacterForm(char) {
   var faceIdThumb = char && char.reference_image_path
     ? '<img src="' + imageSrc(char.reference_image_path) + '" alt="FaceID reference" class="faceid-thumb" ' +
         'onerror="this.style.display=\'none\'" id="faceid-thumb-img">'
-    : '<div class="empty-state small" style="padding:12px 0;text-align:left">No FaceID reference set. Accept a reference image below to activate InstantID for this character.</div>';
+    : '<div class="empty-state small" style="padding:12px 0;text-align:left">No FaceID reference set. Accept a reference image below to activate IP-Adapter face consistency for this character.</div>';
 
   var refsHtml = !isNew ? (
     '<div class="section-divider"></div>' +
@@ -167,7 +168,7 @@ function renderCharacterForm(char) {
       '<div class="references-header">' +
         '<div>' +
           '<h3 class="section-title" style="margin-bottom:2px">FaceID Reference</h3>' +
-          '<p class="form-hint" style="margin:0">Active reference used for InstantID face consistency in scene images.</p>' +
+          '<p class="form-hint" style="margin:0">Active reference used for IP-Adapter face consistency in scene images.</p>' +
         '</div>' +
         '<div class="references-actions">' +
           (char && char.reference_image_path ? '<button class="btn btn-danger btn-sm" id="btn-faceid-remove">Remove</button>' : '') +
@@ -233,25 +234,6 @@ function renderCharacterForm(char) {
         '<div class="form-actions">' +
           '<button class="btn btn-primary btn-sm" id="btn-gen-fullbody">Generate Full Body</button>' +
         '</div>' +
-      '</div>' +
-      /* FaceID slot config: slot count dropdown + drag-to-reorder panel */
-      '<div class="faceid-slot-config" style="margin-top:14px;padding:12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px">' +
-        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">' +
-          '<span style="font-size:13px;font-weight:600;color:var(--text-primary)">FaceID Slots</span>' +
-          '<span style="font-size:12px;color:var(--text-muted)">How many reference images ComfyUI uses (matches IPAAdapterFaceIDBatch inputcount)</span>' +
-        '</div>' +
-        '<div class="trait-row" style="margin-bottom:10px">' +
-          '<span class="trait-label" style="min-width:80px">Slot Count</span>' +
-          '<select class="form-input trait-select" id="faceid-slot-count" style="max-width:120px">' +
-            '<option value="2">2 slots</option>' +
-            '<option value="3">3 slots</option>' +
-            '<option value="4">4 slots</option>' +
-            '<option value="5" selected>5 slots (all)</option>' +
-          '</select>' +
-          '<button class="btn btn-secondary btn-sm" id="btn-save-slot-count" style="margin-left:8px">Save</button>' +
-        '</div>' +
-        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Drag or use arrows to set slot order. Only the top <em id="slot-count-label">5</em> will be sent to ComfyUI.</div>' +
-        '<div id="faceid-slot-order" style="display:flex;flex-direction:column;gap:6px"></div>' +
       '</div>' +
     '</div>'+
     '<div class="section-divider"></div>' +
@@ -373,8 +355,8 @@ function renderCharacterForm(char) {
         // --- Clothing & Style ---
         '<div class="section-divider"></div>' +
         '<div class="form-section" id="outfit-section">' +
-          '<h3 class="section-title" style="margin-bottom:4px">Clothing &amp; Outfit</h3>' +
-          '<p class="form-hint" style="margin-bottom:12px">Build outfit presets and select which one is active. The active outfit is injected into scene image prompts.</p>' +
+          '<h3 class="section-title" style="margin-bottom:4px">Clothing Sets</h3>' +
+          '<p class="form-hint" style="margin-bottom:12px">Saved named outfits for this character. Pick a default for new scenarios. During Play, clothing is tracked per scenario and does not change these sets.</p>' +
 
           // JSON Import Form
           '<div id="outfit-json-import-panel" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px">' +
@@ -413,14 +395,14 @@ function renderCharacterForm(char) {
           '<div class="form-group" style="margin-top:6px">' +
             '<label class="form-label">Outfit Sets (JSON)</label>' +
             '<textarea class="form-input" id="char-outfit-sets-json" rows="3" placeholder="[{&quot;name&quot;:&quot;Casual&quot;,&quot;description&quot;:&quot;jeans, t-shirt&quot;}]">' + escapeHtml(_outfitSetsRaw) + '</textarea>' +
-            '<p class="form-hint">JSON array of named outfits. Updated automatically by the preset builder above.</p>' +
+            '<p class="form-hint">Advanced: raw JSON array of {name, description}. Synced with the clothing sets UI above.</p>' +
           '</div>' +
 
           // Active outfit description (written to DB)
           '<div class="form-group" style="margin-top:12px">' +
-            '<label class="form-label">Active Outfit Description</label>' +
+            '<label class="form-label">Default Outfit Description</label>' +
             '<textarea class="form-input" id="char-default-outfit" rows="2" placeholder="spaghetti strap top, pajama shorts">' + escapeHtml(outfitVal) + '</textarea>' +
-            '<p class="form-hint">This is what gets sent to the image generator. Select a preset above to fill this, or type freely.</p>' +
+            '<p class="form-hint">Fallback when a scenario has no starting set chosen yet. Click a set above to make it the default (fills this field).</p>' +
           '</div>' +
 
           // Underwear toggle
@@ -536,11 +518,11 @@ function renderCharacterForm(char) {
             '<textarea class="form-input" id="char-moodtriggerspos" rows="2" placeholder="e.g. kindness, good humor, being listened to">' + escapeHtml(char ? (char.moodtriggerspos || '') : '') + '</textarea>' +
           '</div>' +
           '<div class="form-group">' +
-            '<label class="form-label">Negative Mood Triggers <span class="form-hint">(what worsens their mood)</span></label>' +
+            '<label class="form-label">Turn-offs / Negative Triggers <span class="form-hint">(fed to narrator — cools or shuts character down)</span></label>' +
             '<textarea class="form-input" id="char-moodtriggersneg" rows="2" placeholder="e.g. rudeness, being ignored, disrespect">' + escapeHtml(char ? (char.moodtriggersneg || '') : '') + '</textarea>' +
           '</div>' +
           '<div class="form-group">' +
-            '<label class="form-label">Arousal Triggers <span class="form-hint">(what increases romantic/physical tension)</span></label>' +
+            '<label class="form-label">Arousal Triggers <span class="form-hint">(fed to narrator when heated — what increases romantic/physical tension)</span></label>' +
             '<textarea class="form-input" id="char-arousaltriggers" rows="2" placeholder="e.g. physical closeness, compliments, flirtatious banter">' + escapeHtml(char ? (char.arousaltriggers || '') : '') + '</textarea>' +
           '</div>' +
         '</div>' +
@@ -592,28 +574,41 @@ function renderCharacterForm(char) {
       if (!_outfitSets.length) {
         panel.innerHTML =
           '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">' +
-            '<button type="button" class="btn btn-ghost btn-xs" id="btn-add-outfit-set">+ Add Preset</button>' +
+            '<button type="button" class="btn btn-ghost btn-xs" id="btn-add-outfit-set">+ Add Clothing Set</button>' +
           '</div>' +
           '<div id="outfit-set-add-form" style="display:none;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px"></div>';
       } else {
         var rows = _outfitSets.map(function (s, i) {
           var isDefault = (s.name === _defaultOutfitName);
-          return '<div class="outfit-preset-row" style="display:flex;align-items:center;gap:6px;margin-bottom:4px">' +
-            '<button type="button" class="btn btn-ghost btn-xs outfit-select-btn' + (isDefault ? ' btn-active' : '') + '" data-idx="' + i + '" style="font-weight:600">' + escapeHtml(s.name) + '</button>' +
-            '<span style="font-size:11px;color:var(--text-muted);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">' + escapeHtml(s.description) + '</span>' +
-            (s.underwear ? '<span style="font-size:10px;color:var(--text-faint)">+UW</span>' : '') +
-            '<button type="button" class="btn btn-danger-ghost btn-xs outfit-del-btn" data-idx="' + i + '">x</button>' +
+          return '<div class="outfit-preset-row" data-idx="' + i + '" style="display:flex;align-items:flex-start;gap:6px;margin-bottom:6px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--bg-elevated)">' +
+            '<div style="display:flex;flex-direction:column;gap:2px">' +
+              '<button type="button" class="btn btn-ghost btn-xs outfit-up-btn" data-idx="' + i + '" title="Move up" ' + (i === 0 ? 'disabled' : '') + '>&uarr;</button>' +
+              '<button type="button" class="btn btn-ghost btn-xs outfit-down-btn" data-idx="' + i + '" title="Move down" ' + (i === _outfitSets.length - 1 ? 'disabled' : '') + '>&darr;</button>' +
+            '</div>' +
+            '<div style="flex:1;min-width:0">' +
+              '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">' +
+                '<strong style="font-size:13px">' + escapeHtml(s.name) + '</strong>' +
+                (isDefault ? '<span class="badge badge-accent badge-xs">Default</span>' : '') +
+                (s.underwear ? '<span style="font-size:10px;color:var(--text-faint)">+UW</span>' : '') +
+              '</div>' +
+              '<div style="font-size:12px;color:var(--text-muted)">' + escapeHtml(s.description) + '</div>' +
+              '<div id="outfit-edit-slot-' + i + '" style="display:none;margin-top:8px"></div>' +
+            '</div>' +
+            '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">' +
+              '<button type="button" class="btn btn-ghost btn-xs outfit-select-btn' + (isDefault ? ' btn-active' : '') + '" data-idx="' + i + '" title="Set as default">' + (isDefault ? 'Default' : 'Use') + '</button>' +
+              '<button type="button" class="btn btn-ghost btn-xs outfit-edit-btn" data-idx="' + i + '">Edit</button>' +
+              '<button type="button" class="btn btn-danger-ghost btn-xs outfit-del-btn" data-idx="' + i + '">Del</button>' +
+            '</div>' +
           '</div>';
         }).join('');
         panel.innerHTML =
           '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">' +
-            '<span style="font-size:12px;font-weight:600;color:var(--text-muted)">Presets</span>' +
+            '<span style="font-size:12px;font-weight:600;color:var(--text-muted)">Clothing sets</span>' +
             '<button type="button" class="btn btn-ghost btn-xs" id="btn-add-outfit-set">+ Add</button>' +
           '</div>' +
           '<div style="margin-bottom:8px">' + rows + '</div>' +
           '<div id="outfit-set-add-form" style="display:none;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px"></div>';
       }
-      // Keep raw JSON textarea in sync with builder state
       var ota = document.getElementById('char-outfit-sets-json');
       if (ota) ota.value = _outfitSets.length ? JSON.stringify(_outfitSets, null, 2) : '';
       wireSetEvents();
@@ -683,6 +678,75 @@ function renderCharacterForm(char) {
             _defaultOutfitName = null;
           }
           renderSets();
+        };
+      });
+
+      document.querySelectorAll('.outfit-up-btn').forEach(function (btn) {
+        btn.onclick = function () {
+          var idx = Number(btn.dataset.idx);
+          if (idx <= 0) return;
+          var tmp = _outfitSets[idx - 1];
+          _outfitSets[idx - 1] = _outfitSets[idx];
+          _outfitSets[idx] = tmp;
+          renderSets();
+        };
+      });
+
+      document.querySelectorAll('.outfit-down-btn').forEach(function (btn) {
+        btn.onclick = function () {
+          var idx = Number(btn.dataset.idx);
+          if (idx >= _outfitSets.length - 1) return;
+          var tmp = _outfitSets[idx + 1];
+          _outfitSets[idx + 1] = _outfitSets[idx];
+          _outfitSets[idx] = tmp;
+          renderSets();
+        };
+      });
+
+      document.querySelectorAll('.outfit-edit-btn').forEach(function (btn) {
+        btn.onclick = function () {
+          var idx = Number(btn.dataset.idx);
+          var s = _outfitSets[idx];
+          if (!s) return;
+          var slot = document.getElementById('outfit-edit-slot-' + idx);
+          if (!slot) return;
+          if (slot.style.display !== 'none' && slot.innerHTML) {
+            slot.style.display = 'none';
+            slot.innerHTML = '';
+            return;
+          }
+          slot.style.display = '';
+          slot.innerHTML =
+            '<div style="display:flex;flex-direction:column;gap:6px">' +
+              '<input type="text" class="form-input form-input-sm" id="edit-outfit-name-' + idx + '" value="' + escapeHtml(s.name) + '">' +
+              '<textarea class="form-input form-input-sm" id="edit-outfit-desc-' + idx + '" rows="2">' + escapeHtml(s.description) + '</textarea>' +
+              '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">' +
+                '<input type="checkbox" id="edit-outfit-uw-' + idx + '"' + (s.underwear ? ' checked' : '') + '> Include underwear in image' +
+              '</label>' +
+              '<div style="display:flex;gap:6px">' +
+                '<button type="button" class="btn btn-primary btn-xs" id="edit-outfit-save-' + idx + '">Save</button>' +
+                '<button type="button" class="btn btn-ghost btn-xs" id="edit-outfit-cancel-' + idx + '">Cancel</button>' +
+              '</div>' +
+            '</div>';
+          document.getElementById('edit-outfit-save-' + idx).onclick = function () {
+            var name = (document.getElementById('edit-outfit-name-' + idx).value || '').trim();
+            var desc = (document.getElementById('edit-outfit-desc-' + idx).value || '').trim();
+            var uw = document.getElementById('edit-outfit-uw-' + idx).checked;
+            if (!name || !desc) return;
+            var wasDefault = (_defaultOutfitName === s.name);
+            _outfitSets[idx] = { name: name, description: desc, underwear: uw };
+            if (wasDefault) {
+              _defaultOutfitName = name;
+              if (defTa) defTa.value = desc;
+              var defNameInput = document.getElementById('char-default-outfit-name');
+              if (defNameInput) defNameInput.value = name;
+            }
+            renderSets();
+          };
+          document.getElementById('edit-outfit-cancel-' + idx).onclick = function () {
+            slot.style.display = 'none';
+            slot.innerHTML = '';
+          };
         };
       });
     }
@@ -804,6 +868,14 @@ function renderCharacterForm(char) {
   document.getElementById('char-form').onsubmit = function (e) {
     e.preventDefault();
     var btn = document.getElementById('btn-save-char');
+
+    var otaEl = document.getElementById('char-outfit-sets-json');
+    var outfitSetsResult = resolveOutfitSetsForSave(otaEl ? otaEl.value : '', _outfitSets);
+    if (!outfitSetsResult.ok) {
+      showToast(outfitSetsResult.error, 'error');
+      return;
+    }
+
     var data = {
       name:                 document.getElementById('char-name').value.trim(),
       description:          document.getElementById('char-description').value.trim(),
@@ -831,14 +903,7 @@ function renderCharacterForm(char) {
       face_shape:           document.getElementById('char-face-shape').value  || null,
       default_outfit:       document.getElementById('char-default-outfit').value.trim() || null,
       outfit_style:         document.getElementById('char-outfit-style').value || null,
-      outfit_sets:          (function () {
-        var ota = document.getElementById('char-outfit-sets-json');
-        if (ota && ota.value.trim()) {
-          try { var parsed = JSON.parse(ota.value.trim()); return JSON.stringify(parsed); }
-          catch (_) {}
-        }
-        return JSON.stringify(_outfitSets);
-      }()),
+      outfit_sets:          outfitSetsResult.json,
       default_outfit_name:  (function () {
         var dni = document.getElementById('char-default-outfit-name');
         return (dni && dni.value.trim()) ? dni.value.trim() : (_defaultOutfitName || null);
@@ -1024,188 +1089,10 @@ function renderCharacterForm(char) {
     loadReferences(char.id);
     loadFullbodies(char.id);
 
-    // ── FaceID Slot Config wiring ──────────────────────────────────────────
-    // Initialise slot-count dropdown from persisted char data.
-    (function initFaceIdSlotConfig() {
-      var slotCountSel  = document.getElementById('faceid-slot-count');
-      var saveSlotBtn   = document.getElementById('btn-save-slot-count');
-      var slotLabel     = document.getElementById('slot-count-label');
-      var slotOrderDiv  = document.getElementById('faceid-slot-order');
-      if (!slotCountSel || !saveSlotBtn || !slotOrderDiv) return;
-
-      // Current persisted values (may be null/undefined for legacy chars).
-      var currentCount = parseInt(char.faceid_ref_count, 10) || 5;
-      var currentOrder = (function () {
-        try { return char.faceid_ref_order ? JSON.parse(char.faceid_ref_order) : null; } catch (e) { return null; }
-      })();
-
-      // Set dropdown to saved value.
-      slotCountSel.value = String(Math.min(5, Math.max(2, currentCount)));
-      if (slotLabel) slotLabel.textContent = slotCountSel.value;
-
-      // Update label when dropdown changes (before save).
-      slotCountSel.onchange = function () {
-        if (slotLabel) slotLabel.textContent = slotCountSel.value;
-        renderSlotOrder(currentOrder); // re-highlight active count
-      };
-
-      // Helper: render the drag-to-reorder slot list from the current fullbodies array.
-      // fbs = array of { id, filename } (sorted newest-first by default).
-      // orderedIds = saved preferred order array or null.
-      function renderSlotOrder(orderedIds) {
-        slotOrderDiv.innerHTML = '';
-        // We need the fullbodies list — grab it from the rendered grid thumbs.
-        var thumbs = document.querySelectorAll('#fullbody-grid .ref-thumb[data-fb-id]');
-        if (!thumbs.length) {
-          slotOrderDiv.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:4px 0">Add full body images above to configure slot order.</div>';
-          return;
-        }
-        // Build a map from fb.id → filename using the img src already rendered in the grid.
-        var fbMap = {};
-        thumbs.forEach(function (thumb) {
-          var fbId = parseInt(thumb.dataset.fbId, 10);
-          var img  = thumb.querySelector('img');
-          fbMap[fbId] = img ? img.src : '';
-        });
-        var allIds = Object.keys(fbMap).map(Number);
-
-        // Build ordered list: explicit order first, then remaining.
-        var ordered = [];
-        if (orderedIds && orderedIds.length) {
-          orderedIds.forEach(function (id) { if (fbMap[id] !== undefined) ordered.push(id); });
-        }
-        allIds.forEach(function (id) { if (ordered.indexOf(id) === -1) ordered.push(id); });
-
-        var activeCount = parseInt(slotCountSel.value, 10) || 5;
-
-        ordered.forEach(function (fbId, idx) {
-          var slotNum = idx + 1;
-          var isActive = slotNum <= activeCount;
-          var row = document.createElement('div');
-          row.className = 'faceid-slot-row';
-          row.dataset.fbId = fbId;
-          row.draggable = true;
-          row.style.cssText = [
-            'display:flex', 'align-items:center', 'gap:8px', 'padding:5px 8px',
-            'border-radius:6px', 'cursor:grab', 'user-select:none',
-            'background:' + (isActive ? 'var(--surface-3,rgba(99,102,241,0.08))' : 'var(--surface-1)'),
-            'border:1px solid ' + (isActive ? 'var(--primary,#6366f1)' : 'var(--border)'),
-            'opacity:' + (isActive ? '1' : '0.5')
-          ].join(';');
-
-          var badge = '<span style="min-width:22px;height:22px;border-radius:50%;background:' +
-            (isActive ? 'var(--primary,#6366f1)' : 'var(--surface-3,#555)') +
-            ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">' +
-            slotNum + '</span>';
-
-          var thumb = '<img src="' + (fbMap[fbId] || '') + '" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'">';
-
-          var label = '<span style="flex:1;font-size:12px;color:var(--text-' + (isActive ? 'primary' : 'muted') + ')">Slot ' + slotNum +
-            (isActive ? '' : ' (inactive)') + '</span>';
-
-          var upBtn   = '<button class="btn btn-ghost btn-xs slot-up"   data-idx="' + idx + '" title="Move up"   style="padding:2px 6px;font-size:11px">&uarr;</button>';
-          var downBtn = '<button class="btn btn-ghost btn-xs slot-down" data-idx="' + idx + '" title="Move down" style="padding:2px 6px;font-size:11px">&darr;</button>';
-
-          row.innerHTML = badge + thumb + label + upBtn + downBtn;
-          slotOrderDiv.appendChild(row);
-        });
-
-        // Drag-and-drop reorder.
-        var dragging = null;
-        slotOrderDiv.querySelectorAll('.faceid-slot-row').forEach(function (row) {
-          row.addEventListener('dragstart', function (e) {
-            dragging = row;
-            e.dataTransfer.effectAllowed = 'move';
-            setTimeout(function () { row.style.opacity = '0.3'; }, 0);
-          });
-          row.addEventListener('dragend', function () {
-            row.style.opacity = '';
-            dragging = null;
-            var newOrder = Array.from(slotOrderDiv.querySelectorAll('.faceid-slot-row')).map(function (r) { return parseInt(r.dataset.fbId, 10); });
-            currentOrder = newOrder;
-            renderSlotOrder(currentOrder);
-          });
-          row.addEventListener('dragover', function (e) {
-            e.preventDefault();
-            if (dragging && dragging !== row) {
-              var bounding = row.getBoundingClientRect();
-              var offset   = bounding.y + bounding.height / 2;
-              if (e.clientY < offset) {
-                slotOrderDiv.insertBefore(dragging, row);
-              } else {
-                slotOrderDiv.insertBefore(dragging, row.nextSibling);
-              }
-            }
-          });
-        });
-
-        // Up/down button reorder.
-        slotOrderDiv.querySelectorAll('.slot-up').forEach(function (btn) {
-          btn.onclick = function (e) {
-            e.stopPropagation();
-            var row = btn.closest('.faceid-slot-row');
-            var prev = row.previousElementSibling;
-            if (prev) slotOrderDiv.insertBefore(row, prev);
-            var newOrder = Array.from(slotOrderDiv.querySelectorAll('.faceid-slot-row')).map(function (r) { return parseInt(r.dataset.fbId, 10); });
-            currentOrder = newOrder;
-            renderSlotOrder(currentOrder);
-          };
-        });
-        slotOrderDiv.querySelectorAll('.slot-down').forEach(function (btn) {
-          btn.onclick = function (e) {
-            e.stopPropagation();
-            var row = btn.closest('.faceid-slot-row');
-            var next = row.nextElementSibling;
-            if (next) slotOrderDiv.insertBefore(next, row);
-            var newOrder = Array.from(slotOrderDiv.querySelectorAll('.faceid-slot-row')).map(function (r) { return parseInt(r.dataset.fbId, 10); });
-            currentOrder = newOrder;
-            renderSlotOrder(currentOrder);
-          };
-        });
-      }
-
-      // Expose so renderFullbodyGrid can trigger a refresh when images change.
-      window._refreshFaceIdSlotOrder = function (orderedIds) {
-        if (orderedIds !== undefined) currentOrder = orderedIds;
-        renderSlotOrder(currentOrder);
-      };
-
-      // Render initial slot order list (grid may not be populated yet;
-      // renderFullbodyGrid calls _refreshFaceIdSlotOrder after it renders).
-      renderSlotOrder(currentOrder);
-
-      // Save button handler.
-      saveSlotBtn.onclick = function () {
-        var count = parseInt(slotCountSel.value, 10);
-        // Build ordered ID list from current DOM order.
-        var orderedIds = Array.from(slotOrderDiv.querySelectorAll('.faceid-slot-row'))
-          .map(function (r) { return parseInt(r.dataset.fbId, 10); })
-          .filter(function (id) { return !isNaN(id); });
-        setLoading(saveSlotBtn, true, 'Saving...');
-        API.saveFaceIdConfig(char.id, {
-          faceid_ref_count: count,
-          faceid_ref_order: orderedIds.length ? orderedIds : null
-        }).then(function (res) {
-          showToast('FaceID slot config saved.', 'success');
-          // Update local char object so re-renders pick up new values.
-          char.faceid_ref_count = res.faceid_ref_count || count;
-          char.faceid_ref_order = orderedIds.length ? JSON.stringify(orderedIds) : null;
-          currentOrder = orderedIds.length ? orderedIds : null;
-          if (slotLabel) slotLabel.textContent = String(count);
-          renderSlotOrder(currentOrder);
-        }).catch(function (err) {
-          showToast('Save failed: ' + err.message, 'error');
-        }).finally(function () {
-          setLoading(saveSlotBtn, false);
-        });
-      };
-    })();
-    // ── End FaceID Slot Config wiring ──────────────────────────────────────
-
     var faceIdRemoveBtn = document.getElementById('btn-faceid-remove');
     if (faceIdRemoveBtn) {
       faceIdRemoveBtn.onclick = function () {
-        showConfirm('Remove FaceID Reference', 'Clear the active FaceID reference for "' + char.name + '"? InstantID will be disabled for this character until a new reference is set.', function () {
+        showConfirm('Remove FaceID Reference', 'Clear the active FaceID reference for "' + char.name + '"? IP-Adapter face consistency will be disabled for this character until a new reference is set.', function () {
           setLoading(faceIdRemoveBtn, true, 'Removing...');
           API.clearFaceId(char.id).then(function (result) {
             showToast('FaceID reference removed.', 'success');
@@ -1533,7 +1420,6 @@ function renderFullbodyGrid(charId, fbs) {
   }
   if (!fbs.length) {
     grid.innerHTML = '<div class="empty-state small" style="color:var(--color-error,#ef4444)">No full body images — add at least 2 for FaceID generation.</div>';
-    if (typeof window._refreshFaceIdSlotOrder === 'function') setTimeout(window._refreshFaceIdSlotOrder, 50);
     return;
   }
   var currentIpRefFb = state.currentCharacter ? (state.currentCharacter.reference_image || '') : '';
@@ -1598,8 +1484,6 @@ function renderFullbodyGrid(charId, fbs) {
       }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
     };
   });
-
-  if (typeof window._refreshFaceIdSlotOrder === 'function') setTimeout(window._refreshFaceIdSlotOrder, 50);
 }
 
 function loadFullbodies(charId) {

@@ -58,16 +58,20 @@ Rules:
      - File absent = NOT IMPLEMENTED. Say: "The file does not exist yet."
    NEVER report a stub or an absent file as implemented.
 
-### Known Stubs (as of 2026-06-11)
+### Known Stubs (as of 2026-07-13)
 
-No stubs in the current codebase. Planned features are ABSENT from disk entirely —
-they are not stubbed. "File does not exist" is not the same as "stub exists."
+| Stub | Location | Notes |
+| --- | --- | --- |
+| `resolveClothing()` | `src/services/clothing.js` | Marked `// STUB: layered resolve unused...`. Unused; scenario runtime uses `applyClothingChanges` + `getScenarioClothing`. Listed to satisfy the stub rule; do not delete in docs-only passes. |
 
-Services that do not exist on disk (no file, no code, no stub):
+Planned features that are ABSENT from disk entirely are not stubs. "File does not exist" is not the same as "stub exists."
+
+Services / routes that do not exist on disk (no file, no code, no stub):
 - src/services/extractor.js — NOT PRESENT (narrator writes scene block inline)
-- src/services/enhancer.js — NOT PRESENT (prompts assembled deterministically)
-- src/services/clothing.js — NOT PRESENT (current_clothing flat string used directly)
+- src/services/enhancer.js — NOT PRESENT (legacy name; live path is `story-enhancer.js`)
 - src/routes/styles.js — NOT PRESENT
+
+Note: `src/services/clothing.js` **does exist** and is LIVE for scenario-scoped clothing; only `resolveClothing()` inside it is a stub.
 
 Phase 5 (frontend wiring) — COMPLETE (2026-06-11).
 See master knowledge doc Phase 5 section for full change log.

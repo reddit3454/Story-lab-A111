@@ -71,4 +71,40 @@ router.post('/model', async function (req, res) {
   }
 });
 
+router.get('/upscalers', async function (req, res) {
+  try {
+    const upscalers = await a1111.getUpscalers(_getUrl());
+    res.json(upscalers);
+  } catch (err) {
+    res.status(502).json({ error: 'A1111 unreachable: ' + err.message });
+  }
+});
+
+router.get('/controlnet-models', async function (req, res) {
+  try {
+    const models = await a1111.getControlNetModels(_getUrl());
+    res.json(models);
+  } catch (err) {
+    res.status(502).json({ error: 'ControlNet model list unavailable: ' + err.message });
+  }
+});
+
+router.get('/controlnet-modules', async function (req, res) {
+  try {
+    const modules = await a1111.getControlNetModules(_getUrl());
+    res.json(modules);
+  } catch (err) {
+    res.status(502).json({ error: 'ControlNet module list unavailable: ' + err.message });
+  }
+});
+
+router.get('/adetailer-models', async function (req, res) {
+  try {
+    const models = await a1111.getADetailerModels(_getUrl());
+    res.json(models);
+  } catch (err) {
+    res.status(502).json({ error: 'ADetailer model list unavailable: ' + err.message });
+  }
+});
+
 export default router;
