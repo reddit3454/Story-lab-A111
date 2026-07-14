@@ -1828,12 +1828,25 @@ function showSceneInfo() {
           infoRow('Reply Length', scenario.reply_length || 'medium') +
           infoRow('Tone', scenario.tone || '-') +
           infoRow('NSFW', scenario.nsfw_enabled ? 'Yes' : 'No') +
+          '<div class="setting-row" style="display:flex;align-items:center;gap:8px">' +
+            '<span style="font-weight:600;color:var(--text-muted);min-width:140px">Append Start</span>' +
+            '<input type="text" class="form-input" id="si-append-start" style="flex:1;width:auto" placeholder="tag1, tag2, etc" value="' + escapeHtml(scenario.append_start || '') + '">' +
+          '</div>' +
+          '<div class="setting-row" style="display:flex;align-items:center;gap:8px">' +
+            '<span style="font-weight:600;color:var(--text-muted);min-width:140px">Append Middle</span>' +
+            '<input type="text" class="form-input" id="si-append-middle" style="flex:1;width:auto" placeholder="tag1, tag2, etc" value="' + escapeHtml(scenario.append_middle || '') + '">' +
+          '</div>' +
+          '<div class="setting-row" style="display:flex;align-items:center;gap:8px">' +
+            '<span style="font-weight:600;color:var(--text-muted);min-width:140px">Append End</span>' +
+            '<input type="text" class="form-input" id="si-append-end" style="flex:1;width:auto" placeholder="tag1, tag2, etc" value="' + escapeHtml(scenario.append_end || '') + '">' +
+          '</div>' +
           snapshotRows +
         '</div>' +
       '</div>' +
 
       '<div class="modal-footer">' +
         '<button class="btn btn-ghost" id="close-scene-info">Close</button>' +
+        '<button class="btn btn-primary" id="save-scene-info">Save</button>' +
       '</div>' +
     '</div>';
 
@@ -1841,6 +1854,24 @@ function showSceneInfo() {
 
   document.getElementById('close-scene-info').onclick = function () { overlay.classList.add('hidden'); };
   overlay.onclick = function (e) { if (e.target === overlay) overlay.classList.add('hidden'); };
+
+  document.getElementById('save-scene-info').onclick = function () {
+    var btn = document.getElementById('save-scene-info');
+    var payload = {
+      append_start:  document.getElementById('si-append-start').value.trim(),
+      append_middle: document.getElementById('si-append-middle').value.trim(),
+      append_end:    document.getElementById('si-append-end').value.trim(),
+    };
+    btn.disabled = true;
+    API.updateScenario(scenario.id, payload)
+      .then(function (updated) {
+        state.currentScenario = Object.assign({}, state.currentScenario, updated);
+        showToast('Scene info saved.', 'success');
+        overlay.classList.add('hidden');
+      })
+      .catch(function (err) { showToast('Save failed: ' + err.message, 'error'); })
+      .finally(function () { btn.disabled = false; });
+  };
 }
 
 function _loadSiPromptTab(scenarioId) {
