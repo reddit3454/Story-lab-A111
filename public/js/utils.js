@@ -9,18 +9,71 @@ export function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-export function formatStoryContent(text) {
-  if (!text) return '';
-  var escaped = String(text)
+function _formatInline(text) {
+  return String(text)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+}
+
+export function formatStoryContent(text) {
+  if (!text) return '';
+  var escaped = _formatInline(text);
   var paras = escaped.split(/\n\n+/);
   return paras
     .filter(function (p) { return p.trim(); })
     .map(function (p) { return '<p>' + p.replace(/\n/g, '<br>') + '</p>'; })
     .join('');
+}
+
+// Response ID for the "A5-11" addressing scheme (see
+// docs/superpowers/specs/2026-07-15-narrator-line-numbering-design.md). Counts narrator-role
+// turns only, in turn_number order, ignoring interleaved user/other-role turns. Returns null
+// for a non-narrator turn.
+export function narratorResponseLabel(turns, targetTurn) {
+  if (!targetTurn) return null;
+  var targetRole = targetTurn.speaker || targetTurn.role;
+  if (targetRole !== 'narrator') return null;
+  var targetNum = targetTurn.turn_number || 0;
+  var count = 0;
+  (turns || []).forEach(function (t) {
+    var role = t.speaker || t.role;
+    if (role === 'narrator' && (t.turn_number || 0) <= targetNum) count += 1;
+  });
+  return 'A' + count;
+}
+
+// Renders a narrator turn's raw content_text as numbered source lines with a faint gutter,
+// instead of formatStoryContent's paragraph/<br> rendering. Blank lines (paragraph breaks)
+// are spacing only and never consume a line number; consecutive blank lines collapse into a
+// single spacer so the gutter never shows duplicate gaps.
+export function formatNarratorLinesWithGutter(text) {
+  if (!text) return '';
+  // Inline formatting (_formatInline) runs per-line, AFTER splitting on '\n' — not on the
+  // whole text first. Running it first would let the *em* regex match across a line break
+  // (its char class doesn't exclude '\n'), producing an unclosed <em> in one line's span and
+  // an orphan </em> in the next once the lines are split into separate DOM elements.
+  var rawLines = String(text).split('\n');
+  var lineNum = 0;
+  var prevWasSpacer = false;
+  var rows = [];
+  rawLines.forEach(function (line) {
+    if (!line.trim()) {
+      if (!prevWasSpacer) rows.push('<div class="turn-line-spacer"></div>');
+      prevWasSpacer = true;
+      return;
+    }
+    prevWasSpacer = false;
+    lineNum += 1;
+    rows.push(
+      '<div class="turn-line">' +
+        '<span class="turn-line-num">' + lineNum + '</span>' +
+        '<span class="turn-line-content">' + _formatInline(line) + '</span>' +
+      '</div>'
+    );
+  });
+  return '<div class="turn-line-gutter">' + rows.join('') + '</div>';
 }
 
 export function relativeTime(dateStr) {
