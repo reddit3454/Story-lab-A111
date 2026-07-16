@@ -47,6 +47,12 @@ function isRefusal(text) {
   return REFUSAL_PATTERNS.some((p) => lower.includes(p));
 }
 
+// Enhancer's own contract caps the positive line at <=100 words (SDXL_STORY_SYSTEM_PROMPT
+// above). Allow a buffer before rejecting so borderline-valid output isn't punished, but
+// far past this is always a prose leak (e.g. the visual-brief's raw multi-character
+// narrative echoed back verbatim instead of condensed into tags).
+const MAX_POSITIVE_WORDS = 130;
+
 function isStoryOutput(text) {
   if (!text) return false;
   const t = text.trim();
@@ -54,6 +60,20 @@ function isStoryOutput(text) {
   if (/^[A-Z][a-zA-Z]+:\s"/.test(t)) return true;
   // Italicized action text (*does something*) is story output
   if (/\*[^*]{3,}\*/.test(t)) return true;
+  // Repeated "Name: sentence" attributions anywhere in the text — the visual-brief's
+  // character_briefs[] echoed verbatim (e.g. "Ma: Ma is lying on...; Jib: Jib is..."). A
+  // comma-heavy narrative can still match this even when the comma-count check below
+  // doesn't fire, since natural prose commas don't reliably indicate low comma count.
+  const nameAttributions = (t.match(/\b[A-Z][a-zA-Z]{1,20}:\s+[A-Z]/g) || []).length;
+  if (nameAttributions >= 2) return true;
+  // Multiple sentence-ending punctuation marks ("word. Word") — SD tag lists don't use
+  // terminal sentence punctuation; two or more is prose, not tags.
+  const sentenceBreaks = (t.match(/[a-z0-9][.!?]\s+[A-Z]/g) || []).length;
+  if (sentenceBreaks >= 2) return true;
+  // Far past the system prompt's own <=100-word contract — a strong prose signal
+  // independent of comma count (narrative writing can be comma-heavy too).
+  const wordCount = t.split(/\s+/).filter(Boolean).length;
+  if (wordCount > MAX_POSITIVE_WORDS) return true;
   // Very few commas in a long string = prose, not tags
   const commaCount = (t.match(/,/g) || []).length;
   if (commaCount < 3 && t.length > 100) return true;
