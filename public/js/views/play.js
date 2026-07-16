@@ -1,5 +1,5 @@
 import { state, chatColors, getNpcColor } from '../state.js';
-import { escapeHtml, formatStoryContent, avatarHtml, imageSrc } from '../utils.js';
+import { escapeHtml, formatStoryContent, formatNarratorLinesWithGutter, narratorResponseLabel, avatarHtml, imageSrc } from '../utils.js';
 import { showToast, showConfirm, setLoading, openLightbox, setImgStatus, statusDotsHtml } from '../ui.js';
 import { setImageSummaryPanelDefault } from '../play/image-summary-panel.js';
 import {
@@ -364,12 +364,15 @@ function createTurnElement(turn) {
       ? npcChars.find(function (c) { return c.name === speakerName; }) || null
       : null;
     if (speakerName) div.classList.add('turn-npc');
+    var responseLabel = turn.speaker === 'narrator' ? narratorResponseLabel(state.turns, turn) : null;
+    var responseIdHtml = responseLabel ? '<span class="turn-response-id">' + escapeHtml(responseLabel) + '</span>' : '';
     var speakerHtml = speakerName
       ? '<div class="turn-header">' +
           avatarHtml(speakerChar, 'turn-avatar') +
           '<div class="turn-speaker turn-speaker-npc">' + escapeHtml(speakerName) + '</div>' +
+          responseIdHtml +
         '</div>'
-      : '<div class="narrator-label">~ Narrator ~</div>';
+      : '<div class="narrator-label">~ Narrator ~' + (responseIdHtml ? ' ' + responseIdHtml : '') + '</div>';
     var npcTextStyle = '';
     if (speakerChar) {
       var speakerIdx = 0;
@@ -388,10 +391,13 @@ function createTurnElement(turn) {
           accepted:          turn.image_accepted      || 0
         })
       : '';
+    var bodyHtml = turn.speaker === 'narrator'
+      ? formatNarratorLinesWithGutter(content)
+      : formatStoryContent(content);
     div.innerHTML = numHtml +
       '<div class="turn-inner">' +
         speakerHtml +
-        '<div class="turn-text story-font"' + npcTextStyle + '>' + formatStoryContent(content) + '</div>' +
+        '<div class="turn-text story-font"' + npcTextStyle + '>' + bodyHtml + '</div>' +
         '<div class="turn-footer">' +
           '<button class="turn-rate-btn' + ratingUp   + '" data-turn-id="' + turn.id + '" data-rating="1"  title="Good">+</button>' +
           '<button class="turn-rate-btn' + ratingDown + '" data-turn-id="' + turn.id + '" data-rating="-1" title="Bad">-</button>' +
