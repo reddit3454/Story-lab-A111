@@ -153,6 +153,58 @@ test('resolveEffectiveConfig exposes vae/clip_skip/restore_faces/tiling from the
   assert.equal(effective.tiling, true);
 });
 
+test('POST /api/looks persists every full-ownership field', async () => {
+  const body = {
+    name: 'Full Field Look',
+    description: 'covers every setting',
+    checkpoint: 'someModel.safetensors',
+    vae: 'someVae.safetensors',
+    clip_skip: 2,
+    restore_faces: true,
+    tiling: true,
+    loras: [{ file: 'styleLora', strength: 0.6 }, { file: 'detailLora', strength: 1 }],
+    prompt_prefix: 'prefix', prompt_suffix: 'suffix', negative: 'neg',
+    sampler: 'Euler a', scheduler: 'Exponential', steps: 25, cfg: 6.5, width: 768, height: 1024,
+  };
+  const created = await post('/api/looks', body);
+  assert.equal(created.status, 201);
+  assert.equal(created.json.vae, 'someVae.safetensors');
+  assert.equal(created.json.clip_skip, 2);
+  assert.equal(created.json.restore_faces, true);
+  assert.equal(created.json.tiling, true);
+  assert.deepEqual(JSON.parse(created.json.loras_json), body.loras);
+  assert.equal(created.json.sampler, 'Euler a');
+  assert.equal(created.json.scheduler, 'Exponential');
+  assert.equal(created.json.steps, 25);
+  assert.equal(created.json.cfg, 6.5);
+  assert.equal(created.json.width, 768);
+  assert.equal(created.json.height, 1024);
+
+  const updated = await realFetch(`${baseUrl}/api/looks/${created.json.id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, scheduler: 'Karras', loras: [] }),
+  });
+  const updatedJson = await updated.json();
+  assert.equal(updatedJson.scheduler, 'Karras');
+  assert.deepEqual(JSON.parse(updatedJson.loras_json), []);
+});
+
+test('POST /api/looks defaults new fields sanely when omitted', async () => {
+  const created = await post('/api/looks', { name: 'Minimal Look' });
+  assert.equal(created.status, 201);
+  assert.equal(created.json.vae, '');
+  assert.equal(created.json.clip_skip, null);
+  assert.equal(created.json.restore_faces, false);
+  assert.equal(created.json.tiling, false);
+  assert.equal(created.json.loras_json, '[]');
+  assert.equal(created.json.sampler, 'DPM++ 2M SDE');
+  assert.equal(created.json.scheduler, 'Karras');
+  assert.equal(created.json.steps, 30);
+  assert.equal(created.json.cfg, 7);
+  assert.equal(created.json.width, 832);
+  assert.equal(created.json.height, 1216);
+});
+
 test('DELETE /api/looks/:id keeps exactly one Look active when the active Look is deleted', async () => {
   const a = await post('/api/looks', { name: 'Delete Me Active' });
   const b = await post('/api/looks', { name: 'Delete Me Survivor' });
