@@ -1,5 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { DB_PATH } from './paths.js';
+import { seedAndMigrateDefaultLooks } from './default-look.js';
+import { migrateImageLooksSchema, migrateImageLooksData } from './image-looks-migration.js';
 
 const db = new DatabaseSync(DB_PATH);
 
@@ -11,23 +13,6 @@ CREATE TABLE IF NOT EXISTS global_config (
   key        TEXT PRIMARY KEY,
   value      TEXT,
   updated_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS image_profiles (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  name              TEXT NOT NULL,
-  description       TEXT DEFAULT '',
-  prompt_prefix     TEXT DEFAULT '',
-  prompt_suffix     TEXT DEFAULT '',
-  negative_additions TEXT DEFAULT '',
-  lora1_file        TEXT DEFAULT '',
-  lora1_strength    REAL DEFAULT 1.0,
-  lora2_file        TEXT DEFAULT '',
-  lora2_strength    REAL DEFAULT 1.0,
-  steps_override    INTEGER,
-  cfg_override      REAL,
-  is_active         INTEGER DEFAULT 0,
-  created_at        TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS scenarios (
@@ -61,9 +46,6 @@ CREATE TABLE IF NOT EXISTS locations (
   scenario_id           INTEGER REFERENCES scenarios(id) ON DELETE CASCADE,
   name                  TEXT NOT NULL,
   description           TEXT DEFAULT '',
-  image_tags            TEXT DEFAULT '',
-  background_images_json TEXT DEFAULT '[]',
-  default_background    TEXT DEFAULT '',
   time_of_day           TEXT DEFAULT 'any',
   created_at            TEXT DEFAULT (datetime('now'))
 );
@@ -78,27 +60,6 @@ CREATE TABLE IF NOT EXISTS turns (
   location_id    INTEGER REFERENCES locations(id),
   token_estimate INTEGER DEFAULT 0,
   created_at     TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS scene_images (
-  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-  scenario_id        INTEGER REFERENCES scenarios(id) ON DELETE CASCADE,
-  turn_id            INTEGER REFERENCES turns(id),
-  filename           TEXT NOT NULL,
-  mode               TEXT NOT NULL,
-  generation_method  TEXT DEFAULT 'txt2img',
-  background_used    TEXT DEFAULT '',
-  prompt_used        TEXT DEFAULT '',
-  negative_used      TEXT DEFAULT '',
-  profile_id         INTEGER REFERENCES image_profiles(id),
-  seed               INTEGER DEFAULT -1,
-  steps              INTEGER DEFAULT 30,
-  cfg                REAL DEFAULT 7,
-  width              INTEGER DEFAULT 832,
-  height             INTEGER DEFAULT 1216,
-  model_name         TEXT DEFAULT '',
-  generation_time_ms INTEGER DEFAULT 0,
-  created_at         TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS memories (
@@ -127,16 +88,6 @@ CREATE TABLE IF NOT EXISTS rules (
   created_at  TEXT DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS styles (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  name        TEXT NOT NULL,
-  description TEXT DEFAULT '',
-  prompt_prefix TEXT DEFAULT '',
-  prompt_suffix TEXT DEFAULT '',
-  negative    TEXT DEFAULT '',
-  created_at  TEXT DEFAULT (datetime('now'))
-);
-
 CREATE TABLE IF NOT EXISTS scenario_characters (
   scenario_id  INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
   character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -155,25 +106,6 @@ CREATE TABLE IF NOT EXISTS audit_events (
   created_at      TEXT DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS character_references (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  scenario_id  INTEGER REFERENCES scenarios(id) ON DELETE CASCADE,
-  character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
-  filename     TEXT NOT NULL,
-  prompt_used  TEXT DEFAULT '',
-  accepted     INTEGER DEFAULT 0,
-  created_at   TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS character_fullbodies (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  scenario_id  INTEGER REFERENCES scenarios(id) ON DELETE CASCADE,
-  character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
-  filename     TEXT NOT NULL,
-  prompt_used  TEXT DEFAULT '',
-  is_default   INTEGER DEFAULT 0,
-  created_at   TEXT DEFAULT (datetime('now'))
-);
 `);
 
 const _insertDefault = db.prepare(
@@ -181,55 +113,20 @@ const _insertDefault = db.prepare(
 );
 
 const _defaults = [
-  ['a1111_url',          'http://127.0.0.1:7860'],
-  ['a1111_model',        ''],
-  ['a1111_steps',        '30'],
-  ['a1111_cfg',          '7'],
-  ['a1111_sampler',      'DPM++ 2M SDE'],
-  ['a1111_scheduler',    'Karras'],
-  ['a1111_width',        '832'],
-  ['a1111_height',       '1216'],
-  ['a1111_clip_skip',    '2'],
-  ['hr_enabled',         'false'],
-  ['hr_scale',           '1.5'],
-  ['hr_steps',           '15'],
-  ['hr_denoising',       '0.4'],
-  ['hr_upscaler',        'R-ESRGAN 4x+'],
-  ['ad_enabled',         'true'],
-  ['ad_model',           'face_yolov8n.pt'],
-  ['ad_strength',        '0.4'],
-  ['lora_enabled',       'true'],
   ['nsfw_enabled',       'true'],
-  ['master_positive',    ''],
-  ['master_negative',    'bad anatomy, bad hands, missing fingers, extra fingers, deformed, ugly, blurry, watermark'],
-  ['refiner_enabled',    'false'],
-  ['refiner_checkpoint', ''],
-  ['refiner_switch_at',  '0.8'],
   ['narrator_model',          ''],
   ['narrator_context_turns',  '20'],
   ['narrator_max_tokens',     '1200'],
   ['narrator_context_tokens', '8192'],
-  ['prompt_extractor_model',  ''],
-  ['picker_model',            ''],
   ['explicit_mode',           'true'],
-  ['ipadapter_enabled',       'false'],
-  // No fabricated default model — an empty value means "unconfigured," and FaceID is
-  // skipped entirely rather than submitting a guessed model name that won't exist in
-  // any real A1111 install. Pick a real model from the Settings dropdown (populated
-  // live from /controlnet/model_list) to actually use FaceID.
-  ['ipadapter_model',         ''],
-  // Empty means "auto-resolve by checkpoint family" — see resolveIpAdapterModule().
-  ['ipadapter_module',        ''],
-  ['ipadapter_weight',        '0.35'],
-  ['ipadapter_end',           '0.6'],
-  ['img2img_denoising',       '0.45'],
-  ['image_summary_panel_default',     'visible'],
-  ['summary_rating_prompt_enabled',   'true'],
-  ['summary_content_min_for_learning','4'],
-  ['summary_style_min_for_learning',  '4'],
-  ['summary_exemplar_max',            '50'],
-  ['summary_exemplar_max_per_scenario','10'],
-  ['summary_learning_enabled',        'true'],
+  ['arousal_decay_enabled',           'true'],
+  ['emotion_tracking_enabled',        'true'],
+  ['relationship_deltas_enabled',     'true'],
+  ['mood_gate_toasts_enabled',          'true'],
+  ['regen_state_snapshot_enabled',      'true'],
+  ['cast_trigger_chips_enabled',        'true'],
+  ['scene_heat_readout_enabled',        'true'],
+  ['sfw_arousal_ceiling',             '3'],
 ];
 
 for (const [key, value] of _defaults) {
@@ -253,22 +150,6 @@ try {
   db.exec("INSERT OR IGNORE INTO scenario_characters (scenario_id, character_id) SELECT scenario_id, id FROM characters WHERE scenario_id IS NOT NULL");
 } catch (_) {}
 
-// character image path on character record
-migrate("ALTER TABLE characters ADD COLUMN reference_image_path TEXT DEFAULT NULL");
-
-// IP-Adapter reference image (relative path under IMAGES_DIR)
-migrate("ALTER TABLE characters ADD COLUMN reference_image TEXT DEFAULT ''");
-
-// locations background folder
-migrate("ALTER TABLE locations ADD COLUMN background_folder TEXT DEFAULT ''");
-
-// scene_images quality columns
-migrate('ALTER TABLE scene_images ADD COLUMN accepted   INTEGER DEFAULT 0');
-migrate('ALTER TABLE scene_images ADD COLUMN user_rating INTEGER DEFAULT 0');
-migrate("ALTER TABLE scene_images ADD COLUMN model_hash  TEXT DEFAULT ''");
-migrate("ALTER TABLE scene_images ADD COLUMN loras_json  TEXT DEFAULT '[]'");
-migrate('ALTER TABLE scene_images ADD COLUMN scene_card_json TEXT DEFAULT NULL');
-
 // audit_events context columns
 migrate('ALTER TABLE audit_events ADD COLUMN scenario_id INTEGER');
 migrate('ALTER TABLE audit_events ADD COLUMN turn_id     INTEGER');
@@ -278,6 +159,7 @@ migrate('ALTER TABLE audit_events ADD COLUMN duration_ms INTEGER');
 migrate("ALTER TABLE turns ADD COLUMN scene_card_json TEXT DEFAULT '{}'");
 migrate("ALTER TABLE turns ADD COLUMN token_estimate INTEGER DEFAULT 0");
 migrate("ALTER TABLE turns ADD COLUMN location_id INTEGER REFERENCES locations(id)");
+migrate("ALTER TABLE turns ADD COLUMN image_action_draft TEXT DEFAULT NULL");
 
 // scenario extended wizard fields
 migrate("ALTER TABLE scenarios ADD COLUMN tone                        TEXT    DEFAULT 'Dramatic'");
@@ -298,9 +180,6 @@ migrate("ALTER TABLE scenarios ADD COLUMN active_location_id          INTEGER DE
 migrate("ALTER TABLE scenarios ADD COLUMN user_character_id           INTEGER DEFAULT NULL");
 migrate("ALTER TABLE scenarios ADD COLUMN ended_at                    TEXT    DEFAULT NULL");
 migrate("ALTER TABLE scenarios ADD COLUMN generation_config           TEXT    DEFAULT NULL");
-migrate("ALTER TABLE scenarios ADD COLUMN append_start                TEXT    DEFAULT ''");
-migrate("ALTER TABLE scenarios ADD COLUMN append_middle               TEXT    DEFAULT ''");
-migrate("ALTER TABLE scenarios ADD COLUMN append_end                  TEXT    DEFAULT ''");
 
 // character relationships table
 migrate(`
@@ -319,7 +198,6 @@ migrate(`
 
 // character extended profile columns
 migrate("ALTER TABLE characters ADD COLUMN description          TEXT    DEFAULT ''");
-migrate("ALTER TABLE characters ADD COLUMN image_description    TEXT    DEFAULT NULL");
 migrate("ALTER TABLE characters ADD COLUMN appearance_notes     TEXT    DEFAULT ''");
 migrate("ALTER TABLE characters ADD COLUMN gender               TEXT    DEFAULT ''");
 migrate("ALTER TABLE characters ADD COLUMN age_range            TEXT    DEFAULT 'adult'");
@@ -350,14 +228,7 @@ migrate("ALTER TABLE characters ADD COLUMN arousalmax           INTEGER DEFAULT 
 migrate("ALTER TABLE characters ADD COLUMN moodtriggerspos      TEXT    DEFAULT NULL");
 migrate("ALTER TABLE characters ADD COLUMN moodtriggersneg      TEXT    DEFAULT NULL");
 migrate("ALTER TABLE characters ADD COLUMN arousaltriggers      TEXT    DEFAULT NULL");
-migrate("ALTER TABLE characters ADD COLUMN image_prompt_override TEXT   DEFAULT NULL");
-migrate("ALTER TABLE characters ADD COLUMN faceid_ref_count     INTEGER DEFAULT 5");
-migrate("ALTER TABLE characters ADD COLUMN faceid_ref_order     TEXT    DEFAULT NULL");
 migrate("ALTER TABLE characters ADD COLUMN unique_trait         TEXT    DEFAULT NULL");
-migrate('ALTER TABLE character_fullbodies ADD COLUMN is_default INTEGER DEFAULT 0');
-
-// Global locations: add background_folder column to existing scenario-scoped table
-migrate("ALTER TABLE locations ADD COLUMN background_folder TEXT DEFAULT ''");
 
 // scenario_locations join table (mirrors scenario_characters pattern)
 migrate(`
@@ -379,74 +250,6 @@ try {
 migrate("ALTER TABLE locations ADD COLUMN short_desc TEXT DEFAULT ''");
 migrate("ALTER TABLE locations ADD COLUMN full_desc TEXT DEFAULT ''");
 migrate("ALTER TABLE locations ADD COLUMN tags TEXT DEFAULT ''");
-migrate("ALTER TABLE locations ADD COLUMN image_tags_day TEXT DEFAULT NULL");
-migrate("ALTER TABLE locations ADD COLUMN image_tags_night TEXT DEFAULT NULL");
-// DB-driven location backgrounds table
-migrate(`
-  CREATE TABLE IF NOT EXISTS location_backgrounds (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
-    filename    TEXT NOT NULL,
-    is_default  INTEGER DEFAULT 0,
-    created_at  TEXT DEFAULT (datetime('now')),
-    UNIQUE(location_id, filename)
-  )
-`);
-
-
-
-migrate('ALTER TABLE scene_images ADD COLUMN content_rating INTEGER DEFAULT NULL');
-migrate('ALTER TABLE scene_images ADD COLUMN style_rating INTEGER DEFAULT NULL');
-migrate('ALTER TABLE scene_images ADD COLUMN rating_skipped INTEGER DEFAULT 0');
-
-// Image summary edit history (Phase B)
-migrate(`
-  CREATE TABLE IF NOT EXISTS summary_edit_events (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    scenario_id    INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
-    turn_id        INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
-    field          TEXT NOT NULL,
-    source         TEXT NOT NULL,
-    value_before   TEXT DEFAULT '',
-    value_after    TEXT DEFAULT '',
-    scene_image_id INTEGER REFERENCES scene_images(id) ON DELETE SET NULL,
-    created_at     TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-migrate(`
-  CREATE TABLE IF NOT EXISTS summary_exemplars (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    summary_plain   TEXT NOT NULL,
-    summary_tags    TEXT NOT NULL,
-    content_rating  INTEGER NOT NULL,
-    source_scenario_id INTEGER REFERENCES scenarios(id) ON DELETE SET NULL,
-    source_turn_id  INTEGER REFERENCES turns(id) ON DELETE SET NULL,
-    source_image_id INTEGER REFERENCES scene_images(id) ON DELETE SET NULL,
-    locale          TEXT DEFAULT 'en',
-    created_at      TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-migrate(`
-  CREATE TABLE IF NOT EXISTS style_exemplars (
-    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
-    style_context_snapshot TEXT NOT NULL,
-    content_tags_snapshot  TEXT DEFAULT '',
-    style_rating           INTEGER NOT NULL,
-    content_rating         INTEGER DEFAULT NULL,
-    source_scenario_id     INTEGER REFERENCES scenarios(id) ON DELETE SET NULL,
-    source_image_id        INTEGER REFERENCES scene_images(id) ON DELETE SET NULL,
-    locale                 TEXT DEFAULT 'en',
-    created_at             TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-migrate('ALTER TABLE scene_images ADD COLUMN summary_plain_snapshot TEXT DEFAULT \'\'');
-migrate('ALTER TABLE scene_images ADD COLUMN summary_tags_snapshot TEXT DEFAULT \'\'');
-migrate('ALTER TABLE scene_images ADD COLUMN style_context_snapshot TEXT DEFAULT \'\'');
-migrate('ALTER TABLE scene_images ADD COLUMN summary_rated_at TEXT DEFAULT NULL');
-
 
 // Unique index on locations.name so INSERT OR IGNORE can seed by name idempotently
 migrate("CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_name ON locations(name)");
@@ -502,9 +305,116 @@ try {
 } catch (_) {}
 
 
-migrate("CREATE UNIQUE INDEX IF NOT EXISTS idx_char_rel_global ON character_relationships(from_character_id, to_character_id)");
+try { db.exec("DROP INDEX IF EXISTS idx_char_rel_global"); } catch (_) {}
+migrate("ALTER TABLE character_relationships ADD COLUMN tags_json TEXT DEFAULT '[]'");
+try {
+  db.exec(`UPDATE characters SET arousalmax = CASE arousalmax WHEN 2 THEN 4 WHEN 3 THEN 6 WHEN 4 THEN 8 WHEN 5 THEN 10 ELSE arousalmax END WHERE arousalmax IS NOT NULL AND arousalmax <= 5`);
+  db.exec(`UPDATE characters SET arousalmax = 10 WHERE arousalmax IS NULL OR arousalmax < 1 OR arousalmax > 10`);
+} catch (_) {}
 
-// Fix existing scene_images: prepend scenario_id/ to bare basenames (no path separator means old format)
-try { db.exec("UPDATE scene_images SET filename = CAST(scenario_id AS TEXT) || '/' || filename WHERE instr(filename, '/') = 0"); } catch (_) {}
+/* ── Image generation (rebuild) ──────────────────────────────────────── */
+
+// A1111 connection — structural master config. Every generation-affecting
+// setting (steps/cfg/sampler/scheduler/checkpoint/etc.) now lives entirely
+// on the active Look (see image_looks table) — Looks may never override
+// the connection URL itself.
+const _imageDefaults = [
+  ['a1111_url',       'http://127.0.0.1:7860'],
+  // FaceID/IP-Adapter — a connection-level concern (which ControlNet model this
+  // A1111 instance has installed), not a style concern, so it lives here rather
+  // than on a Look. Empty by default: FaceID is skipped, never sent with a
+  // guessed model name, until the user sets this to a real model filename from
+  // their A1111's ControlNet model list.
+  ['a1111_faceid_model',  ''],
+  ['a1111_faceid_module', 'ip-adapter_clip_sdxl'],
+  // Anatomy/safety only — no style words belong in the master negative. Style
+  // negatives live on the active Look.
+  ['master_negative', 'lowres, bad anatomy, bad hands, extra fingers, missing fingers, fused fingers, too many fingers, extra limbs, missing limbs, malformed limbs, mutated hands, poorly drawn hands, poorly drawn face, cross-eyed, deformed, disfigured, watermark, signature, text, logo, jpeg artifacts'],
+];
+for (const [key, value] of _imageDefaults) {
+  _insertDefault.run(key, value);
+}
+
+// Looks — the single, exclusive style source. Exactly one row has is_active = 1.
+migrate(`
+  CREATE TABLE IF NOT EXISTS image_looks (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT NOT NULL,
+    description       TEXT DEFAULT '',
+    checkpoint        TEXT DEFAULT '',
+    lora1_file        TEXT DEFAULT '',
+    lora1_strength    REAL DEFAULT 1.0,
+    lora2_file        TEXT DEFAULT '',
+    lora2_strength    REAL DEFAULT 1.0,
+    prompt_prefix     TEXT DEFAULT '',
+    prompt_suffix     TEXT DEFAULT '',
+    negative          TEXT DEFAULT '',
+    steps_override    INTEGER DEFAULT NULL,
+    cfg_override      REAL    DEFAULT NULL,
+    sampler_override  TEXT    DEFAULT NULL,
+    is_active         INTEGER DEFAULT 0,
+    created_at        TEXT DEFAULT (datetime('now'))
+  )
+`);
+migrate('CREATE UNIQUE INDEX IF NOT EXISTS idx_image_looks_name ON image_looks(name)');
+
+migrateImageLooksSchema(db);
+migrateImageLooksData(db);
+
+// Default Look seed + safe migration (fresh DB + legacy Photoreal/Cinematic installs).
+seedAndMigrateDefaultLooks(db);
+
+// Character FaceID reference image (relative path under IMAGES_DIR).
+migrate("ALTER TABLE characters ADD COLUMN reference_image_path TEXT DEFAULT NULL");
+
+// Optional per-location background image for img2img mode (absolute or
+// IMAGES_DIR-relative path). Text tags for txt2img mode already exist on
+// locations (description / short_desc / full_desc).
+migrate("ALTER TABLE locations ADD COLUMN background_image_path TEXT DEFAULT NULL");
+
+// Generated images — one pipeline, one row per accepted generation, full snapshot.
+migrate(`
+  CREATE TABLE IF NOT EXISTS scene_images (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    scenario_id         INTEGER REFERENCES scenarios(id) ON DELETE CASCADE,
+    turn_id             INTEGER REFERENCES turns(id) ON DELETE SET NULL,
+    filename            TEXT NOT NULL,
+    mode                TEXT NOT NULL DEFAULT 'scene',
+    generation_method   TEXT NOT NULL DEFAULT 'txt2img',
+    prompt_used         TEXT DEFAULT '',
+    negative_used       TEXT DEFAULT '',
+    look_id             INTEGER,
+    seed                INTEGER DEFAULT -1,
+    steps               INTEGER,
+    cfg                 REAL,
+    width                INTEGER,
+    height              INTEGER,
+    model_name          TEXT DEFAULT '',
+    model_hash          TEXT DEFAULT '',
+    generation_time_ms  INTEGER DEFAULT 0,
+    face_ref_json       TEXT DEFAULT '[]',
+    prompt_parts_json   TEXT DEFAULT '{}',
+    character_ids_json  TEXT DEFAULT '[]',
+    pipeline_run_id     TEXT DEFAULT '',
+    accepted            INTEGER DEFAULT 0,
+    user_rating         INTEGER DEFAULT 0,
+    created_at          TEXT DEFAULT (datetime('now'))
+  )
+`);
+
+// A `scene_images` table already existed on real installs from before the
+// image-pipeline purge (with an older, different column set) — the CREATE
+// TABLE above is a no-op against it, so the new columns this rebuild needs
+// must also be added additively, exactly like every other migration in this
+// file. Harmless/no-op on a genuinely fresh DB where CREATE TABLE already
+// included them.
+migrate("ALTER TABLE scene_images ADD COLUMN look_id            INTEGER");
+migrate("ALTER TABLE scene_images ADD COLUMN face_ref_json      TEXT DEFAULT '[]'");
+migrate("ALTER TABLE scene_images ADD COLUMN prompt_parts_json  TEXT DEFAULT '{}'");
+migrate("ALTER TABLE scene_images ADD COLUMN character_ids_json TEXT DEFAULT '[]'");
+migrate("ALTER TABLE scene_images ADD COLUMN pipeline_run_id    TEXT DEFAULT ''");
+
+migrate('CREATE INDEX IF NOT EXISTS idx_scene_images_scenario ON scene_images(scenario_id, created_at DESC)');
+migrate('CREATE INDEX IF NOT EXISTS idx_scene_images_turn ON scene_images(turn_id)');
 
 export default db;
