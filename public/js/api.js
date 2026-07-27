@@ -168,6 +168,9 @@
     updateLook:     function (id, d) { return request('PUT',    '/api/looks/' + id, d); },
     deleteLook:     function (id)    { return request('DELETE', '/api/looks/' + id); },
     activateLook:   function (id)    { return request('POST',   '/api/looks/' + id + '/activate'); },
+    testGenerateLook:      function (draft)     { return request('POST', '/api/looks/test-generate', draft); },
+    saveTestLookImage:     function (filename)   { return request('POST', '/api/looks/test-generate/save', { filename }); },
+    cleanupTestLookImages: function (filenames) { return request('POST', '/api/looks/test-generate/cleanup', { filenames }); },
 
     /* Character FaceID reference image */
     setCharacterFaceRef:   function (charId, imageBase64, mime) {
