@@ -216,3 +216,97 @@ test('DELETE /api/looks/:id keeps exactly one Look active when the active Look i
   const activeRows = db.prepare('SELECT id FROM image_looks WHERE is_active = 1').all();
   assert.equal(activeRows.length, 1, 'a Look must still be active after the active one is deleted');
 });
+
+test('POST /api/looks/test-generate runs one txt2img with the draft settings and writes to the scratch folder', async (t) => {
+  let capturedPayload = null;
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    const u = String(url);
+    if (u.includes('/sdapi/v1/txt2img')) {
+      capturedPayload = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({
+          images: ['iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='],
+          info: JSON.stringify({ seed: 99, sd_model_name: 'baseModel', sd_model_hash: 'abcd1234' }),
+        }),
+      };
+    }
+    throw new Error('unexpected fetch in test: ' + u);
+  });
+
+  const res = await post('/api/looks/test-generate', {
+    prompt_prefix: 'draft prefix', prompt_suffix: 'draft suffix', negative: 'draft neg',
+    loras: [{ file: 'draftLora', strength: 0.9 }],
+    sampler: 'Euler a', scheduler: 'Karras', steps: 20, cfg: 6, width: 512, height: 512,
+    test_subject: 'a woman standing in a park, full body',
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.json.ok, true);
+  assert.equal(res.json.seed, 99);
+  assert.ok(res.json.filename);
+  assert.equal(res.json.url, '/story-images/_look-test-scratch/' + res.json.filename);
+  assert.ok(fs.existsSync(path.join(DIRS.images, '_look-test-scratch', res.json.filename)));
+
+  assert.match(capturedPayload.prompt, /<lora:draftLora:0\.9>/);
+  assert.match(capturedPayload.prompt, /draft prefix/);
+  assert.match(capturedPayload.prompt, /a woman standing in a park, full body/);
+  assert.match(capturedPayload.prompt, /draft suffix/);
+  assert.match(capturedPayload.negative_prompt, /draft neg/);
+  assert.match(capturedPayload.negative_prompt, /bad anatomy/, 'server must always append master_negative itself');
+  assert.equal(capturedPayload.width, 512);
+  assert.equal(capturedPayload.n_iter, 1);
+  assert.equal(capturedPayload.batch_size, 1);
+});
+
+test('POST /api/looks/test-generate/save moves the file into the permanent saves folder', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    if (String(url).includes('/sdapi/v1/txt2img')) {
+      return {
+        ok: true,
+        json: async () => ({
+          images: ['iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='],
+          info: JSON.stringify({ seed: 1 }),
+        }),
+      };
+    }
+    throw new Error('unexpected fetch in test: ' + String(url));
+  });
+
+  const gen = await post('/api/looks/test-generate', { test_subject: 'test subject' });
+  const scratchPath = path.join(DIRS.images, '_look-test-scratch', gen.json.filename);
+  assert.ok(fs.existsSync(scratchPath));
+
+  const saved = await post('/api/looks/test-generate/save', { filename: gen.json.filename });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.json.ok, true);
+  assert.equal(saved.json.url, '/story-images/look-test-saves/' + gen.json.filename);
+
+  assert.ok(!fs.existsSync(scratchPath), 'file must be moved out of scratch, not copied');
+  assert.ok(fs.existsSync(path.join(DIRS.images, 'look-test-saves', gen.json.filename)));
+});
+
+test('POST /api/looks/test-generate/cleanup deletes only the listed scratch files', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    if (String(url).includes('/sdapi/v1/txt2img')) {
+      return {
+        ok: true,
+        json: async () => ({
+          images: ['iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='],
+          info: JSON.stringify({ seed: 1 }),
+        }),
+      };
+    }
+    throw new Error('unexpected fetch in test: ' + String(url));
+  });
+
+  const genA = await post('/api/looks/test-generate', { test_subject: 'a' });
+  const genB = await post('/api/looks/test-generate', { test_subject: 'b' });
+
+  const cleanup = await post('/api/looks/test-generate/cleanup', { filenames: [genA.json.filename, 'nonexistent-file.png'] });
+  assert.equal(cleanup.status, 200);
+  assert.equal(cleanup.json.ok, true);
+
+  assert.ok(!fs.existsSync(path.join(DIRS.images, '_look-test-scratch', genA.json.filename)), 'listed file must be deleted');
+  assert.ok(fs.existsSync(path.join(DIRS.images, '_look-test-scratch', genB.json.filename)), 'unlisted file must survive');
+});

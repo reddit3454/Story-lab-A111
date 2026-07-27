@@ -1,6 +1,12 @@
 import { Router } from 'express';
+import fs from 'fs';
+import path from 'path';
 import db from '../db.js';
 import broadcast from '../broadcast.js';
+import { IMAGES_DIR } from '../paths.js';
+import { resolveMasterConfig } from '../services/config-resolver.js';
+import { loraTags } from '../services/prompt-builder.js';
+import * as a1111 from '../services/a1111.js';
 
 const router = Router();
 
@@ -143,6 +149,90 @@ router.post('/:id/activate', function (req, res) {
   const row = db.prepare('SELECT * FROM image_looks WHERE id = ?').get(req.params.id);
   broadcast.send('lookactivated', { lookId: row.id, name: row.name });
   res.json(_clean(row));
+});
+
+const SCRATCH_DIR = path.join(IMAGES_DIR, '_look-test-scratch');
+const SAVES_DIR = path.join(IMAGES_DIR, 'look-test-saves');
+
+function _a1111BaseUrl() {
+  const config = resolveMasterConfig(db);
+  return config.a1111_url || 'http://127.0.0.1:7860';
+}
+
+router.post('/test-generate', async function (req, res) {
+  const b = req.body || {};
+  try {
+    const master = resolveMasterConfig(db);
+    const loras = loraTags({ loras_json: JSON.stringify(Array.isArray(b.loras) ? b.loras : []) });
+    const promptParts = [...loras, b.prompt_prefix || '', b.test_subject || '', b.prompt_suffix || ''].filter(Boolean);
+    const prompt = promptParts.join(', ');
+    const negative = [b.negative || '', master.master_negative || ''].filter(Boolean).join(', ');
+
+    const payload = {
+      prompt,
+      negative_prompt: negative,
+      steps: b.steps != null && b.steps !== '' ? parseInt(b.steps, 10) : 30,
+      cfg_scale: b.cfg != null && b.cfg !== '' ? Number(b.cfg) : 7,
+      width: b.width != null && b.width !== '' ? parseInt(b.width, 10) : 832,
+      height: b.height != null && b.height !== '' ? parseInt(b.height, 10) : 1216,
+      sampler_name: b.sampler || 'DPM++ 2M SDE',
+      scheduler: b.scheduler || 'Karras',
+      restore_faces: !!b.restore_faces,
+      tiling: !!b.tiling,
+      seed: -1,
+      n_iter: 1,
+      batch_size: 1,
+    };
+    if (b.vae || (b.clip_skip != null && b.clip_skip !== '')) {
+      payload.override_settings = {};
+      if (b.vae) payload.override_settings.sd_vae = b.vae;
+      if (b.clip_skip != null && b.clip_skip !== '') payload.override_settings.CLIP_stop_at_last_layers = parseInt(b.clip_skip, 10);
+      payload.override_settings_restore_afterwards = true;
+    }
+
+    fs.mkdirSync(SCRATCH_DIR, { recursive: true });
+    const filename = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
+    const savePath = path.join(SCRATCH_DIR, filename);
+
+    const result = await a1111.txt2img(_a1111BaseUrl(), payload, savePath);
+    res.json({
+      ok: true,
+      filename: result.filename,
+      url: `/story-images/_look-test-scratch/${result.filename}`,
+      seed: result.seed,
+      generation_time_ms: result.generation_time_ms,
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/test-generate/save', function (req, res) {
+  const { filename } = req.body || {};
+  if (!filename || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+    return res.status(400).json({ ok: false, error: 'valid filename is required' });
+  }
+  const from = path.join(SCRATCH_DIR, filename);
+  if (!fs.existsSync(from)) return res.status(404).json({ ok: false, error: 'scratch file not found' });
+
+  fs.mkdirSync(SAVES_DIR, { recursive: true });
+  const to = path.join(SAVES_DIR, filename);
+  fs.renameSync(from, to);
+  res.json({ ok: true, url: `/story-images/look-test-saves/${filename}` });
+});
+
+router.post('/test-generate/cleanup', function (req, res) {
+  const { filenames } = req.body || {};
+  let deleted = 0;
+  for (const filename of Array.isArray(filenames) ? filenames : []) {
+    if (!filename || filename.includes('/') || filename.includes('\\') || filename.includes('..')) continue;
+    const p = path.join(SCRATCH_DIR, filename);
+    if (fs.existsSync(p)) {
+      fs.unlinkSync(p);
+      deleted++;
+    }
+  }
+  res.json({ ok: true, deleted });
 });
 
 export default router;
