@@ -1,15 +1,11 @@
 import { state, fontPrefs, textPrefs, chatColors, npcColors, getNpcColor, saveTextPrefs, saveChatColors, saveNpcColors } from '../state.js';
 import { escapeHtml } from '../utils.js';
 import { showToast, showConfirm, setLoading, statusDotsHtml } from '../ui.js';
-import { TEXT_PREF_DEFAULTS, CHAT_COLOR_DEFAULTS, IMAGE_MODELS } from '../constants.js';
+import { TEXT_PREF_DEFAULTS, CHAT_COLOR_DEFAULTS } from '../constants.js';
+import { buildLookPayload, addLoraRow, removeLoraRow } from '../look-editor-form.js';
 
-var ITZ_SAMPLERS = [
-  'exp_heun_2_x0','exp_heun_2_x0_cfg_pp','euler','euler_cfg_pp','euler_ancestral',
-  'dpmpp_2m','dpmpp_2m_sde','dpmpp_3m_sde','dpmpp_sde','ddim','lcm','heun'
-];
-var ITZ_SCHEDULERS = [
-  'kl_optimal','karras','exponential','sgm_uniform','simple','ddim_uniform','beta','normal'
-];
+var _lookEditorState = null; // { loras: [], testResults: [], scratchFilenames: Set }
+var _a1111Catalog = null;    // { models, vaes, loras, samplers, schedulers } — fetched once per editor open
 
 // ---------------------------------------------------------------------------
 // Tool-capable Ollama models
@@ -151,8 +147,8 @@ var TABS = [
   { id: 'textfonts',       label: 'Text & Fonts' },
   { id: 'colors',          label: 'Colors' },
   { id: 'models',          label: 'Models' },
-  { id: 'imagetools',      label: 'Image Tools' },
-  { id: 'imagegeneration', label: 'Image Generation' },
+  { id: 'imagegen',        label: 'Image Generation' },
+  { id: 'storydynamics',   label: 'Story Dynamics' },
   { id: 'about',           label: 'About' }
 ];
 
@@ -169,11 +165,6 @@ function buildTabContent(tabId) {
         '<div class="settings-section">' +
           '<h2 class="section-title">Global Rules</h2>' +
           '<div id="global-rules-section"><div class="loading-state">Loading...</div></div>' +
-        '</div>' +
-        '<div class="settings-section">' +
-          '<h2 class="section-title">Workflow &amp; Styles</h2>' +
-          '<p class="text-muted" style="margin-bottom:12px">Styles control the visual look, model, and LoRA configuration used for scene images.</p>' +
-          '<a href="#styles' + (state.currentScenario ? '?scenario=' + state.currentScenario.id : '') + '" class="btn btn-secondary btn-sm">Open Styles Editor</a>' +
         '</div>';
 
     // -----------------------------------------------------------------------
@@ -306,119 +297,32 @@ function buildTabContent(tabId) {
         '</div>';
 
     // -----------------------------------------------------------------------
-    case 'imagetools':
+    case 'imagegen':
       return '' +
         '<div class="settings-section">' +
-          '<h2 class="section-title">Image Tools</h2>' +
-          // Inner tab bar for Image Tools sub-tabs
-          '<div class="itab-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:20px">' +
-            '<button class="itab active" data-itab="test" style="padding:8px 16px;font-size:13px;font-weight:500;background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;color:var(--text-muted)">Test Zone</button>' +
-            '<button class="itab" data-itab="promptlab" style="padding:8px 16px;font-size:13px;font-weight:500;background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;color:var(--text-muted)">Prompt Lab</button>' +
-          '</div>' +
-
-          // ---- Image Test panel ----
-          '<div id="itab-panel-test">' +
-          '<p class="text-muted" style="margin-bottom:16px">Fire test images with custom settings. Results are kept until you discard them.</p>' +
-          '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Model</label><select class="form-input" id="itz-model">' + IMAGE_MODELS.map(function(m){return '<option value="'+escapeHtml(m.value)+'">'+escapeHtml(m.label)+'</option>';}).join('') + '</select></div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Sampler</label><select class="form-input" id="itz-sampler">' + ITZ_SAMPLERS.map(function(s){return '<option value="'+s+'"'+(s==='exp_heun_2_x0'?' selected':'')+'>'+s+'</option>';}).join('') + '</select></div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Scheduler</label><select class="form-input" id="itz-scheduler">' + ITZ_SCHEDULERS.map(function(s){return '<option value="'+s+'"'+(s==='kl_optimal'?' selected':'')+'>'+s+'</option>';}).join('') + '</select></div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">CFG / Steps</label><div style="display:flex;gap:6px"><input class="form-input" id="itz-cfg" type="number" step="0.5" value="7.5" style="width:60px"><input class="form-input" id="itz-steps" type="number" value="30" style="width:60px"></div></div>' +
-          '</div>' +
-          '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:20px">' +
-            '<div class="form-group" style="margin:0"><label class="form-label">LoRA 1</label><div style="display:flex;gap:6px"><select class="form-input itz-lora-sel" id="itz-lora1" style="flex:1"><option value="">-- none --</option></select><input class="form-input" id="itz-lora1s" type="number" step="0.05" value="1.2" style="width:60px"></div></div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">LoRA 2</label><div style="display:flex;gap:6px"><select class="form-input itz-lora-sel" id="itz-lora2" style="flex:1"><option value="">-- none --</option></select><input class="form-input" id="itz-lora2s" type="number" step="0.05" value="0.8" style="width:60px"></div></div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">LoRA 3</label><div style="display:flex;gap:6px"><select class="form-input itz-lora-sel" id="itz-lora3" style="flex:1"><option value="">-- none --</option></select><input class="form-input" id="itz-lora3s" type="number" step="0.05" value="0.65" style="width:60px"></div></div>' +
-          '</div>' +
-          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">' +
-            '<div>' +
-              '<h3 style="margin:0 0 10px;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary)">Portrait</h3>' +
-              '<div class="form-group" style="margin-bottom:8px"><label class="form-label">Prompt</label><textarea class="form-input" id="itz-prompt" rows="2">beautiful woman, portrait, close-up, looking at camera</textarea></div>' +
-              '<div class="form-group" style="margin-bottom:12px"><label class="form-label">Negative</label><textarea class="form-input" id="itz-negative" rows="2" placeholder="blurry, low quality..."></textarea></div>' +
-              '<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">' +
-                '<button class="btn btn-primary btn-sm" id="btn-itz-fire">Fire Portrait</button>' +
-                '<button class="btn btn-secondary btn-sm" id="btn-itz-save-settings">Save Settings</button>' +
-                '<span id="itz-status" style="font-size:12px;color:var(--text-muted)"></span>' +
-              '</div>' +
-              '<div id="itz-results" style="display:flex;flex-wrap:wrap;gap:10px"></div>' +
-            '</div>' +
-            '<div>' +
-              '<h3 style="margin:0 0 10px;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary)">Full Body</h3>' +
-              '<div class="form-group" style="margin-bottom:8px"><label class="form-label">Prompt</label><textarea class="form-input" id="itz-fb-prompt" rows="2">beautiful woman, full body shot, standing, looking at camera</textarea></div>' +
-              '<div class="form-group" style="margin-bottom:12px"><label class="form-label">Negative</label><textarea class="form-input" id="itz-fb-negative" rows="2" placeholder="blurry, low quality..."></textarea></div>' +
-              '<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">' +
-                '<button class="btn btn-primary btn-sm" id="btn-itz-fb-fire">Fire Full Body</button>' +
-                '<span id="itz-fb-status" style="font-size:12px;color:var(--text-muted)"></span>' +
-              '</div>' +
-              '<div id="itz-fb-results" style="display:flex;flex-wrap:wrap;gap:10px"></div>' +
-            '</div>' +
-          '</div>' +
-          '<style>' +
-            '.itz-shot{position:relative;display:inline-block}' +
-            '.itz-shot .itz-overlay{position:absolute;top:0;left:50%;transform:translateX(-50%);display:flex;gap:6px;padding:6px;opacity:0;transition:opacity .15s;pointer-events:none}' +
-            '.itz-shot:hover .itz-overlay{opacity:1;pointer-events:auto}' +
-            '.itz-overlay a,.itz-overlay button{font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid rgba(255,255,255,.4);background:rgba(0,0,0,.65);color:#fff;cursor:pointer;text-decoration:none;white-space:nowrap;line-height:1.4}' +
-            '.itab.active{color:var(--accent)!important;border-bottom-color:var(--accent)!important}' +
-            '.settings-tab-bar{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:0}' +
-            '.settings-tab-btn{padding:10px 22px;font-size:13px;font-weight:500;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;cursor:pointer;color:var(--text-muted);transition:color .15s,border-color .15s}' +
-            '.settings-tab-btn:hover{color:var(--text)}' +
-            '.settings-tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}' +
-          '</style>' +
-          '</div>' +
-
-          // ---- Prompt Lab panel ----
-          '<div id="itab-panel-promptlab" style="display:none">' +
-            '<div style="margin-bottom:14px">' +
-              '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">' +
-                '<label class="form-label" style="margin:0">Raw Prompt</label>' +
-                '<button class="btn btn-ghost btn-sm" id="pl-load-last" style="font-size:11px">Load Last Story Prompt</button>' +
-              '</div>' +
-              '<textarea class="form-input" id="pl-raw-prompt" rows="4" spellcheck="false" placeholder="Type or paste a raw prompt..."></textarea>' +
-            '</div>' +
-            '<div class="form-group" style="margin-bottom:12px">' +
-              '<label class="form-label">Style Profile</label>' +
-              '<select class="form-input" id="pl-style-select"><option value="">-- None --</option></select>' +
-              '<p class="text-muted" style="font-size:10px;margin-top:3px">If selected, the style prefix / suffix wrap the enhanced result when sending to ComfyUI.</p>' +
-            '</div>' +
-            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">' +
-              '<button class="btn btn-primary btn-sm" id="pl-enhance-btn">Enhance</button>' +
-              '<span id="pl-enhance-status" style="font-size:12px;color:var(--text-muted)"></span>' +
-            '</div>' +
-            '<div class="form-group" style="margin-bottom:12px">' +
-              '<label class="form-label">Enhanced Prompt</label>' +
-              '<textarea class="form-input" id="pl-enhanced" rows="6" readonly spellcheck="false" style="opacity:0.85;resize:vertical" placeholder="Enhanced result appears here..."></textarea>' +
-            '</div>' +
-            '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">' +
-              '<button class="btn btn-primary btn-sm" id="pl-send-btn">Send to ComfyUI</button>' +
-              '<button class="btn btn-ghost btn-sm" id="pl-save-btn">Save as Style Prefix</button>' +
-            '</div>' +
-            '<div id="pl-result"></div>' +
-          '</div>' +
+          '<h2 class="section-title">A1111 Connection</h2>' +
+          '<div id="imagegen-a1111-status"><div class="loading-state">Checking...</div></div>' +
+        '</div>' +
+        '<div class="settings-section">' +
+          '<h2 class="section-title">Looks</h2>' +
+          '<p class="text-muted" style="margin-bottom:10px">Exactly one Look is active at a time. A Look is the ONLY source of style (prefix, LoRAs, suffix, style negatives) — action, location, and clothing text never contribute style, only content.</p>' +
+          '<div id="looks-list"><div class="loading-state">Loading...</div></div>' +
+          '<button class="btn btn-primary btn-sm" id="btn-new-look" style="margin-top:10px">+ New Look</button>' +
+          '<div id="look-editor" style="margin-top:16px;display:none"></div>' +
+        '</div>' +
+        '<div class="settings-section">' +
+          '<h2 class="section-title">FaceID</h2>' +
+          '<p class="text-muted" style="margin-bottom:10px">Requires the sd-webui-controlnet extension installed in A1111. Leave the model blank to disable FaceID — it is never sent with a guessed model name.</p>' +
+          '<div id="faceid-config-form"><div class="loading-state">Loading...</div></div>' +
         '</div>';
 
     // -----------------------------------------------------------------------
-    case 'imagegeneration':
+    case 'storydynamics':
       return '' +
         '<div class="settings-section">' +
-          '<h2 class="section-title">Master Settings</h2>' +
-          '<p class="text-muted" style="margin-bottom:20px">' +
-            'Structural settings that apply to all image generation. ' +
-            'These cannot be overridden by profiles. Saved immediately on change.' +
-          '</p>' +
-          '<div id="imggen-master"><div class="loading-state">Loading...</div></div>' +
-        '</div>' +
-        '<div class="settings-section" style="margin-top:24px">' +
-          '<h2 class="section-title">Image Profiles</h2>' +
-          '<p class="text-muted" style="margin-bottom:16px">' +
-            'Profiles define optional prompt fragments and LoRA overrides. ' +
-            'Activate one to apply it to all generation. Only one profile can be active at a time.' +
-          '</p>' +
-          '<div id="imggen-profiles"><div class="loading-state">Loading...</div></div>' +
-        '</div>' +
-        '<div class="settings-section" style="margin-top:24px">' +
-          '<h2 class="section-title">Image Summary and Learning</h2>' +
-          '<p class="text-muted" style="margin-bottom:12px">Panel defaults, rating prompts, and exemplar learning thresholds.</p>' +
-          '<div id="imggen-summary-learning"><div class="loading-state">Loading...</div></div>' +
+          '<h2 class="section-title">Story Dynamics</h2>' +
+          '<p class="text-muted" style="margin-bottom:12px">Mood, arousal, relationship deltas, and Play UI affordances.</p>' +
+          '<div id="story-dynamics-settings"><div class="loading-state">Loading...</div></div>' +
         '</div>';
 
     // -----------------------------------------------------------------------
@@ -449,8 +353,8 @@ function wireSettingsTabs(el, activeTabId) {
       // Lazy-load per-tab data when switching
       if (tid === 'general')         { loadHealthCards(); loadGlobalRules(); }
       if (tid === 'models')          { loadLlamacppConfig(); }
-      if (tid === 'imagetools')      { wireImageTools(); wirePromptLab(); }
-      if (tid === 'imagegeneration') { wireMasterSettings(); wireProfiles(); wireImageSummarySettings(); }
+      if (tid === 'imagegen')        { wireImageGenSettings(); }
+      if (tid === 'storydynamics')   { wireStoryDynamicsSettings(); }
     };
   });
 }
@@ -491,7 +395,6 @@ export function initSettings() {
     '</div>';
 
   wireSettingsTabs(el, TABS[0].id);
-  wireImageSummarySettings();
 
   // Wire font buttons
   var storyBtn      = document.getElementById('btn-pick-story-font');
@@ -604,1045 +507,469 @@ export function initSettings() {
 }
 
 // ---------------------------------------------------------------------------
-// Image Tools wiring (called lazily when Image Tools tab is activated,
-// and also on initial render since imagetools is not the default tab)
+// Image Generation — A1111 status, Looks CRUD/activate, FaceID config
 // ---------------------------------------------------------------------------
-var _imageToolsWired = false;
-function wireImageTools() {
-  if (_imageToolsWired) return;
-  _imageToolsWired = true;
+var _looksCache = [];
 
-  function g(id) { return document.getElementById(id); }
+function wireImageGenSettings() {
+  loadA1111Status();
+  loadLooksList();
+  loadFaceidConfig();
 
-  function getSharedPayload() {
-    return {
-      model:          (g('itz-model').value     || '').trim() || null,
-      sampler:        (g('itz-sampler').value   || '').trim(),
-      scheduler:      (g('itz-scheduler').value || '').trim(),
-      cfg:            Number(g('itz-cfg').value)    || 7.5,
-      steps:          Number(g('itz-steps').value)  || 30,
-      lora1_file:     (g('itz-lora1').value  || '').trim() || null,
-      lora1_strength: Number(g('itz-lora1s').value),
-      lora2_file:     (g('itz-lora2').value  || '').trim() || null,
-      lora2_strength: Number(g('itz-lora2s').value),
-      lora3_file:     (g('itz-lora3').value  || '').trim() || null,
-      lora3_strength: Number(g('itz-lora3s').value)
-    };
+  var newLookBtn = document.getElementById('btn-new-look');
+  if (newLookBtn) {
+    newLookBtn.onclick = function () { showLookEditor(null); };
   }
+}
 
-  function shotsKey(ns) { return 'itz-shots-' + ns; }
-  function loadShots(ns) { try { return JSON.parse(localStorage.getItem(shotsKey(ns)) || '[]'); } catch(e) { return []; } }
-  function saveShots(ns, shots) { try { localStorage.setItem(shotsKey(ns), JSON.stringify(shots)); } catch(e) {} }
+function loadA1111Status() {
+  var el = document.getElementById('imagegen-a1111-status');
+  if (!el) return;
+  API.getHealthA1111().then(function (res) {
+    if (res.ok) {
+      el.innerHTML =
+        '<div class="health-card">' +
+          '<div class="health-card-left">' +
+            '<div class="health-dot ok"></div>' +
+            '<div><div class="health-card-name">A1111</div>' +
+              '<div class="health-card-info">Connected — ' + escapeHtml(res.url || '') + '</div></div>' +
+          '</div>' +
+        '</div>';
+    } else {
+      el.innerHTML =
+        '<div class="health-card">' +
+          '<div class="health-card-left">' +
+            '<div class="health-dot error"></div>' +
+            '<div><div class="health-card-name">A1111</div>' +
+              '<div class="health-card-info">Not reachable' + (res.error ? ' — ' + escapeHtml(res.error) : '') + '</div></div>' +
+          '</div>' +
+        '</div>';
+    }
+  }).catch(function (e) {
+    el.innerHTML = '<p class="text-muted">Could not check A1111: ' + escapeHtml(e.message) + '</p>';
+  });
+}
 
-  function shotHtml(s, i, imgW) {
-    return '<div class="itz-shot" style="position:relative;display:inline-block">' +
-      '<img src="/story-images/' + escapeHtml(s.filename) + '" ' +
-        'style="width:' + imgW + 'px;height:auto;border-radius:6px;border:2px solid ' + (i === 0 ? 'var(--accent)' : 'var(--border)') + ';cursor:zoom-in;display:block" ' +
-        'title="' + escapeHtml(s.label) + '" ' +
-        'onclick="(function(src){var lb=document.getElementById(\'story-lightbox\');if(lb){lb.querySelector(\'img\').src=src;lb.style.display=\'flex\';}})(this.src)">' +
-      '<div class="itz-overlay">' +
-        '<a href="/story-images/' + escapeHtml(s.filename) + '" download="' + escapeHtml(s.filename) + '">Save</a>' +
-        '<button data-di="' + i + '" data-ns="' + s.ns + '">X</button>' +
+function loadLooksList() {
+  var el = document.getElementById('looks-list');
+  if (!el) return;
+  API.getLooks().then(function (looks) {
+    _looksCache = Array.isArray(looks) ? looks : [];
+    renderLooksList();
+  }).catch(function (e) {
+    el.innerHTML = '<p class="text-muted">Failed to load Looks: ' + escapeHtml(e.message) + '</p>';
+  });
+}
+
+function renderLooksList() {
+  var el = document.getElementById('looks-list');
+  if (!el) return;
+  if (!_looksCache.length) {
+    el.innerHTML = '<p class="text-muted">No Looks yet. Create one below.</p>';
+    return;
+  }
+  el.innerHTML = _looksCache.map(function (look) {
+    return '<div class="loc-tab-item" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;margin-bottom:6px;background:' +
+      (look.is_active ? 'var(--accent-muted,rgba(100,180,255,.15))' : 'var(--bg-card,#1e1e2e)') + ';border:1px solid ' +
+      (look.is_active ? 'var(--accent,#64b4ff)' : 'var(--border,#333)') + '">' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:13px;font-weight:' + (look.is_active ? '600' : '400') + '">' +
+          escapeHtml(look.name) +
+          (look.is_active ? ' <span style="font-size:11px;color:var(--accent,#64b4ff)">(active)</span>' : '') +
+        '</div>' +
+        (look.description ? '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(look.description) + '</div>' : '') +
+      '</div>' +
+      (look.is_active
+        ? ''
+        : '<button class="btn btn-xs btn-secondary look-activate-btn" data-id="' + look.id + '">Activate</button>') +
+      '<button class="btn btn-ghost btn-xs look-edit-btn" data-id="' + look.id + '">Edit</button>' +
+      '<button class="btn btn-danger-ghost btn-xs look-delete-btn" data-id="' + look.id + '">Delete</button>' +
+    '</div>';
+  }).join('');
+
+  el.querySelectorAll('.look-activate-btn').forEach(function (btn) {
+    btn.onclick = function () {
+      btn.disabled = true;
+      API.activateLook(Number(btn.dataset.id))
+        .then(function () { showToast('Look activated.', 'success'); loadLooksList(); })
+        .catch(function (e) { showToast('Failed: ' + e.message, 'error'); btn.disabled = false; });
+    };
+  });
+  el.querySelectorAll('.look-edit-btn').forEach(function (btn) {
+    btn.onclick = function () {
+      var look = _looksCache.find(function (l) { return l.id === Number(btn.dataset.id); });
+      if (look) showLookEditor(look);
+    };
+  });
+  el.querySelectorAll('.look-delete-btn').forEach(function (btn) {
+    btn.onclick = function () {
+      var look = _looksCache.find(function (l) { return l.id === Number(btn.dataset.id); });
+      showConfirm('Delete Look', 'Delete "' + (look ? look.name : 'this Look') + '"? Images already generated with it keep their saved snapshot.', function () {
+        API.deleteLook(Number(btn.dataset.id))
+          .then(function () { showToast('Look deleted.', 'success'); loadLooksList(); })
+          .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
+      });
+    };
+  });
+}
+
+var SCHEDULER_FALLBACK = ['Automatic', 'Karras', 'Exponential', 'Normal', 'Simple', 'SGM Uniform'];
+var RESOLUTION_PRESETS = [
+  { label: '832×1216 Portrait', width: 832, height: 1216 },
+  { label: '1024×1024 Square', width: 1024, height: 1024 },
+  { label: '1216×832 Landscape', width: 1216, height: 832 },
+];
+
+function _cleanupLookEditorScratch() {
+  if (_lookEditorState && _lookEditorState.scratchFilenames.size) {
+    API.cleanupTestLookImages(Array.from(_lookEditorState.scratchFilenames)).catch(function () {});
+  }
+  _lookEditorState = null;
+}
+
+function showLookEditor(look) {
+  var editorEl = document.getElementById('look-editor');
+  if (!editorEl) return;
+  var isNew = !look;
+  var l = look || {};
+
+  _lookEditorState = {
+    loras: (function () {
+      try { return JSON.parse(l.loras_json || '[]'); } catch (_) { return []; }
+    })(),
+    testResults: [],
+    scratchFilenames: new Set(),
+  };
+
+  editorEl.style.display = '';
+  editorEl.innerHTML = '<div class="loading-state">Loading A1111 catalog...</div>';
+
+  Promise.all([
+    API.getA1111Models().catch(function () { return { ok: false, models: [] }; }),
+    API.getA1111Vaes().catch(function () { return { ok: false, vaes: [] }; }),
+    API.getA1111Loras().catch(function () { return { ok: false, loras: [] }; }),
+    API.getA1111Samplers().catch(function () { return { ok: false, samplers: [] }; }),
+    API.getA1111Schedulers().catch(function () { return { ok: false, schedulers: [] }; }),
+  ]).then(function (results) {
+    _a1111Catalog = {
+      models: results[0].models || [],
+      vaes: results[1].vaes || [],
+      loras: results[2].loras || [],
+      samplers: results[3].samplers || [],
+      schedulers: (results[4].schedulers && results[4].schedulers.length) ? results[4].schedulers : SCHEDULER_FALLBACK,
+    };
+    _renderLookEditor(editorEl, look, isNew);
+  });
+}
+
+function _optionsHtml(values, current, blankLabel) {
+  var html = '';
+  if (blankLabel) html += '<option value=""' + (!current ? ' selected' : '') + '>' + blankLabel + '</option>';
+  html += values.map(function (v) {
+    var value = typeof v === 'string' ? v : (v.title || v.model_name || v.name);
+    var label = typeof v === 'string' ? v : (v.title || v.model_name || v.name);
+    return '<option value="' + escapeHtml(value) + '"' + (current === value ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+  }).join('');
+  return html;
+}
+
+function _renderLoraRows() {
+  return _lookEditorState.loras.map(function (lora, i) {
+    return '<div class="lora-row" data-idx="' + i + '" style="display:grid;grid-template-columns:1fr 90px 32px;gap:8px;margin-bottom:6px">' +
+      '<select class="form-input le-lora-file" data-idx="' + i + '">' +
+        _optionsHtml(_a1111Catalog.loras.map(function (x) { return x.name; }), lora.file, '-- select LoRA --') +
+      '</select>' +
+      '<input type="number" step="0.05" min="0" max="2" class="form-input le-lora-strength" data-idx="' + i + '" value="' + (lora.strength != null ? lora.strength : 1.0) + '">' +
+      '<button type="button" class="btn btn-ghost btn-xs le-lora-remove" data-idx="' + i + '" title="Remove">✕</button>' +
+    '</div>';
+  }).join('');
+}
+
+function _renderTestResults() {
+  if (!_lookEditorState.testResults.length) return '<p class="text-muted" style="font-size:12px">No test images generated yet this session.</p>';
+  return _lookEditorState.testResults.map(function (r, i) {
+    return '<div class="test-result-card" data-idx="' + i + '" style="border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:10px">' +
+      '<img src="' + r.url + '" style="width:100%;display:block">' +
+      '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;font-size:11px;color:var(--text-muted)">' +
+        '<span>seed ' + r.seed + ' • ' + Math.round(r.generation_time_ms / 100) / 10 + 's</span>' +
+        '<button type="button" class="btn btn-xs btn-secondary le-test-save" data-idx="' + i + '" style="margin-left:auto" ' + (r.saved ? 'disabled' : '') + '>' + (r.saved ? 'Saved' : 'Save') + '</button>' +
       '</div>' +
     '</div>';
-  }
+  }).join('');
+}
 
-  function renderShots(ns, resultsEl, imgW) {
-    if (!resultsEl) return;
-    var shots = loadShots(ns);
-    if (!shots.length) { resultsEl.innerHTML = '<span style="font-size:12px;color:var(--text-muted)">No shots yet.</span>'; return; }
-    resultsEl.innerHTML = shots.map(function(s, i) { return shotHtml(s, i, imgW); }).join('');
-    resultsEl.querySelectorAll('[data-di]').forEach(function(btn) {
-      btn.onclick = function() {
-        var shots = loadShots(ns);
-        shots.splice(parseInt(btn.getAttribute('data-di'), 10), 1);
-        saveShots(ns, shots);
-        renderShots(ns, resultsEl, imgW);
-      };
+function _renderLookEditor(editorEl, look, isNew) {
+  var l = look || {};
+  var cat = _a1111Catalog;
+
+  editorEl.innerHTML =
+    '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:14px">' +
+      '<h3 style="margin:0 0 12px;font-size:14px">' + (isNew ? 'New Look' : 'Edit: ' + escapeHtml(l.name || '')) + '</h3>' +
+
+      '<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;color:var(--text-muted)">Model &amp; Rendering</h4>' +
+      '<div class="form-group"><label class="form-label">Checkpoint</label>' +
+        '<select class="form-input" id="le-checkpoint">' + _optionsHtml(cat.models, l.checkpoint || '', '-- use currently loaded --') + '</select></div>' +
+      '<div class="form-group"><label class="form-label">VAE</label>' +
+        '<select class="form-input" id="le-vae">' + _optionsHtml(cat.vaes.map(function (v) { return v.name; }), l.vae || '', '-- use A1111 default --') + '</select></div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">' +
+        '<div class="form-group"><label class="form-label">Clip Skip <span class="form-hint">(1-12, blank = default)</span></label>' +
+          '<input type="number" min="1" max="12" class="form-input" id="le-clip-skip" value="' + (l.clip_skip != null ? l.clip_skip : '') + '"></div>' +
+        '<div class="form-group"><label class="form-label">Restore Faces</label>' +
+          '<label style="display:flex;align-items:center;gap:6px;height:34px"><input type="checkbox" id="le-restore-faces" ' + (l.restore_faces ? 'checked' : '') + '> On</label></div>' +
+        '<div class="form-group"><label class="form-label">Tiling</label>' +
+          '<label style="display:flex;align-items:center;gap:6px;height:34px"><input type="checkbox" id="le-tiling" ' + (l.tiling ? 'checked' : '') + '> On</label></div>' +
+      '</div>' +
+
+      '<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;color:var(--text-muted)">LoRAs</h4>' +
+      '<div id="le-lora-rows">' + _renderLoraRows() + '</div>' +
+      '<button type="button" class="btn btn-ghost btn-xs" id="le-lora-add">+ Add LoRA</button>' +
+
+      '<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;color:var(--text-muted)">Sampling</h4>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
+        '<div class="form-group"><label class="form-label">Sampler</label>' +
+          '<select class="form-input" id="le-sampler">' + _optionsHtml(cat.samplers, l.sampler || 'DPM++ 2M SDE') + '</select></div>' +
+        '<div class="form-group"><label class="form-label">Scheduler</label>' +
+          '<select class="form-input" id="le-scheduler">' + _optionsHtml(cat.schedulers, l.scheduler || 'Karras') + '</select></div>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
+        '<div class="form-group"><label class="form-label">Steps</label>' +
+          '<input type="number" class="form-input" id="le-steps" value="' + (l.steps != null ? l.steps : 30) + '"></div>' +
+        '<div class="form-group"><label class="form-label">CFG</label>' +
+          '<input type="number" step="0.5" class="form-input" id="le-cfg" value="' + (l.cfg != null ? l.cfg : 7) + '"></div>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
+        '<div class="form-group"><label class="form-label">Width</label>' +
+          '<input type="number" class="form-input" id="le-width" value="' + (l.width != null ? l.width : 832) + '"></div>' +
+        '<div class="form-group"><label class="form-label">Height</label>' +
+          '<input type="number" class="form-input" id="le-height" value="' + (l.height != null ? l.height : 1216) + '"></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;margin-bottom:10px">' +
+        RESOLUTION_PRESETS.map(function (p, i) {
+          return '<button type="button" class="btn btn-ghost btn-xs le-res-preset" data-w="' + p.width + '" data-h="' + p.height + '">' + p.label + '</button>';
+        }).join('') +
+      '</div>' +
+
+      '<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;color:var(--text-muted)">Prompt</h4>' +
+      '<div class="form-group"><label class="form-label">Prompt Prefix <span class="form-hint">(style — goes first)</span></label>' +
+        '<textarea class="form-input" id="le-prefix" rows="2">' + escapeHtml(l.prompt_prefix || '') + '</textarea></div>' +
+      '<div class="form-group"><label class="form-label">Prompt Suffix <span class="form-hint">(style — goes last)</span></label>' +
+        '<textarea class="form-input" id="le-suffix" rows="2">' + escapeHtml(l.prompt_suffix || '') + '</textarea></div>' +
+      '<div class="form-group"><label class="form-label">Negative <span class="form-hint">(style only — anatomy/safety negatives are handled separately and always applied)</span></label>' +
+        '<textarea class="form-input" id="le-negative" rows="2">' + escapeHtml(l.negative || '') + '</textarea></div>' +
+
+      '<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;color:var(--text-muted)">Test Generation</h4>' +
+      '<div class="form-group"><label class="form-label">Test Subject</label>' +
+        '<input type="text" class="form-input" id="le-test-subject" value="a woman standing in a park, full body"></div>' +
+      '<button type="button" class="btn btn-secondary btn-sm" id="le-test-generate" style="margin-bottom:10px">Generate Test Image</button>' +
+      '<div id="le-test-results">' + _renderTestResults() + '</div>' +
+
+      '<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;color:var(--text-muted)">Save as Look</h4>' +
+      '<div class="form-group"><label class="form-label">Name</label>' +
+        '<input type="text" class="form-input" id="le-name" value="' + escapeHtml(l.name || '') + '"></div>' +
+      '<div class="form-group"><label class="form-label">Description</label>' +
+        '<input type="text" class="form-input" id="le-description" value="' + escapeHtml(l.description || '') + '"></div>' +
+      '<div style="display:flex;gap:8px;margin-top:10px">' +
+        '<button class="btn btn-primary btn-sm" id="le-save">' + (isNew ? 'Create Look' : 'Save Changes') + '</button>' +
+        '<button class="btn btn-ghost btn-sm" id="le-cancel">Cancel</button>' +
+      '</div>' +
+    '</div>';
+
+  _wireLookEditorEvents(editorEl, look, isNew);
+}
+
+function _collectDraftFields() {
+  return {
+    name: document.getElementById('le-name').value,
+    description: document.getElementById('le-description').value.trim(),
+    checkpoint: document.getElementById('le-checkpoint').value,
+    vae: document.getElementById('le-vae').value,
+    clip_skip: document.getElementById('le-clip-skip').value,
+    restore_faces: document.getElementById('le-restore-faces').checked,
+    tiling: document.getElementById('le-tiling').checked,
+    loras: _lookEditorState.loras,
+    prompt_prefix: document.getElementById('le-prefix').value.trim(),
+    prompt_suffix: document.getElementById('le-suffix').value.trim(),
+    negative: document.getElementById('le-negative').value.trim(),
+    sampler: document.getElementById('le-sampler').value,
+    scheduler: document.getElementById('le-scheduler').value,
+    steps: document.getElementById('le-steps').value,
+    cfg: document.getElementById('le-cfg').value,
+    width: document.getElementById('le-width').value,
+    height: document.getElementById('le-height').value,
+  };
+}
+
+function _wireLookEditorEvents(editorEl, look, isNew) {
+  editorEl.querySelectorAll('.le-lora-file').forEach(function (sel) {
+    sel.onchange = function () { _lookEditorState.loras[Number(sel.dataset.idx)].file = sel.value; };
+  });
+  editorEl.querySelectorAll('.le-lora-strength').forEach(function (inp) {
+    inp.onchange = function () { _lookEditorState.loras[Number(inp.dataset.idx)].strength = Number(inp.value) || 1.0; };
+  });
+  editorEl.querySelectorAll('.le-lora-remove').forEach(function (btn) {
+    btn.onclick = function () {
+      _lookEditorState.loras = removeLoraRow(_lookEditorState.loras, Number(btn.dataset.idx));
+      document.getElementById('le-lora-rows').innerHTML = _renderLoraRows();
+      _wireLookEditorEvents(editorEl, look, isNew);
+    };
+  });
+  document.getElementById('le-lora-add').onclick = function () {
+    _lookEditorState.loras = addLoraRow(_lookEditorState.loras);
+    document.getElementById('le-lora-rows').innerHTML = _renderLoraRows();
+    _wireLookEditorEvents(editorEl, look, isNew);
+  };
+
+  editorEl.querySelectorAll('.le-res-preset').forEach(function (btn) {
+    btn.onclick = function () {
+      document.getElementById('le-width').value = btn.dataset.w;
+      document.getElementById('le-height').value = btn.dataset.h;
+    };
+  });
+
+  document.getElementById('le-test-generate').onclick = function () {
+    var btn = document.getElementById('le-test-generate');
+    var draft = _collectDraftFields();
+    draft.test_subject = document.getElementById('le-test-subject').value.trim();
+    setLoading(btn, true, 'Generating...');
+    API.testGenerateLook(draft).then(function (result) {
+      setLoading(btn, false);
+      if (!result.ok) { showToast('Test generation failed: ' + (result.error || 'unknown error'), 'error'); return; }
+      _lookEditorState.scratchFilenames.add(result.filename);
+      _lookEditorState.testResults.unshift({ url: result.url, filename: result.filename, seed: result.seed, generation_time_ms: result.generation_time_ms, saved: false });
+      if (_lookEditorState.testResults.length > 12) _lookEditorState.testResults.length = 12;
+      document.getElementById('le-test-results').innerHTML = _renderTestResults();
+      _wireTestResultButtons(editorEl);
+    }).catch(function (e) {
+      setLoading(btn, false);
+      showToast('Test generation failed: ' + e.message, 'error');
     });
-  }
+  };
+  _wireTestResultButtons(editorEl);
 
-  function wirePanel(cfg) {
-    var fireBtn   = g(cfg.fireId);
-    var statusEl  = g(cfg.statusId);
-    var resultsEl = g(cfg.resultsId);
-    renderShots(cfg.ns, resultsEl, cfg.imgW);
-    if (!fireBtn) return;
-    fireBtn.onclick = function() {
-      var payload = Object.assign(getSharedPayload(), {
-        prompt:          (g(cfg.promptId).value   || '').trim() || cfg.defaultPrompt,
-        negative_prompt: (g(cfg.negativeId).value || '').trim() || null,
-        width:  cfg.width,
-        height: cfg.height
+  document.getElementById('le-cancel').onclick = function () {
+    _cleanupLookEditorScratch();
+    editorEl.style.display = 'none';
+    editorEl.innerHTML = '';
+  };
+
+  document.getElementById('le-save').onclick = function () {
+    var saveBtn = document.getElementById('le-save');
+    var payload = buildLookPayload(_collectDraftFields());
+    if (!payload.ok) { showToast(payload.error, 'error'); return; }
+    delete payload.ok;
+
+    setLoading(saveBtn, true, 'Saving...');
+    var promise = isNew ? API.createLook(payload) : API.updateLook(look.id, payload);
+    promise.then(function () {
+      showToast(isNew ? 'Look created.' : 'Look saved.', 'success');
+      _lookEditorState.scratchFilenames.clear(); // saved images (if any) were kept via Save; the rest is abandoned scratch
+      _cleanupLookEditorScratch();
+      editorEl.style.display = 'none';
+      editorEl.innerHTML = '';
+      loadLooksList();
+    }).catch(function (e) {
+      showToast('Save failed: ' + e.message, 'error');
+      setLoading(saveBtn, false);
+    });
+  };
+}
+
+function _wireTestResultButtons(editorEl) {
+  editorEl.querySelectorAll('.le-test-save').forEach(function (btn) {
+    btn.onclick = function () {
+      var idx = Number(btn.dataset.idx);
+      var result = _lookEditorState.testResults[idx];
+      if (!result || result.saved) return;
+      btn.disabled = true;
+      API.saveTestLookImage(result.filename).then(function () {
+        result.saved = true;
+        _lookEditorState.scratchFilenames.delete(result.filename);
+        btn.textContent = 'Saved';
+        showToast('Image saved.', 'success');
+      }).catch(function (e) {
+        btn.disabled = false;
+        showToast('Save failed: ' + e.message, 'error');
       });
-      fireBtn.disabled = true;
-      fireBtn.textContent = 'Generating...';
-      if (statusEl) statusEl.textContent = 'Not available in this version.';
-      fireBtn.disabled = false;
-      fireBtn.textContent = cfg.fireLabel;
     };
-  }
-
-  wirePanel({ ns:'portrait', fireId:'btn-itz-fire',    statusId:'itz-status',    resultsId:'itz-results',
-    promptId:'itz-prompt',    negativeId:'itz-negative',    width:832,  height:1216, imgW:200,
-    fireLabel:'Fire Portrait', defaultPrompt:'beautiful woman, portrait, close-up, looking at camera' });
-  wirePanel({ ns:'fullbody', fireId:'btn-itz-fb-fire', statusId:'itz-fb-status', resultsId:'itz-fb-results',
-    promptId:'itz-fb-prompt', negativeId:'itz-fb-negative', width:832, height:1216, imgW:400,
-    fireLabel:'Fire Full Body', defaultPrompt:'beautiful woman, full body shot, standing, looking at camera' });
-
-  // Populate LoRA dropdowns from A1111
-  API.getA1111Loras().then(function(data) {
-    var loras = Array.isArray(data) ? data : (data.loras || []);
-    var opts = '<option value="">-- none --</option>' +
-      loras.map(function(l){
-        var f = typeof l === 'string' ? l : (l.name || l.filename || '');
-        return '<option value="'+escapeHtml(f)+'">'+escapeHtml(f)+'</option>';
-      }).join('');
-    ['itz-lora1','itz-lora2','itz-lora3'].forEach(function(id){ var s=g(id); if(s) s.innerHTML=opts; });
-  }).catch(function(){});
-
-  // Save Settings button
-  var saveSettingsBtn = g('btn-itz-save-settings');
-  var itzStatusEl = g('itz-status');
-  if (saveSettingsBtn) {
-    saveSettingsBtn.onclick = function() {
-      var name = prompt('Name for this style preset:');
-      if (!name || !name.trim()) return;
-      var data = {
-        name: name.trim(),
-        base_model:      (g('itz-model').value    || '').trim() || null,
-        sampler:         (g('itz-sampler').value  || '').trim() || null,
-        scheduler:       (g('itz-scheduler').value|| '').trim() || null,
-        cfg_scale:       Number(g('itz-cfg').value)  || 7.5,
-        steps:           Number(g('itz-steps').value) || 30,
-        lora1_file:      (g('itz-lora1').value  || '').trim() || null,
-        lora1_strength:  Number(g('itz-lora1s').value),
-        lora2_file:      (g('itz-lora2').value  || '').trim() || null,
-        lora2_strength:  Number(g('itz-lora2s').value),
-        lora3_file:      (g('itz-lora3').value  || '').trim() || null,
-        lora3_strength:  Number(g('itz-lora3s').value),
-        prompt_prefix:   (g('itz-prompt').value   || '').trim() || null,
-        negative_prompt: (g('itz-negative').value || '').trim() || null
-      };
-      if(itzStatusEl){ itzStatusEl.textContent='Style saving not available in this version.'; setTimeout(function(){ itzStatusEl.textContent=''; },3000); }
-    };
-  }
-
-  // Wire inner itab bar
-  var itabBar = document.querySelector('#view-settings .itab-bar');
-  if (itabBar) {
-    itabBar.querySelectorAll('.itab').forEach(function (btn) {
-      btn.onclick = function () {
-        itabBar.querySelectorAll('.itab').forEach(function (b) { b.classList.remove('active'); });
-        btn.classList.add('active');
-        var tab = btn.dataset.itab;
-        var panelTest = document.getElementById('itab-panel-test');
-        var panelPL   = document.getElementById('itab-panel-promptlab');
-        if (panelTest) panelTest.style.display = tab === 'test'      ? '' : 'none';
-        if (panelPL)   panelPL.style.display   = tab === 'promptlab' ? '' : 'none';
-        if (tab === 'promptlab') _plLoadStyles();
-      };
-    });
-  }
+  });
 }
 
-// ---------------------------------------------------------------------------
-// Prompt Lab wiring (lazy, called with wireImageTools)
-// ---------------------------------------------------------------------------
-var _promptLabWired = false;
-var _plStyles = [];
+function loadFaceidConfig() {
+  var el = document.getElementById('faceid-config-form');
+  if (!el) return;
+  API.getConfig().then(function (cfg) {
+    el.innerHTML =
+      '<div class="form-group"><label class="form-label">ControlNet FaceID model <span class="form-hint">(exact model filename from your A1111 ControlNet models — blank disables FaceID)</span></label>' +
+        '<input type="text" class="form-input" id="fc-model" value="' + escapeHtml(cfg.a1111_faceid_model || '') + '" placeholder="e.g. ip-adapter-faceid-plusv2_sdxl.bin"></div>' +
+      '<div class="form-group"><label class="form-label">Preprocessor module</label>' +
+        '<input type="text" class="form-input" id="fc-module" value="' + escapeHtml(cfg.a1111_faceid_module || 'ip-adapter_clip_sdxl') + '"></div>' +
+      '<button type="button" class="btn btn-primary btn-sm" id="fc-save">Save FaceID Config</button>';
 
-function _plGetStyle() {
-  var sel = document.getElementById('pl-style-select');
-  var styleId = sel ? parseInt(sel.value || '0', 10) || 0 : 0;
-  return styleId ? _plStyles.find(function (s) { return s.id === styleId; }) : null;
+    document.getElementById('fc-save').onclick = function () {
+      var btn = document.getElementById('fc-save');
+      setLoading(btn, true, 'Saving...');
+      API.setConfigs({
+        a1111_faceid_model: document.getElementById('fc-model').value.trim(),
+        a1111_faceid_module: document.getElementById('fc-module').value.trim() || 'ip-adapter_clip_sdxl',
+      }).then(function () {
+        showToast('FaceID config saved.', 'success');
+        setLoading(btn, false);
+      }).catch(function (e) {
+        showToast('Save failed: ' + e.message, 'error');
+        setLoading(btn, false);
+      });
+    };
+  }).catch(function (e) {
+    el.innerHTML = '<p class="text-muted">Could not load config: ' + escapeHtml(e.message) + '</p>';
+  });
 }
 
-function _plRenderPreview() {
-  var ta = document.getElementById('pl-enhanced');
-  if (!ta) return;
-  var base = (ta.dataset.baseEnhanced || '').trim();
-  if (!base) { ta.value = ''; return; }
-  var style = _plGetStyle();
-  if (!style) { ta.value = base; return; }
-  var parts = [];
-  if (style.prompt_prefix) parts.push(style.prompt_prefix.trim());
-  parts.push(base);
-  if (style.prompt_suffix) parts.push(style.prompt_suffix.trim());
-  ta.value = parts.filter(Boolean).join(', ');
-}
+var _storyDynamicsWired = false;
 
-function _plLoadStyles() {
-  // Styles endpoint not available in A1111 version
-}
-
-function wirePromptLab() {
-  if (_promptLabWired) return;
-  _promptLabWired = true;
-
-  function g(id) { return document.getElementById(id); }
-
-  var loadLastBtn = g('pl-load-last');
-  if (loadLastBtn) {
-    loadLastBtn.onclick = function () {
-      var sc = state.currentScenario;
-      if (!sc) { showToast('No active scenario. Open a story first.'); return; }
-      showToast('Load last prompt not available in this version.');
-    };
-  }
-
-  var enhanceBtn = g('pl-enhance-btn');
-  if (enhanceBtn) {
-    enhanceBtn.onclick = function () {
-      var raw = (g('pl-raw-prompt').value || '').trim();
-      if (!raw) { showToast('Enter a prompt first.'); return; }
-      var statusEl = g('pl-enhance-status');
-      if (statusEl) statusEl.innerHTML = 'Enhancing ' + statusDotsHtml();
-      enhanceBtn.disabled = true;
-      // Prompt enhancement not available in A1111 version — pass through as-is
-      var ta = g('pl-enhanced');
-      if (ta) { ta.dataset.baseEnhanced = raw; _plRenderPreview(); }
-      if (statusEl) statusEl.innerHTML = '';
-      enhanceBtn.disabled = false;
-    };
-  }
-
-  var sendBtn = g('pl-send-btn');
-  if (sendBtn) {
-    sendBtn.onclick = function () {
-      var ta = g('pl-enhanced');
-      var enhanced = ta ? (ta.dataset.baseEnhanced || '').trim() : '';
-      if (!enhanced) { showToast('Enhance a prompt first.'); return; }
-      var style = _plGetStyle();
-      var finalPrompt = ta ? (ta.value || '').trim() : enhanced;
-      showToast('Send to A1111 not available from Prompt Lab in this version.');
-    };
-  }
-
-  var saveBtn = g('pl-save-btn');
-  if (saveBtn) {
-    saveBtn.onclick = function () {
-      var enhanced = (g('pl-enhanced').dataset.baseEnhanced || '').trim();
-      if (!enhanced) { showToast('Nothing to save. Enhance a prompt first.'); return; }
-      var name = prompt('Name for this style:');
-      if (!name || !name.trim()) return;
-      Promise.resolve().then(function () {
-        showToast('Style saving not available in this version.');
-      })
-        .catch(function (e) { showToast('Save failed: ' + e.message); });
-    };
-  }
-}
-
-// ---------------------------------------------------------------------------
-
-var _imageSummarySettingsWired = false;
-
-function wireImageSummarySettings() {
-  var el = document.getElementById('imggen-summary-learning');
+function wireStoryDynamicsSettings() {
+  var el = document.getElementById('story-dynamics-settings');
   if (!el) return;
 
   API.getConfig().then(function (cfg) {
-    var current = (cfg && cfg.image_summary_panel_default) || 'visible';
+    function boolChecked(key, def) {
+      var v = cfg[key];
+      if (v == null) return def !== false;
+      return v === true || v === 'true' || v === 1 || v === '1';
+    }
     el.innerHTML =
-      '<div class="form-group">' +
-        '<label class="form-label">Image summary panel default</label>' +
-        '<select class="form-input" id="isl-panel-default">' +
-          '<option value="visible"' + (current === 'visible' ? ' selected' : '') + '>Expanded</option>' +
-          '<option value="minimized"' + (current === 'minimized' ? ' selected' : '') + '>Minimized</option>' +
-        '</select>' +
-        '<p class="form-hint text-muted" style="margin-top:6px">Applies to new narrator turns in Play.</p>' +
-      '</div>' +
-      '<div class="form-group"><label class="toggle-label"><span>Rating prompts after generate</span><input type="checkbox" id="isl-rating-prompt"' + ((cfg.summary_rating_prompt_enabled === true || cfg.summary_rating_prompt_enabled === 'true') ? ' checked' : '') + '></label></div>' +
-      '<div class="form-group"><label class="toggle-label"><span>Exemplar learning enabled</span><input type="checkbox" id="isl-learning-enabled"' + ((cfg.summary_learning_enabled === true || cfg.summary_learning_enabled === 'true') ? ' checked' : '') + '></label></div>' +
-      '<div class="form-group"><label class="form-label">Min content score (1-5)</label><input type="number" min="1" max="5" class="form-input" id="isl-content-min" value="' + (cfg.summary_content_min_for_learning || 4) + '"></div>' +
-      '<div class="form-group"><label class="form-label">Min style score (1-5)</label><input type="number" min="1" max="5" class="form-input" id="isl-style-min" value="' + (cfg.summary_style_min_for_learning || 4) + '"></div>' +
-      '<div class="form-group"><label class="form-label">Global exemplar cap</label><input type="number" min="10" max="200" class="form-input" id="isl-exemplar-max" value="' + (cfg.summary_exemplar_max || 50) + '"></div>' +
-      '<div class="form-group"><label class="form-label">Per-scenario exemplar cap</label><input type="number" min="1" max="50" class="form-input" id="isl-exemplar-per-scenario" value="' + (cfg.summary_exemplar_max_per_scenario || 10) + '"></div>' +
-      '<button type="button" class="btn btn-primary btn-sm" id="isl-save-all">Save learning settings</button>';
+      '<div class="form-group"><label class="toggle-label"><span>NSFW enabled</span><input type="checkbox" id="sd-nsfw-enabled"' + (boolChecked('nsfw_enabled', false) ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="toggle-label"><span>Explicit mode</span><input type="checkbox" id="sd-explicit-mode"' + (boolChecked('explicit_mode', false) ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="toggle-label"><span>Arousal decay enabled</span><input type="checkbox" id="sd-arousal-decay"' + (boolChecked('arousal_decay_enabled', true) ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="toggle-label"><span>Emotion tracking enabled</span><input type="checkbox" id="sd-emotion-tracking"' + (boolChecked('emotion_tracking_enabled', true) ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="toggle-label"><span>Relationship deltas enabled</span><input type="checkbox" id="sd-rel-deltas"' + (boolChecked('relationship_deltas_enabled', true) ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="toggle-label"><span>Mood gate toasts</span><input type="checkbox" id="sd-mood-gate-toasts"' + (boolChecked('mood_gate_toasts_enabled', true) ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="toggle-label"><span>Regen state snapshot</span><input type="checkbox" id="sd-regen-snapshot"' + (boolChecked('regen_state_snapshot_enabled', true) ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="toggle-label"><span>Cast trigger chips in Play</span><input type="checkbox" id="sd-cast-chips"' + (boolChecked('cast_trigger_chips_enabled', true) ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="toggle-label"><span>Scene heat readout in Play</span><input type="checkbox" id="sd-scene-heat"' + (boolChecked('scene_heat_readout_enabled', true) ? ' checked' : '') + '></label></div>' +
+      '<div class="form-group"><label class="form-label">SFW arousal ceiling (1-5)</label><input type="number" min="1" max="5" class="form-input" id="sd-sfw-ceiling" value="' + (cfg.sfw_arousal_ceiling != null ? cfg.sfw_arousal_ceiling : 3) + '"></div>' +
+      '<button type="button" class="btn btn-primary btn-sm" id="sd-save-all">Save Story Dynamics</button>';
 
-    if (_imageSummarySettingsWired) return;
-    _imageSummarySettingsWired = true;
+    if (_storyDynamicsWired) return;
+    _storyDynamicsWired = true;
 
-    var saveAll = document.getElementById('isl-save-all');
+    var saveAll = document.getElementById('sd-save-all');
     if (saveAll) saveAll.onclick = function () {
       API.setConfigs({
-        image_summary_panel_default: document.getElementById('isl-panel-default').value,
-        summary_rating_prompt_enabled: document.getElementById('isl-rating-prompt').checked ? 'true' : 'false',
-        summary_learning_enabled: document.getElementById('isl-learning-enabled').checked ? 'true' : 'false',
-        summary_content_min_for_learning: String(document.getElementById('isl-content-min').value),
-        summary_style_min_for_learning: String(document.getElementById('isl-style-min').value),
-        summary_exemplar_max: String(document.getElementById('isl-exemplar-max').value),
-        summary_exemplar_max_per_scenario: String(document.getElementById('isl-exemplar-per-scenario').value),
-      }).then(function () { showToast('Learning settings saved', 'success'); }).catch(function (e) { showToast(e.message, 'error'); });
+        nsfw_enabled: document.getElementById('sd-nsfw-enabled').checked ? 'true' : 'false',
+        explicit_mode: document.getElementById('sd-explicit-mode').checked ? 'true' : 'false',
+        arousal_decay_enabled: document.getElementById('sd-arousal-decay').checked ? 'true' : 'false',
+        emotion_tracking_enabled: document.getElementById('sd-emotion-tracking').checked ? 'true' : 'false',
+        relationship_deltas_enabled: document.getElementById('sd-rel-deltas').checked ? 'true' : 'false',
+        mood_gate_toasts_enabled: document.getElementById('sd-mood-gate-toasts').checked ? 'true' : 'false',
+        regen_state_snapshot_enabled: document.getElementById('sd-regen-snapshot').checked ? 'true' : 'false',
+        cast_trigger_chips_enabled: document.getElementById('sd-cast-chips').checked ? 'true' : 'false',
+        scene_heat_readout_enabled: document.getElementById('sd-scene-heat').checked ? 'true' : 'false',
+        sfw_arousal_ceiling: String(document.getElementById('sd-sfw-ceiling').value || 3),
+      }).then(function () { showToast('Story Dynamics saved', 'success'); }).catch(function (e) { showToast(e.message, 'error'); });
     };
-
-    el.addEventListener('change', function (ev) {
-      var sel = ev.target;
-      if (!sel || sel.id !== 'isl-panel-default') return;
-      if (sel.id === 'isl-panel-default') {
-        API.setConfig('image_summary_panel_default', sel.value)
-          .then(function () { showToast('Saved', 'success'); })
-          .catch(function (e) { showToast('Save failed: ' + e.message, 'error'); });
-      }
-    });
   }).catch(function (e) {
     el.innerHTML = '<p class="text-muted">Could not load settings: ' + escapeHtml(e.message) + '</p>';
   });
-}
-// A1111 Master Settings (replaces old Image Generation wiring)
-// Loads from GET /api/config, saves via PUT /api/config/bulk
-// ---------------------------------------------------------------------------
-var _masterSettingsWired = false;
-
-var A1111_SAMPLERS = [
-  'Euler', 'Euler a', 'Heun', 'Heun pp2',
-  'DPM2', 'DPM2 a', 'DPM++ 2S a', 'DPM++ 2M', 'DPM++ SDE', 'DPM++ 2M SDE',
-  'DPM++ 2M SDE Heun', 'DPM++ 3M SDE', 'DPM fast', 'DPM adaptive',
-  'LMS', 'DDIM', 'DDIM CFG++', 'PLMS', 'UniPC', 'LCM', 'DDPM', 'DEIS', 'Restart',
-];
-var A1111_SCHEDULERS = [
-  'Automatic', 'Uniform', 'Karras', 'Exponential', 'Polyexponential',
-  'SGM Uniform', 'KL Optimal', 'Align Your Steps', 'Simple', 'Normal', 'DDIM', 'Beta',
-];
-var UPSCALER_DEFAULTS = [
-  'None', 'Lanczos', 'Nearest', 'ESRGAN_4x', '4x-UltraSharp',
-  'LDSR', 'R-ESRGAN 4x+', 'R-ESRGAN 4x+ Anime6B', 'ScuNET GAN', 'SwinIR_4x',
-];
-var ADETAILER_MODEL_DEFAULTS = [
-  'face_yolov8n.pt', 'face_yolov8s.pt', 'face_yolov8n_v2.pt', 'face_yolov8l.pt',
-  'hand_yolov8n.pt', 'hand_yolov8s.pt',
-  'person_yolov8n-seg.pt', 'person_yolov8s-seg.pt',
-  'mediapipe_face_full', 'mediapipe_face_short', 'mediapipe_face_mesh',
-];
-
-function wireMasterSettings() {
-  if (_masterSettingsWired) return;
-  _masterSettingsWired = true;
-
-  var container = document.getElementById('imggen-master');
-  if (!container) return;
-
-  function g(id) { return document.getElementById(id); }
-  function tv(id) { var el = g(id); return el ? (el.type === 'checkbox' ? el.checked : el.value) : ''; }
-
-  function buildMasterForm(cfg, samplerList, schedulerList, loraList, upscalerList, cnModels, cnModules, adModels, ollamaModels) {
-    cfg = cfg || {};
-    function v(key, def) { return cfg[key] != null ? cfg[key] : def; }
-    function boolCfg(key, def) { var val = v(key, def); return val === true || val === 'true' || val === 1 || val === '1'; }
-    function buildLoraOpts(selected) {
-      return '<option value="">-- none --</option>' +
-        (loraList || []).map(function (l) {
-          var nm = typeof l === 'string' ? l : (l.name || l.alias || '');
-          return '<option value="' + escapeHtml(nm) + '"' + (nm === (selected || '') ? ' selected' : '') + '>' + escapeHtml(nm) + '</option>';
-        }).join('');
-    }
-    function buildUpscalerOpts(selected) {
-      var list = (upscalerList && upscalerList.length) ? upscalerList : UPSCALER_DEFAULTS;
-      if (selected && list.indexOf(selected) === -1) list = [selected].concat(list);
-      return list.map(function (u) {
-        return '<option value="' + escapeHtml(u) + '"' + (u === selected ? ' selected' : '') + '>' + escapeHtml(u) + '</option>';
-      }).join('');
-    }
-    function buildCNModelOpts(selected) {
-      var list = cnModels && cnModels.length ? cnModels : [];
-      if (!list.length) {
-        var opts = '<option value="">-- A1111 offline --</option>';
-        if (selected) opts += '<option value="' + escapeHtml(selected) + '" selected>' + escapeHtml(selected) + '</option>';
-        return opts;
-      }
-      if (selected && list.indexOf(selected) === -1) list = [selected].concat(list);
-      return '<option value="">-- select --</option>' +
-        list.map(function (m) {
-          return '<option value="' + escapeHtml(m) + '"' + (m === selected ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
-        }).join('');
-    }
-    function buildCNModuleOpts(selected) {
-      var list = cnModules && cnModules.length ? cnModules : [];
-      var blankLabel = '-- auto (by checkpoint family) --';
-      if (!list.length) {
-        var opts = '<option value="">' + blankLabel + '</option>';
-        if (selected) opts += '<option value="' + escapeHtml(selected) + '" selected>' + escapeHtml(selected) + '</option>';
-        return opts;
-      }
-      if (selected && list.indexOf(selected) === -1) list = [selected].concat(list);
-      return '<option value="">' + blankLabel + '</option>' +
-        list.map(function (m) {
-          return '<option value="' + escapeHtml(m) + '"' + (m === selected ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
-        }).join('');
-    }
-    function buildADModelOpts(selected) {
-      var list = (adModels && adModels.length) ? adModels : ADETAILER_MODEL_DEFAULTS;
-      if (selected && list.indexOf(selected) === -1) list = [selected].concat(list);
-      return list.map(function (m) {
-        return '<option value="' + escapeHtml(m) + '"' + (m === selected ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
-      }).join('');
-    }
-    function buildOllamaModelOpts(selected) {
-      var list = ollamaModels && ollamaModels.length ? ollamaModels : [];
-      var opts = '<option value="">-- narrator model (default) --</option>';
-      if (selected && list.indexOf(selected) === -1) opts += '<option value="' + escapeHtml(selected) + '" selected>' + escapeHtml(selected) + '</option>';
-      opts += list.map(function (m) {
-        return '<option value="' + escapeHtml(m) + '"' + (m === selected ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
-      }).join('');
-      return opts;
-    }
-
-    var samplerOpts = (samplerList || A1111_SAMPLERS).map(function (s) {
-      return '<option value="' + escapeHtml(s) + '"' + (v('a1111_sampler','DPM++ 2M SDE') === s ? ' selected' : '') + '>' + escapeHtml(s) + '</option>';
-    }).join('');
-    var schedulerOpts = (schedulerList || A1111_SCHEDULERS).map(function (s) {
-      return '<option value="' + escapeHtml(s) + '"' + (v('a1111_scheduler','Karras') === s ? ' selected' : '') + '>' + escapeHtml(s) + '</option>';
-    }).join('');
-
-    container.innerHTML =
-      // ---- A1111 Connection ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">Connection</h3>' +
-        '<div style="display:flex;gap:10px;align-items:flex-end">' +
-          '<div class="form-group" style="flex:1;margin:0">' +
-            '<label class="form-label">A1111 URL</label>' +
-            '<input class="form-input" id="ms-url" type="text" value="' + escapeHtml(v('a1111_url','http://127.0.0.1:7860')) + '">' +
-          '</div>' +
-          '<button class="btn btn-secondary btn-sm" id="ms-test-conn" style="margin-bottom:0;height:36px">Test Connection</button>' +
-          '<span id="ms-conn-status" style="font-size:12px;color:var(--text-muted);align-self:center"></span>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- Active Model ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">Model</h3>' +
-        '<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">' +
-          '<div style="flex:1">' +
-            '<div class="form-label" style="margin-bottom:4px">Active Checkpoint</div>' +
-            '<div id="ms-model-display" style="font-size:14px;font-weight:500;color:var(--text)">' + escapeHtml(v('a1111_model','(none)')) + '</div>' +
-          '</div>' +
-          '<button class="btn btn-secondary btn-sm" id="ms-change-model">Change Model</button>' +
-        '</div>' +
-        '<div id="ms-model-picker-wrap" style="display:none;margin-top:6px">' +
-          '<select class="form-input" id="ms-model-select" style="width:100%;margin-bottom:8px"><option>Loading...</option></select>' +
-          '<div style="display:flex;gap:8px">' +
-            '<button class="btn btn-primary btn-sm" id="ms-model-set-btn">Set Model</button>' +
-            '<button class="btn btn-ghost btn-sm" id="ms-model-cancel-btn">Cancel</button>' +
-          '</div>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- Core Params ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">Core Parameters</h3>' +
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">' +
-          '<div class="form-group" style="margin:0">' +
-            '<label class="form-label">Sampler</label>' +
-            '<select class="form-input" id="ms-sampler">' + samplerOpts + '</select>' +
-          '</div>' +
-          '<div class="form-group" style="margin:0">' +
-            '<label class="form-label">Scheduler</label>' +
-            '<select class="form-input" id="ms-scheduler">' + schedulerOpts + '</select>' +
-          '</div>' +
-        '</div>' +
-        '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">' +
-          '<div class="form-group" style="margin:0"><label class="form-label">Steps</label><input class="form-input" id="ms-steps" type="number" min="1" max="150" step="1" value="' + v('a1111_steps',30) + '"></div>' +
-          '<div class="form-group" style="margin:0"><label class="form-label">CFG Scale</label><input class="form-input" id="ms-cfg" type="number" min="1" max="30" step="0.5" value="' + v('a1111_cfg',7.0) + '"></div>' +
-          '<div class="form-group" style="margin:0"><label class="form-label">Width</label><input class="form-input" id="ms-width" type="number" min="64" max="4096" step="8" value="' + v('a1111_width',832) + '"></div>' +
-          '<div class="form-group" style="margin:0"><label class="form-label">Height</label><input class="form-input" id="ms-height" type="number" min="64" max="4096" step="8" value="' + v('a1111_height',1216) + '"></div>' +
-        '</div>' +
-        '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:12px">' +
-          '<div class="form-group" style="margin:0"><label class="form-label">CLIP Skip</label><input class="form-input" id="ms-clip-skip" type="number" min="1" max="4" step="1" value="' + v('a1111_clip_skip',2) + '"></div>' +
-          '<div class="form-group" style="margin:0"><label class="form-label">Img2Img Denoising Strength</label><input class="form-input" id="ms-img2img-denoising" type="number" min="0.1" max="1.0" step="0.05" value="' + v('img2img_denoising', 0.45) + '"><p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">How much the image changes during img2img. Lower = subtle changes, higher = dramatic.</p></div>' +
-        '</div>' +
-        '<div class="form-group">' +
-          '<label class="form-label">Global Positive Prompt</label>' +
-          '<textarea class="form-input" id="ms-positive" rows="2" placeholder="masterpiece, best quality, highly detailed...">' + escapeHtml(v('master_positive','')) + '</textarea>' +
-          '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Quality and style tags prepended to every generated image. Applied before any active profile prefix.</p>' +
-        '</div>' +
-        '<div class="form-group">' +
-          '<label class="form-label">Global Negative Prompt</label>' +
-          '<textarea class="form-input" id="ms-negative" rows="2" placeholder="lowres, bad anatomy, bad hands, blurry...">' + escapeHtml(v('master_negative','')) + '</textarea>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- Hires.fix ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">Hires.fix</h3>' +
-        '<div style="margin-bottom:10px">' +
-          '<label class="toggle-label">' +
-            '<span>Enable Hires.fix</span>' +
-            '<div class="toggle' + (boolCfg('hr_enabled', false) ? ' active' : '') + '" id="ms-hr-enabled"></div>' +
-          '</label>' +
-        '</div>' +
-        '<div id="ms-hr-params" style="' + (boolCfg('hr_enabled', false) ? '' : 'display:none') + '">' +
-          '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Scale</label><input class="form-input" id="ms-hr-scale" type="number" min="1" max="4" step="0.1" value="' + v('hr_scale',1.5) + '"></div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Steps</label><input class="form-input" id="ms-hr-steps" type="number" min="1" max="60" step="1" value="' + v('hr_steps',20) + '"></div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Denoising</label><input class="form-input" id="ms-hr-denoising" type="number" min="0" max="1" step="0.05" value="' + v('hr_denoising',0.4) + '"></div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Upscaler</label><select class="form-input" id="ms-hr-upscaler">' + buildUpscalerOpts(v('hr_upscaler','4x-UltraSharp')) + '</select></div>' +
-          '</div>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- Refiner ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">SDXL Refiner</h3>' +
-        '<div style="margin-bottom:10px">' +
-          '<label class="toggle-label">' +
-            '<span>Enable Refiner</span>' +
-            '<div class="toggle' + (boolCfg('refiner_enabled', false) ? ' active' : '') + '" id="ms-refiner-enabled"></div>' +
-          '</label>' +
-        '</div>' +
-        '<div id="ms-refiner-params" style="' + (boolCfg('refiner_enabled', false) ? '' : 'display:none') + '">' +
-          '<div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:end">' +
-            '<div class="form-group" style="margin:0">' +
-              '<label class="form-label">Refiner Checkpoint</label>' +
-              '<select class="form-input" id="ms-refiner-checkpoint"><option value="">Loading...</option></select>' +
-            '</div>' +
-            '<div class="form-group" style="margin:0;min-width:120px">' +
-              '<label class="form-label">Switch At <span class="form-hint">(0.0–1.0)</span></label>' +
-              '<input class="form-input" id="ms-refiner-switch-at" type="number" min="0.1" max="1.0" step="0.05" value="' + v('refiner_switch_at', 0.8) + '">' +
-            '</div>' +
-          '</div>' +
-          '<p class="form-hint" style="margin-top:6px;font-size:12px;color:var(--text-muted)">Fraction of steps run by the base model before handing off to the refiner. 0.8 = 80% base, 20% refiner. Requires an SDXL-compatible refiner checkpoint loaded in A1111.</p>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- ADetailer ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">ADetailer (face fix)</h3>' +
-        '<div style="margin-bottom:10px">' +
-          '<label class="toggle-label">' +
-            '<span>Enable ADetailer</span>' +
-            '<div class="toggle' + (boolCfg('ad_enabled', true) ? ' active' : '') + '" id="ms-ad-enabled"></div>' +
-          '</label>' +
-        '</div>' +
-        '<div id="ms-ad-params" style="' + (boolCfg('ad_enabled', true) ? '' : 'display:none') + '">' +
-          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Model</label><select class="form-input" id="ms-ad-model">' + buildADModelOpts(v('ad_model','face_yolov8n.pt')) + '</select></div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Strength</label><input class="form-input" id="ms-ad-strength" type="number" min="0" max="1" step="0.05" value="' + v('ad_strength',0.4) + '"></div>' +
-          '</div>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- IP-Adapter ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">IP-Adapter (Face Consistency)</h3>' +
-        '<div style="margin-bottom:10px">' +
-          '<label class="toggle-label">' +
-            '<span>Enable IP-Adapter face consistency</span>' +
-            '<div class="toggle' + (boolCfg('ipadapter_enabled', false) ? ' active' : '') + '" id="ms-ipa-enabled"></div>' +
-          '</label>' +
-        '</div>' +
-        '<div id="ms-ipa-params" style="' + (boolCfg('ipadapter_enabled', false) ? '' : 'display:none') + '">' +
-          '<p class="form-hint" style="margin:0 0 10px">Both fields below are validated against this A1111 instance before every generation. If either is unset or not found, FaceID is skipped for that image rather than sent with a guessed value.</p>' +
-          '<div class="form-group" style="margin:0 0 12px">' +
-            '<label class="form-label">ControlNet model <span class="form-hint">(required — no default)</span></label>' +
-            '<select class="form-input" id="ms-ipa-model">' + buildCNModelOpts(v('ipadapter_model','')) + '</select>' +
-          '</div>' +
-          '<div class="form-group" style="margin:0 0 12px">' +
-            '<label class="form-label">Preprocessor module <span class="form-hint">(blank = auto by checkpoint family)</span></label>' +
-            '<select class="form-input" id="ms-ipa-module">' + buildCNModuleOpts(v('ipadapter_module','')) + '</select>' +
-          '</div>' +
-          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
-            '<div class="form-group" style="margin:0">' +
-              '<label class="form-label">Influence weight <span class="form-hint">(0.35 rec.)</span></label>' +
-              '<input class="form-input" id="ms-ipa-weight" type="number" min="0.1" max="0.8" step="0.05" value="' + v('ipadapter_weight', 0.35) + '">' +
-            '</div>' +
-            '<div class="form-group" style="margin:0">' +
-              '<label class="form-label">Stop at step % <span class="form-hint">(0.6 rec.)</span></label>' +
-              '<input class="form-input" id="ms-ipa-end" type="number" min="0.3" max="1.0" step="0.05" value="' + v('ipadapter_end', 0.6) + '">' +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- Global LoRAs ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">Global LoRAs</h3>' +
-        '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">Applied on every generation unless overridden by an active profile. LoRA filenames must match exactly as listed in A1111.</p>' +
-        '<div style="margin-bottom:10px">' +
-          '<label class="toggle-label">' +
-            '<span>Enable LoRAs in generation</span>' +
-            '<div class="toggle' + (boolCfg('lora_enabled', true) ? ' active' : '') + '" id="ms-lora-enabled"></div>' +
-          '</label>' +
-        '</div>' +
-        '<div id="ms-lora-params" style="' + (boolCfg('lora_enabled', true) ? '' : 'display:none') + '">' +
-          '<div style="display:grid;grid-template-columns:1fr 90px;gap:8px;margin-bottom:8px">' +
-            '<div class="form-group" style="margin:0"><label class="form-label">LoRA 1</label>' +
-              '<select class="form-input" id="ms-lora1">' + buildLoraOpts(v('lora1_file', '')) + '</select>' +
-            '</div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Strength</label>' +
-              '<input class="form-input" id="ms-lora1s" type="number" min="0" max="3" step="0.05" value="' + v('lora1_strength', 1.0) + '">' +
-            '</div>' +
-          '</div>' +
-          '<div style="display:grid;grid-template-columns:1fr 90px;gap:8px">' +
-            '<div class="form-group" style="margin:0"><label class="form-label">LoRA 2</label>' +
-              '<select class="form-input" id="ms-lora2">' + buildLoraOpts(v('lora2_file', '')) + '</select>' +
-            '</div>' +
-            '<div class="form-group" style="margin:0"><label class="form-label">Strength</label>' +
-              '<input class="form-input" id="ms-lora2s" type="number" min="0" max="3" step="0.05" value="' + v('lora2_strength', 1.0) + '">' +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- Location Background Mode ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">Location Backgrounds</h3>' +
-        '<div class="form-group" style="margin:0">' +
-          '<label class="form-label">Background mode</label>' +
-          '<select class="form-input" id="ms-location-bg-mode">' +
-            '<option value="image"' + (v('location_bg_mode', 'image') === 'image' ? ' selected' : '') + '>Background images (img2img)</option>' +
-            '<option value="description"' + (v('location_bg_mode', 'image') === 'description' ? ' selected' : '') + '>Location description (text tags, txt2img)</option>' +
-          '</select>' +
-          '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)"><b>Background images</b>: uses pre-rendered location images as an img2img reference. <b>Location description</b>: injects the location\'s image tags into the prompt instead (txt2img).</p>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- Prompt Extractor ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">Prompt Extractor</h3>' +
-        '<div class="form-group">' +
-          '<label class="form-label">Prompt Extractor Model</label>' +
-          '<select class="form-input" id="ms-extractor-model">' + buildOllamaModelOpts(v('prompt_extractor_model', '')) + '</select>' +
-          '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Reads each story paragraph and writes the Stable Diffusion image prompt. Use a small fast uncensored model. Falls back to narrator model if blank.</p>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- Scene Picker ----
-      '<div style="margin-bottom:24px">' +
-        '<h3 class="imggen-section-head">Scene Picker</h3>' +
-        '<div class="form-group">' +
-          '<label class="form-label">Scene Picker Model</label>' +
-          '<select class="form-input" id="ms-picker-model">' + buildOllamaModelOpts(v('picker_model', '')) + '</select>' +
-          '<p class="form-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Model used to select the best visual moment per turn. Can be a smaller/faster model than the narrator. Leave blank to use the narrator model.</p>' +
-        '</div>' +
-      '</div>' +
-
-      // ---- Save bar ----
-      '<div style="display:flex;align-items:center;gap:12px;padding-top:8px;border-top:1px solid var(--border)">' +
-        '<button class="btn btn-primary" id="ms-save-btn">Save Settings</button>' +
-        '<button class="btn btn-ghost btn-sm" id="ms-reload-btn">Reload</button>' +
-        '<span id="ms-status" style="font-size:12px;color:var(--text-muted)"></span>' +
-      '</div>' +
-
-      '<style>' +
-        '.imggen-section-head{margin:0 0 12px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);border-bottom:1px solid var(--border);padding-bottom:8px}' +
-      '</style>';
-
-    // Hires toggle
-    var hrToggle = g('ms-hr-enabled');
-    var hrParams = g('ms-hr-params');
-    if (hrToggle && hrParams) {
-      hrToggle.onclick = function () {
-        hrToggle.classList.toggle('active');
-        hrParams.style.display = hrToggle.classList.contains('active') ? '' : 'none';
-      };
-    }
-    // ADetailer toggle
-    var adToggle = g('ms-ad-enabled');
-    var adParams = g('ms-ad-params');
-    if (adToggle && adParams) {
-      adToggle.onclick = function () {
-        adToggle.classList.toggle('active');
-        adParams.style.display = adToggle.classList.contains('active') ? '' : 'none';
-      };
-    }
-    // IP-Adapter toggle
-    var ipaToggle = g('ms-ipa-enabled');
-    var ipaParams = g('ms-ipa-params');
-    if (ipaToggle && ipaParams) {
-      ipaToggle.onclick = function () {
-        ipaToggle.classList.toggle('active');
-        ipaParams.style.display = ipaToggle.classList.contains('active') ? '' : 'none';
-      };
-    }
-    // LoRA toggle
-    var loraToggle = g('ms-lora-enabled');
-    var loraParams = g('ms-lora-params');
-    if (loraToggle && loraParams) {
-      loraToggle.onclick = function () {
-        loraToggle.classList.toggle('active');
-        loraParams.style.display = loraToggle.classList.contains('active') ? '' : 'none';
-      };
-    }
-    // Refiner toggle + populate checkpoint dropdown
-    var refToggle = g('ms-refiner-enabled');
-    var refParams = g('ms-refiner-params');
-    if (refToggle && refParams) {
-      refToggle.onclick = function () {
-        refToggle.classList.toggle('active');
-        refParams.style.display = refToggle.classList.contains('active') ? '' : 'none';
-      };
-    }
-    var refSel = g('ms-refiner-checkpoint');
-    if (refSel) {
-      var _savedRefiner = v('refiner_checkpoint', '');
-      API.getA1111Models()
-        .then(function (data) {
-          var models = (Array.isArray(data) ? data : (data.models || [])).map(function (m) { return m.title || m.model_name || m; });
-          refSel.innerHTML = '<option value="">-- none --</option>' +
-            models.map(function (m) {
-              return '<option value="' + escapeHtml(m) + '"' + (m === _savedRefiner ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
-            }).join('');
-        })
-        .catch(function () {
-          refSel.innerHTML = '<option value="">-- A1111 offline --</option>';
-          if (_savedRefiner) refSel.innerHTML += '<option value="' + escapeHtml(_savedRefiner) + '" selected>' + escapeHtml(_savedRefiner) + '</option>';
-        });
-    }
-    // Test connection
-    var testBtn    = g('ms-test-conn');
-    var connStatus = g('ms-conn-status');
-    if (testBtn) {
-      testBtn.onclick = function () {
-        if (connStatus) connStatus.textContent = 'Testing...';
-        API.getA1111Status()
-          .then(function () { if (connStatus) connStatus.textContent = 'Connected'; })
-          .catch(function () { if (connStatus) connStatus.textContent = 'Offline'; });
-      };
-    }
-    // Change Model — inline dropdown picker
-    var changeModelBtn   = g('ms-change-model');
-    var modelPickerWrap  = g('ms-model-picker-wrap');
-    var modelSelect      = g('ms-model-select');
-    var modelSetBtn      = g('ms-model-set-btn');
-    var modelCancelBtn   = g('ms-model-cancel-btn');
-
-    function _closeModelPicker() {
-      if (modelPickerWrap) modelPickerWrap.style.display = 'none';
-      if (changeModelBtn)  changeModelBtn.textContent = 'Change Model';
-    }
-
-    if (changeModelBtn && modelPickerWrap) {
-      changeModelBtn.onclick = function () {
-        if (modelPickerWrap.style.display !== 'none') { _closeModelPicker(); return; }
-        if (modelSelect) modelSelect.innerHTML = '<option>Loading...</option>';
-        modelPickerWrap.style.display = '';
-        changeModelBtn.textContent = 'Cancel';
-        API.getA1111Models()
-          .then(function (data) {
-            var raw    = Array.isArray(data) ? data : (data.models || []);
-            var models = raw.map(function (m) { return m.title || m.model_name || m; });
-            if (!models.length) {
-              showToast('No models returned from A1111. Is it running?', 'error');
-              _closeModelPicker();
-              return;
-            }
-            if (modelSelect) {
-              modelSelect.innerHTML = models.map(function (m) {
-                return '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>';
-              }).join('');
-              var cur = (g('ms-model-display') || {}).textContent || '';
-              if (cur) modelSelect.value = cur;
-            }
-          })
-          .catch(function (e) { showToast('Failed to load models: ' + e.message, 'error'); _closeModelPicker(); });
-      };
-    }
-
-    if (modelSetBtn) {
-      modelSetBtn.onclick = function () {
-        var sel = g('ms-model-select');
-        var selected = sel ? sel.value.trim() : '';
-        if (!selected || selected === 'Loading...') return;
-        modelSetBtn.disabled = true;
-        modelSetBtn.textContent = 'Switching...';
-        API.setA1111Model(selected)
-          .then(function () {
-            var display = g('ms-model-display');
-            if (display) display.textContent = selected;
-            showToast('Model changed to ' + selected, 'success');
-            _closeModelPicker();
-          })
-          .catch(function (err) { showToast('Failed: ' + err.message, 'error'); })
-          .finally(function () {
-            var b = g('ms-model-set-btn');
-            if (b) { b.disabled = false; b.textContent = 'Set Model'; }
-          });
-      };
-    }
-
-    if (modelCancelBtn) {
-      modelCancelBtn.onclick = _closeModelPicker;
-    }
-    // Save
-    var saveBtn  = g('ms-save-btn');
-    var statusEl = g('ms-status');
-    if (saveBtn) {
-      saveBtn.onclick = function () {
-        var hrOn  = g('ms-hr-enabled')      && g('ms-hr-enabled').classList.contains('active')      ? 1 : 0;
-        var adOn  = g('ms-ad-enabled')      && g('ms-ad-enabled').classList.contains('active')      ? 1 : 0;
-        var ipaOn = g('ms-ipa-enabled')     && g('ms-ipa-enabled').classList.contains('active')     ? 1 : 0;
-        var loraOn= g('ms-lora-enabled')    && g('ms-lora-enabled').classList.contains('active')    ? 1 : 0;
-        var refOn = g('ms-refiner-enabled') && g('ms-refiner-enabled').classList.contains('active') ? 1 : 0;
-        var map = {
-          a1111_url:           (tv('ms-url') || '').trim() || 'http://127.0.0.1:7860',
-          a1111_sampler:       tv('ms-sampler') || 'DPM++ 2M SDE',
-          a1111_scheduler:     tv('ms-scheduler') || 'Karras',
-          a1111_steps:         tv('ms-steps') || '30',
-          a1111_cfg:           tv('ms-cfg') || '7.0',
-          a1111_width:         tv('ms-width') || '832',
-          a1111_height:        tv('ms-height') || '1216',
-          a1111_clip_skip:     tv('ms-clip-skip') || '2',
-          master_positive:     (tv('ms-positive') || '').trim(),
-          master_negative:     (tv('ms-negative') || '').trim(),
-          hr_enabled:          hrOn ? 'true' : 'false',
-          hr_scale:            tv('ms-hr-scale') || '1.5',
-          hr_steps:            tv('ms-hr-steps') || '20',
-          hr_denoising:        tv('ms-hr-denoising') || '0.4',
-          hr_upscaler:         (tv('ms-hr-upscaler') || '').trim() || '4x-UltraSharp',
-          refiner_enabled:        refOn ? 'true' : 'false',
-          refiner_checkpoint:     (tv('ms-refiner-checkpoint') || '').trim(),
-          refiner_switch_at:      tv('ms-refiner-switch-at') || '0.8',
-          ad_enabled:             adOn ? 'true' : 'false',
-          ad_model:               (tv('ms-ad-model') || '').trim() || 'face_yolov8n.pt',
-          ad_strength:            tv('ms-ad-strength') || '0.4',
-          ipadapter_enabled:      ipaOn ? 'true' : 'false',
-          ipadapter_model:        (tv('ms-ipa-model') || '').trim(),
-          ipadapter_module:       (tv('ms-ipa-module') || '').trim(),
-          ipadapter_weight:       tv('ms-ipa-weight') || '0.35',
-          ipadapter_end:          tv('ms-ipa-end') || '0.6',
-          prompt_extractor_model: (tv('ms-extractor-model') || '').trim(),
-          picker_model:           (tv('ms-picker-model') || '').trim(),
-          location_bg_mode:       tv('ms-location-bg-mode') || 'image',
-          img2img_denoising:      tv('ms-img2img-denoising') || '0.45',
-          lora_enabled:           loraOn ? 'true' : 'false',
-          lora1_file:             (tv('ms-lora1') || '').trim(),
-          lora1_strength:         tv('ms-lora1s') || '1.0',
-          lora2_file:             (tv('ms-lora2') || '').trim(),
-          lora2_strength:         tv('ms-lora2s') || '1.0',
-        };
-        saveBtn.disabled = true;
-        if (statusEl) statusEl.textContent = 'Saving...';
-        API.setConfigs(map)
-          .then(function () {
-            if (statusEl) { statusEl.textContent = 'Saved!'; setTimeout(function () { statusEl.textContent = ''; }, 2500); }
-          })
-          .catch(function (err) { if (statusEl) statusEl.textContent = 'Error: ' + err.message; })
-          .finally(function () { saveBtn.disabled = false; });
-      };
-    }
-    // Reload
-    var reloadBtn = g('ms-reload-btn');
-    if (reloadBtn) {
-      reloadBtn.onclick = function () {
-        container.innerHTML = '<div class="loading-state">Loading...</div>';
-        _masterSettingsWired = false;
-        wireMasterSettings();
-      };
-    }
-  }
-
-  Promise.all([
-    API.getConfig(),
-    API.getA1111Samplers().catch(function () { return []; }),
-    API.getA1111Schedulers().catch(function () { return []; }),
-    API.getA1111Loras().catch(function () { return []; }),
-    API.getA1111Upscalers().catch(function () { return []; }),
-    API.getA1111ControlNetModels().catch(function () { return []; }),
-    API.getA1111ControlNetModules().catch(function () { return []; }),
-    API.getA1111ADetailerModels().catch(function () { return []; }),
-    fetch('http://localhost:11434/api/tags')
-      .then(function (r) { return r.json(); })
-      .then(function (d) { return (d.models || []).map(function (m) { return m.name; }); })
-      .catch(function () { return []; }),
-  ]).then(function (results) {
-    var cfg          = results[0].config || results[0] || {};
-    var samplers     = Array.isArray(results[1]) && results[1].length ? results[1] : null;
-    var schedulers   = Array.isArray(results[2]) && results[2].length ? results[2] : null;
-    var loraList     = Array.isArray(results[3]) ? results[3] : [];
-    var upscalerList = Array.isArray(results[4]) && results[4].length ? results[4] : null;
-    var cnModels     = Array.isArray(results[5]) ? results[5] : [];
-    var cnModules    = Array.isArray(results[6]) ? results[6] : [];
-    var adModels     = Array.isArray(results[7]) ? results[7] : [];
-    var ollamaModels = Array.isArray(results[8]) ? results[8] : [];
-    buildMasterForm(cfg, samplers, schedulers, loraList, upscalerList, cnModels, cnModules, adModels, ollamaModels);
-  }).catch(function (err) {
-    container.innerHTML = '<p style="color:var(--danger);font-size:13px">Failed to load config: ' + escapeHtml(err.message) + '</p>' +
-      '<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="(function(){var c=document.getElementById(\'imggen-master\');if(c){c.innerHTML=\'<div class=loading-state>Loading...</div>\';_masterSettingsWired=false;wireMasterSettings();}})()">Retry</button>';
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Image Profiles (create / activate / delete)
-// ---------------------------------------------------------------------------
-var _profilesWired = false;
-
-function wireProfiles() {
-  if (_profilesWired) return;
-  _profilesWired = true;
-
-  var container = document.getElementById('imggen-profiles');
-  if (!container) return;
-
-  var profiles = [];
-  var editingId = null;
-
-  function renderProfiles() {
-    var active = profiles.find(function (p) { return p.is_active; });
-    var listHtml = profiles.length
-      ? profiles.map(function (p) {
-          return '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:6px;border:1px solid var(--border);margin-bottom:8px;background:' + (p.is_active ? 'var(--accent-muted,rgba(99,102,241,.1))' : 'var(--surface)') + '">' +
-            '<div style="flex:1;min-width:0">' +
-              '<div style="font-weight:' + (p.is_active ? '600' : '400') + ';font-size:14px">' + escapeHtml(p.name) + (p.is_active ? ' <span style="font-size:11px;color:var(--accent)">(active)</span>' : '') + '</div>' +
-              (p.description ? '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">' + escapeHtml(p.description) + '</div>' : '') +
-            '</div>' +
-            '<div style="display:flex;gap:6px;flex-shrink:0">' +
-              (!p.is_active ? '<button class="btn btn-secondary btn-xs profile-activate" data-id="' + p.id + '">Activate</button>' : '<button class="btn btn-ghost btn-xs profile-deactivate">Deactivate</button>') +
-              '<button class="btn btn-ghost btn-xs profile-edit" data-id="' + p.id + '">Edit</button>' +
-              '<button class="btn btn-ghost btn-xs profile-delete" data-id="' + p.id + '" style="color:var(--danger)">Del</button>' +
-            '</div>' +
-          '</div>';
-        }).join('')
-      : '<p style="color:var(--text-muted);font-size:13px">No profiles yet. Create one below.</p>';
-
-    container.innerHTML =
-      '<div id="profiles-list">' + listHtml + '</div>' +
-      '<button class="btn btn-secondary btn-sm" id="btn-new-profile" style="margin-top:8px">+ New Profile</button>' +
-      '<div id="profile-editor" style="margin-top:16px;display:none"></div>';
-
-    wireProfileEvents();
-  }
-
-  function wireProfileEvents() {
-    var listEl = document.getElementById('profiles-list');
-    if (listEl) {
-      listEl.querySelectorAll('.profile-activate').forEach(function (btn) {
-        btn.onclick = function () {
-          API.activateProfile(Number(btn.dataset.id))
-            .then(loadAndRender)
-            .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
-        };
-      });
-      var deactBtn = listEl.querySelector('.profile-deactivate');
-      if (deactBtn) {
-        deactBtn.onclick = function () {
-          API.clearActiveProfile()
-            .then(loadAndRender)
-            .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
-        };
-      }
-      listEl.querySelectorAll('.profile-edit').forEach(function (btn) {
-        btn.onclick = function () {
-          var p = profiles.find(function (x) { return x.id === Number(btn.dataset.id); });
-          if (p) showProfileEditor(p);
-        };
-      });
-      listEl.querySelectorAll('.profile-delete').forEach(function (btn) {
-        btn.onclick = function () {
-          var p = profiles.find(function (x) { return x.id === Number(btn.dataset.id); });
-          if (!p || !confirm('Delete profile "' + (p.name || 'this profile') + '"?')) return;
-          API.deleteProfile(p.id)
-            .then(loadAndRender)
-            .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
-        };
-      });
-    }
-    var newBtn = document.getElementById('btn-new-profile');
-    if (newBtn) newBtn.onclick = function () { showProfileEditor(null); };
-  }
-
-  function showProfileEditor(profile) {
-    var editorEl = document.getElementById('profile-editor');
-    if (!editorEl) return;
-    editorEl.style.display = '';
-    var p = profile || {};
-    editorEl.innerHTML =
-      '<hr style="border:none;border-top:1px solid var(--border);margin-bottom:16px">' +
-      '<h4 style="margin:0 0 14px">' + (profile ? 'Edit Profile' : 'New Profile') + '</h4>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
-        '<div class="form-group"><label class="form-label">Name</label><input class="form-input" id="pe-name" type="text" value="' + escapeHtml(p.name || '') + '" placeholder="e.g. Cinematic"></div>' +
-        '<div class="form-group"><label class="form-label">Description</label><input class="form-input" id="pe-desc" type="text" value="' + escapeHtml(p.description || '') + '"></div>' +
-      '</div>' +
-      '<div class="form-group"><label class="form-label">Prompt Prefix</label><textarea class="form-input" id="pe-prefix" rows="2" placeholder="masterpiece, best quality...">' + escapeHtml(p.prompt_prefix || '') + '</textarea></div>' +
-      '<div class="form-group"><label class="form-label">Prompt Suffix</label><textarea class="form-input" id="pe-suffix" rows="2" placeholder="cinematic lighting, 8k...">' + escapeHtml(p.prompt_suffix || '') + '</textarea></div>' +
-      '<div class="form-group"><label class="form-label">Negative Additions</label><textarea class="form-input" id="pe-negative" rows="2" placeholder="extra terms added to global negative...">' + escapeHtml(p.negative_additions || '') + '</textarea></div>' +
-      '<div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px">' +
-        '<div class="form-group" style="margin:0"><label class="form-label">LoRA 1</label><select class="form-input" id="pe-lora1"><option value="">Loading...</option></select></div>' +
-        '<div class="form-group" style="margin:0;min-width:90px"><label class="form-label">Strength</label><input class="form-input" id="pe-lora1s" type="number" min="0" max="3" step="0.05" value="' + (p.lora1_strength != null ? p.lora1_strength : 0.75) + '"></div>' +
-      '</div>' +
-      '<div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:12px">' +
-        '<div class="form-group" style="margin:0"><label class="form-label">LoRA 2</label><select class="form-input" id="pe-lora2"><option value="">Loading...</option></select></div>' +
-        '<div class="form-group" style="margin:0;min-width:90px"><label class="form-label">Strength</label><input class="form-input" id="pe-lora2s" type="number" min="0" max="3" step="0.05" value="' + (p.lora2_strength != null ? p.lora2_strength : 0.75) + '"></div>' +
-      '</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">' +
-        '<div class="form-group" style="margin:0"><label class="form-label">Steps Override <span style="font-size:11px;color:var(--text-muted)">(blank = use master)</span></label><input class="form-input" id="pe-steps" type="number" min="1" max="150" step="1" value="' + (p.steps_override || '') + '" placeholder=""></div>' +
-        '<div class="form-group" style="margin:0"><label class="form-label">CFG Override</label><input class="form-input" id="pe-cfg" type="number" min="1" max="30" step="0.5" value="' + (p.cfg_override || '') + '" placeholder=""></div>' +
-      '</div>' +
-      '<div style="display:flex;gap:8px">' +
-        '<button class="btn btn-primary btn-sm" id="pe-save">' + (profile ? 'Save Changes' : 'Create Profile') + '</button>' +
-        '<button class="btn btn-ghost btn-sm" id="pe-cancel">Cancel</button>' +
-        '<span id="pe-status" style="font-size:12px;color:var(--text-muted);align-self:center"></span>' +
-      '</div>';
-
-    // Populate LoRA selects from A1111
-    var _peLora1Cur = p.lora1_file || '';
-    var _peLora2Cur = p.lora2_file || '';
-    API.getA1111Loras().then(function (data) {
-      var loras = Array.isArray(data) ? data : [];
-      function makeOpts(cur) {
-        return '<option value="">-- none --</option>' +
-          loras.map(function (l) {
-            var nm = typeof l === 'string' ? l : (l.name || l.alias || '');
-            return '<option value="' + escapeHtml(nm) + '"' + (nm === cur ? ' selected' : '') + '>' + escapeHtml(nm) + '</option>';
-          }).join('');
-      }
-      var s1 = document.getElementById('pe-lora1');
-      var s2 = document.getElementById('pe-lora2');
-      if (s1) s1.innerHTML = makeOpts(_peLora1Cur);
-      if (s2) s2.innerHTML = makeOpts(_peLora2Cur);
-    }).catch(function () {
-      function offlineOpts(cur) {
-        return '<option value="">-- none --</option>' +
-          (cur ? '<option value="' + escapeHtml(cur) + '" selected>' + escapeHtml(cur) + '</option>' : '');
-      }
-      var s1 = document.getElementById('pe-lora1');
-      var s2 = document.getElementById('pe-lora2');
-      if (s1) s1.innerHTML = offlineOpts(_peLora1Cur);
-      if (s2) s2.innerHTML = offlineOpts(_peLora2Cur);
-    });
-
-    function gv(id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; }
-    var saveBtn  = document.getElementById('pe-save');
-    var statusEl = document.getElementById('pe-status');
-    if (saveBtn) {
-      saveBtn.onclick = function () {
-        var data = {
-          name:               gv('pe-name') || 'Untitled Profile',
-          description:        gv('pe-desc') || null,
-          prompt_prefix:      gv('pe-prefix') || null,
-          prompt_suffix:      gv('pe-suffix') || null,
-          negative_additions: gv('pe-negative') || null,
-          lora1_file:         gv('pe-lora1') || null,
-          lora1_strength:     parseFloat(gv('pe-lora1s')) || 0.75,
-          lora2_file:         gv('pe-lora2') || null,
-          lora2_strength:     parseFloat(gv('pe-lora2s')) || 0.75,
-          steps_override:     gv('pe-steps') ? Number(gv('pe-steps')) : null,
-          cfg_override:       gv('pe-cfg')   ? parseFloat(gv('pe-cfg')) : null,
-        };
-        saveBtn.disabled = true;
-        var promise = profile ? API.updateProfile(profile.id, data) : API.createProfile(data);
-        promise
-          .then(function () { editorEl.style.display = 'none'; loadAndRender(); })
-          .catch(function (e) { if (statusEl) statusEl.textContent = 'Error: ' + e.message; })
-          .finally(function () { saveBtn.disabled = false; });
-      };
-    }
-    var cancelBtn = document.getElementById('pe-cancel');
-    if (cancelBtn) cancelBtn.onclick = function () { editorEl.style.display = 'none'; };
-  }
-
-  function loadAndRender() {
-    API.getProfiles()
-      .then(function (data) {
-        profiles = data.profiles || [];
-        renderProfiles();
-      })
-      .catch(function (err) {
-        container.innerHTML = '<p style="color:var(--danger);font-size:13px">Failed to load profiles: ' + escapeHtml(err.message) + '</p>';
-      });
-  }
-
-  loadAndRender();
 }
 
 // ---------------------------------------------------------------------------
@@ -1653,8 +980,7 @@ function loadHealthCards() {
   if (!container) return;
 
   var checks = [
-    { name: 'Story Lab', promise: API.getHealth(), url: 'http://localhost:4090' },
-    { name: 'A1111',     promise: fetch('http://127.0.0.1:7860/sdapi/v1/options').then(function (r) { if (!r.ok) throw new Error('offline'); return { status: 'OK' }; }), url: 'http://127.0.0.1:7860' },
+    { name: 'Story Lab', promise: API.getHealth(), url: (typeof location !== 'undefined' ? location.origin : 'http://localhost:4090') },
   ];
 
   var cards = checks.map(function (c) {
