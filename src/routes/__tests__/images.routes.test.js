@@ -1,0 +1,274 @@
+import { test, mock } from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import http from 'node:http';
+
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'story-lab-images-'));
+const DIRS = { data: path.join(ROOT, 'data'), images: path.join(ROOT, 'images'), audio: path.join(ROOT, 'audio') };
+for (const d of Object.values(DIRS)) fs.mkdirSync(d, { recursive: true });
+
+mock.module('../../paths.js', {
+  namedExports: {
+    ROOT_DIR: ROOT, PUBLIC_DIR: path.join(ROOT, 'public'),
+    DATA_DIR: DIRS.data, IMAGES_DIR: DIRS.images, AUDIO_DIR: DIRS.audio,
+    DB_PATH: ':memory:', AUDIT_LOG_PATH: path.join(DIRS.data, 'audit.jsonl'),
+  },
+});
+
+const realFetch = globalThis.fetch;
+const { default: db } = await import('../../db.js');
+const { default: express } = await import('express');
+const { default: imagesRouter } = await import('../images.js');
+const { default: looksRouter } = await import('../looks.js');
+
+const app = express();
+app.use(express.json({ limit: '20mb' }));
+app.use('/api/scenarios/:scenarioId/images', imagesRouter);
+app.use('/api/looks', looksRouter);
+const server = http.createServer(app);
+await new Promise((resolve) => server.listen(0, resolve));
+const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+test.after(() => new Promise((resolve) => server.close(resolve)));
+
+// 1x1 transparent PNG, base64-encoded.
+const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+function mockA1111Fetch(t, { generateOk = true } = {}) {
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    const u = String(url);
+    if (u.includes('/sdapi/v1/options')) {
+      return { ok: true, json: async () => ({ sd_model_checkpoint: 'baseModel.safetensors [abcd1234]' }) };
+    }
+    if (u.includes('/sdapi/v1/txt2img') || u.includes('/sdapi/v1/img2img')) {
+      if (!generateOk) {
+        return { ok: false, status: 500, text: async () => 'internal a1111 error' };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          images: [TINY_PNG_B64],
+          info: JSON.stringify({ seed: 42, sd_model_name: 'baseModel', sd_model_hash: 'abcd1234' }),
+        }),
+      };
+    }
+    if (u.includes('/controlnet/model_list')) {
+      return { ok: true, json: async () => ({ model_list: [] }) };
+    }
+    throw new Error('unexpected fetch in test: ' + u);
+  });
+}
+
+function seedScenario() {
+  const scenarioId = db.prepare(`INSERT INTO scenarios (title) VALUES ('Image Pipeline Test')`).run().lastInsertRowid;
+  const charId = db.prepare(`
+    INSERT INTO characters (name, role, gender, hair_color, eye_color)
+    VALUES ('Riley', 'character', 'female', 'red', 'green')
+  `).run().lastInsertRowid;
+  db.prepare('INSERT INTO scenario_characters (scenario_id, character_id) VALUES (?, ?)').run(scenarioId, charId);
+  return { scenarioId, charId };
+}
+
+test('POST /generate happy path: writes a file, inserts a scene_images row with a full snapshot, and audits the run', async (t) => {
+  mockA1111Fetch(t);
+  const { scenarioId } = seedScenario();
+
+  const res = await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: 'scene', actionText: 'standing quietly by the window' }),
+  });
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.equal(json.ok, true);
+  assert.ok(json.image.id);
+  assert.ok(json.pipeline_run_id);
+
+  const row = db.prepare('SELECT * FROM scene_images WHERE id = ?').get(json.image.id);
+  assert.equal(row.scenario_id, scenarioId);
+  assert.equal(row.generation_method, 'txt2img');
+  assert.match(row.prompt_used, /standing quietly by the window/);
+  assert.ok(row.look_id, 'the active Look id must be snapshotted onto the row');
+  assert.equal(row.model_name, 'baseModel');
+  assert.equal(row.model_hash, 'abcd1234');
+  assert.equal(row.seed, 42);
+  assert.equal(row.pipeline_run_id, json.pipeline_run_id);
+
+  const absPath = path.join(DIRS.images, String(scenarioId), row.filename);
+  assert.ok(fs.existsSync(absPath), 'generated file must exist on disk');
+
+  const parts = JSON.parse(row.prompt_parts_json);
+  assert.ok(parts.style_prefix, 'prompt_parts must record the style block separately from content');
+  assert.match(parts.action, /standing quietly by the window/);
+
+  const auditRows = db.prepare('SELECT * FROM audit_events WHERE pipeline_run_id = ? ORDER BY id ASC').all(json.pipeline_run_id);
+  assert.ok(auditRows.length >= 5, 'expected multiple stage audit events for this run');
+  const stages = auditRows.map((r) => r.event);
+  assert.ok(stages.includes('start'));
+  assert.ok(stages.includes('build_prompt'));
+  assert.ok(stages.includes('persist'));
+  assert.ok(stages.includes('complete'));
+});
+
+test('switching the active Look changes the style block on the next generation', async (t) => {
+  mockA1111Fetch(t);
+  const { scenarioId } = seedScenario();
+
+  // Ensure two distinct Looks exist (fresh DB may only have the default Look).
+  const alt = await (await realFetch(`${baseUrl}/api/looks`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Switch Test Alt Look',
+      prompt_prefix: 'alternate stylized render prefix for test',
+      negative: 'photorealistic photograph, flat anime',
+    }),
+  })).json();
+  const looksBefore = await (await realFetch(`${baseUrl}/api/looks`)).json();
+  const lookA = looksBefore.find((l) => l.name === 'Stylized 3D Cinematic') || looksBefore[0];
+  const lookB = looksBefore.find((l) => l.id === alt.id) || looksBefore[1];
+  assert.ok(lookA && lookB && lookA.id !== lookB.id, 'need two distinct Looks for this test');
+  await realFetch(`${baseUrl}/api/looks/${lookA.id}/activate`, { method: 'POST' });
+
+  const genA = await (await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actionText: 'reading a book' }),
+  })).json();
+
+  await realFetch(`${baseUrl}/api/looks/${lookB.id}/activate`, { method: 'POST' });
+
+  const genB = await (await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actionText: 'reading a book' }),
+  })).json();
+
+  const rowA = db.prepare('SELECT * FROM scene_images WHERE id = ?').get(genA.image.id);
+  const rowB = db.prepare('SELECT * FROM scene_images WHERE id = ?').get(genB.image.id);
+
+  assert.notEqual(rowA.look_id, rowB.look_id);
+  assert.notEqual(rowA.prompt_used, rowB.prompt_used);
+
+  const partsA = JSON.parse(rowA.prompt_parts_json);
+  const partsB = JSON.parse(rowB.prompt_parts_json);
+  assert.equal(partsA.action, partsB.action, 'action text must be identical across Looks');
+  assert.notEqual(partsA.style_prefix, partsB.style_prefix, 'style prefix must change with the Look');
+});
+
+test("active Look's vae/clip_skip/restore_faces/tiling and LoRAs reach the actual A1111 payload", async (t) => {
+  let capturedPayload = null;
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    const u = String(url);
+    if (u.includes('/sdapi/v1/options')) {
+      return { ok: true, json: async () => ({ sd_model_checkpoint: 'baseModel.safetensors [abcd1234]' }) };
+    }
+    if (u.includes('/sdapi/v1/txt2img')) {
+      capturedPayload = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({
+          images: [TINY_PNG_B64],
+          info: JSON.stringify({ seed: 42, sd_model_name: 'baseModel', sd_model_hash: 'abcd1234' }),
+        }),
+      };
+    }
+    if (u.includes('/controlnet/model_list')) {
+      return { ok: true, json: async () => ({ model_list: [] }) };
+    }
+    throw new Error('unexpected fetch in test: ' + u);
+  });
+
+  const { scenarioId } = seedScenario();
+  const created = db.prepare(`
+    INSERT INTO image_looks (name, prompt_prefix, negative, vae, clip_skip, restore_faces, tiling, loras_json)
+    VALUES ('Rendering Test Look', 'test prefix', 'test neg', 'someVae.safetensors', 2, 1, 1, '[{"file":"testLora","strength":0.7}]')
+  `).run();
+  db.prepare('UPDATE image_looks SET is_active = 0').run();
+  db.prepare('UPDATE image_looks SET is_active = 1 WHERE id = ?').run(created.lastInsertRowid);
+
+  await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actionText: 'testing' }),
+  });
+
+  assert.equal(capturedPayload.restore_faces, true);
+  assert.equal(capturedPayload.tiling, true);
+  assert.equal(capturedPayload.override_settings.sd_vae, 'someVae.safetensors');
+  assert.equal(capturedPayload.override_settings.CLIP_stop_at_last_layers, 2);
+  assert.equal(capturedPayload.override_settings_restore_afterwards, true);
+  assert.match(capturedPayload.prompt, /<lora:testLora:0\.7>/);
+});
+
+test('A1111 offline: generate fails cleanly with a 502 and writes zero DB rows', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => {
+    throw new Error('connect ECONNREFUSED 127.0.0.1:7860');
+  });
+  const { scenarioId } = seedScenario();
+  const before = db.prepare('SELECT COUNT(*) as n FROM scene_images').get().n;
+
+  const res = await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actionText: 'anything' }),
+  });
+  assert.equal(res.status, 502);
+  const json = await res.json();
+  assert.equal(json.ok, false);
+  assert.match(json.error, /not reachable/i);
+
+  const after = db.prepare('SELECT COUNT(*) as n FROM scene_images').get().n;
+  assert.equal(after, before, 'no partial row should be written on failure');
+});
+
+test('portrait mode requires exactly one character id', async (t) => {
+  mockA1111Fetch(t);
+  const { scenarioId, charId } = seedScenario();
+  const other = db.prepare(`INSERT INTO characters (name, role) VALUES ('Second', 'character')`).run().lastInsertRowid;
+  db.prepare('INSERT INTO scenario_characters (scenario_id, character_id) VALUES (?, ?)').run(scenarioId, other);
+
+  // No characterIds -> portrait/fullbody reject immediately (no cast fallback)
+  const res = await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'portrait' }),
+  });
+  assert.equal(res.status, 502);
+  const json = await res.json();
+  assert.match(json.error, /requires exactly one character/i);
+
+  // Exactly one -> succeeds
+  const res2 = await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: 'portrait', characterIds: [charId], actionText: 'portrait shot' }),
+  });
+  assert.equal(res2.status, 200);
+});
+
+test('GET list / PUT accept / PUT rate / DELETE', async (t) => {
+  mockA1111Fetch(t);
+  const { scenarioId } = seedScenario();
+  const gen = await (await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actionText: 'test' }),
+  })).json();
+  const imageId = gen.image.id;
+
+  const list = await (await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images`)).json();
+  assert.ok(list.some((i) => i.id === imageId));
+
+  const accept = await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/${imageId}/accept`, { method: 'PUT' });
+  assert.equal(accept.status, 200);
+  assert.equal((await accept.json()).accepted, 1);
+
+  const rate = await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/${imageId}/rate`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rating: 1 }),
+  });
+  assert.equal(rate.status, 200);
+  assert.equal((await rate.json()).user_rating, 1);
+
+  const badRate = await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/${imageId}/rate`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rating: 5 }),
+  });
+  assert.equal(badRate.status, 400);
+
+  const row = db.prepare('SELECT filename FROM scene_images WHERE id = ?').get(imageId);
+  const absPath = path.join(DIRS.images, String(scenarioId), row.filename);
+  assert.ok(fs.existsSync(absPath));
+
+  const del = await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/${imageId}`, { method: 'DELETE' });
+  assert.equal(del.status, 200);
+  assert.equal(db.prepare('SELECT * FROM scene_images WHERE id = ?').get(imageId), undefined);
+  assert.ok(!fs.existsSync(absPath), 'file should be removed on delete');
+});
