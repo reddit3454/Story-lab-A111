@@ -164,6 +164,7 @@ migrate("ALTER TABLE turns ADD COLUMN scene_card_json TEXT DEFAULT '{}'");
 migrate("ALTER TABLE turns ADD COLUMN token_estimate INTEGER DEFAULT 0");
 migrate("ALTER TABLE turns ADD COLUMN location_id INTEGER REFERENCES locations(id)");
 migrate("ALTER TABLE turns ADD COLUMN image_action_draft TEXT DEFAULT NULL");
+migrate("ALTER TABLE turns ADD COLUMN image_direction_json TEXT DEFAULT ''");
 
 // scenario extended wizard fields
 migrate("ALTER TABLE scenarios ADD COLUMN tone                        TEXT    DEFAULT 'Dramatic'");

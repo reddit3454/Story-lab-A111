@@ -104,9 +104,9 @@
     postTurn:   function (sid, contentText)   { return request('POST',   '/api/scenarios/' + sid + '/turns', { role: 'user', content_text: contentText }); },
     deleteTurn: function (sid, turnId)        { return request('DELETE', '/api/scenarios/' + sid + '/turns/' + turnId); },
     regenerateTurn: function (sid, turnId, body) { return request('POST', '/api/scenarios/' + sid + '/turns/' + turnId + '/regenerate', body || {}); },
-    getShotAction:      function (sid, turnId) { return request('GET',    '/api/scenarios/' + sid + '/turns/' + turnId + '/shot-action'); },
-    saveShotActionDraft:function (sid, turnId, text) { return request('PUT', '/api/scenarios/' + sid + '/turns/' + turnId + '/shot-action', { text: text }); },
-    suggestShotAction:  function (sid, turnId) { return request('POST', '/api/scenarios/' + sid + '/turns/' + turnId + '/shot-action/suggest'); },
+    getShotAction:      function (sid, turnId, options) { var q = options ? '?mode=' + encodeURIComponent(options.mode || 'scene') + (options.characterId ? '&characterId=' + encodeURIComponent(options.characterId) : '') : ''; return request('GET', '/api/scenarios/' + sid + '/turns/' + turnId + '/shot-action' + q); },
+    saveShotActionDraft:function (sid, turnId, body) { return request('PUT', '/api/scenarios/' + sid + '/turns/' + turnId + '/shot-action', typeof body === 'object' ? body : { text: body }); },
+    suggestShotAction:  function (sid, turnId, body) { return request('POST', '/api/scenarios/' + sid + '/turns/' + turnId + '/shot-action/suggest', body || {}); },
 
     /* Memories — scenario-scoped */
     getMemories:        function (sid)          { return request('GET',    '/api/scenarios/' + sid + '/memories'); },

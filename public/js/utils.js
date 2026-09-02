@@ -56,6 +56,8 @@ export function buildImageGenerationOptions({
   sceneText = '',
   characterAction = '',
   characterId = null,
+  sceneCharacterIds = [],
+  framing = 'auto',
 } = {}) {
   var options = {
     turnId: turnId,
@@ -66,6 +68,12 @@ export function buildImageGenerationOptions({
   if (trimmedAction) options.characterAction = trimmedAction;
   if ((mode === 'portrait' || mode === 'fullbody') && characterId) {
     options.characterIds = [Number(characterId)];
+  }
+  if (mode === 'scene') {
+    if (Array.isArray(sceneCharacterIds) && sceneCharacterIds.length) options.characterIds = sceneCharacterIds.map(Number);
+    if (framing && framing !== 'auto') options.framing = framing;
+  } else if (mode === 'fullbody') {
+    if (framing && framing !== 'auto') options.framing = framing;
   }
   return options;
 }

@@ -7,6 +7,7 @@ import { resolveEffectiveConfig } from './config-resolver.js';
 import { buildCharacterAppearance, readFaceRefBase64 } from './character-appearance.js';
 import { buildPrompt } from './prompt-builder.js';
 import { resolveShotActionSync, normalizeShotAction } from './image-shot-action.js';
+import { parseVisualDirections, visualDirectionPromptText } from './visual-direction.js';
 import { getScenarioClothing } from './clothing.js';
 import { audit } from './audit.js';
 import { log, logError } from '../logger.js';
@@ -57,7 +58,7 @@ function _audit(pipelineRunId, scenarioId, turnId, stage, status, message, extra
  * One orchestrator for every image type. mode: 'scene' | 'portrait' | 'fullbody'.
  * Always on-command — never call this automatically from a narrator turn.
  */
-export async function generate({ scenarioId, turnId = null, mode = 'scene', actionText, characterAction = '', characterIds = null } = {}) {
+export async function generate({ scenarioId, turnId = null, mode = 'scene', actionText, characterAction = '', characterIds = null, framing = 'auto' } = {}) {
   const pipelineRunId = crypto.randomUUID();
   const t0 = Date.now();
 
@@ -86,13 +87,8 @@ export async function generate({ scenarioId, turnId = null, mode = 'scene', acti
       turn = _getTurn.get(turnId, scenarioId);
       if (!turn) throw new Error(`Turn ${turnId} not found in scenario ${scenarioId}`);
     }
-    let resolvedAction = '';
-    if (actionText != null && String(actionText).trim()) {
-      resolvedAction = normalizeShotAction(String(actionText).trim());
-    } else if (turn) {
-      resolvedAction = resolveShotActionSync(turn).text || '';
-    }
-
+    const scenarioCast = _getScenarioCast.all(scenarioId);
+    const castById = new Map(scenarioCast.map((character) => [Number(character.id), character]));
     let castRows;
     if (mode === 'portrait' || mode === 'fullbody') {
       // Portrait/fullbody never fall back to the full scenario cast — that produced
@@ -102,14 +98,25 @@ export async function generate({ scenarioId, turnId = null, mode = 'scene', acti
           `mode "${mode}" requires exactly one character id — got ${Array.isArray(characterIds) ? characterIds.length : 0}`
         );
       }
-      castRows = characterIds.map((id) => _getCharactersByIds.get(id)).filter(Boolean);
+      castRows = characterIds.map((id) => castById.get(Number(id))).filter(Boolean);
       if (castRows.length !== 1) {
         throw new Error(`mode "${mode}" character id ${characterIds[0]} not found`);
       }
     } else if (Array.isArray(characterIds) && characterIds.length) {
-      castRows = characterIds.map((id) => _getCharactersByIds.get(id)).filter(Boolean);
+      if (characterIds.length > 2) throw new Error('scene mode allows at most two character ids');
+      castRows = characterIds.map((id) => castById.get(Number(id))).filter(Boolean);
+      if (castRows.length !== characterIds.length) throw new Error('every selected scene character must belong to this scenario');
     } else {
-      castRows = _getScenarioCast.all(scenarioId);
+      castRows = scenarioCast;
+    }
+    let resolvedAction = '';
+    if (actionText != null && String(actionText).trim()) resolvedAction = normalizeShotAction(String(actionText).trim());
+    else if (turn && mode === 'fullbody') {
+      const direction = parseVisualDirections(turn.image_direction_json, scenarioCast).fullbody_by_character[String(castRows[0]?.id)];
+      resolvedAction = visualDirectionPromptText(direction, 'fullbody');
+    } else if (turn) resolvedAction = resolveShotActionSync(turn).text || '';
+    if (mode === 'fullbody' && resolvedAction && !resolvedAction.includes('full-body composition')) {
+      resolvedAction = visualDirectionPromptText({ action_text: resolvedAction, framing }, 'fullbody');
     }
 
     const location = scenario.active_location_id ? _getLocation.get(scenario.active_location_id) : null;
@@ -158,7 +165,7 @@ export async function generate({ scenarioId, turnId = null, mode = 'scene', acti
     const built = buildPrompt({
       look: config.look,
       characters: appearances,
-      characterAction,
+      characterAction: mode === 'fullbody' ? '' : characterAction,
       actionText: resolvedAction,
       clothingText,
       locationTags,

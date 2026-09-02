@@ -22,7 +22,7 @@ router.get('/', function (req, res) {
 
 router.post('/generate', async function (req, res) {
   const { scenarioId } = req.params;
-  const { turnId = null, mode = 'scene', actionText, characterAction = '', characterIds = null } = req.body || {};
+  const { turnId = null, mode = 'scene', actionText, characterAction = '', characterIds = null, framing = 'auto' } = req.body || {};
 
   try {
     const result = await generate({
@@ -32,6 +32,7 @@ router.post('/generate', async function (req, res) {
       actionText,
       characterAction,
       characterIds: Array.isArray(characterIds) ? characterIds.map(Number) : null,
+      framing,
     });
     res.json(result);
   } catch (err) {

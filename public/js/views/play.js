@@ -175,6 +175,8 @@ export function initPlay(scenarioId) {
           '<p class="play-image-sidebar-hint" id="img-sidebar-action-hint">Describe only what should be visible. Style comes from the selected Look.</p>' +
           '<div id="img-sidebar-shot-loading" class="play-image-shot-loading hidden" aria-live="polite">Loading scene description...</div>' +
           '<textarea id="img-sidebar-action" class="turn-image-action" rows="4" placeholder="Describe what should be visible in this shot..."></textarea>' +
+          '<div id="img-sidebar-scene-subjects" class="hidden"><label class="play-image-sidebar-label">Subjects in this image</label><div id="img-sidebar-subject-chips"></div><p class="play-image-sidebar-hint">Choose up to two people for a clearer action scene.</p></div>' +
+          '<div id="img-sidebar-framing-wrap"><label class="play-image-sidebar-label" for="img-sidebar-framing">Framing</label><select id="img-sidebar-framing" class="turn-image-mode-select"><option value="auto">Auto</option><option value="close">Close</option><option value="medium">Medium</option><option value="wide">Wide</option></select></div>' +
           '<div class="turn-image-controls">' +
             '<select id="img-sidebar-mode" class="turn-image-mode-select" title="Image type">' +
               '<option value="scene">Scene</option>' +
@@ -1152,6 +1154,9 @@ function _getImageSidebarEls() {
     root: document.getElementById('play-image-sidebar'),
     action: document.getElementById('img-sidebar-action'),
     characterAction: document.getElementById('img-sidebar-character-action'),
+    subjects: document.getElementById('img-sidebar-scene-subjects'),
+    chips: document.getElementById('img-sidebar-subject-chips'),
+    framing: document.getElementById('img-sidebar-framing'),
     mode: document.getElementById('img-sidebar-mode'),
     char: document.getElementById('img-sidebar-char'),
     look: document.getElementById('img-sidebar-look'),
@@ -1254,6 +1259,19 @@ function _buildTurnImageCardHtml(scenarioId, image) {
   '</div>';
 }
 
+function _populateSceneSubjectChips() {
+  var els = _getImageSidebarEls();
+  var sid = state.currentScenario && state.currentScenario.id;
+  if (!els.chips || !sid) return;
+  API.getScenarioCharacters(sid).then(function (chars) {
+    var selected = state.imageGen.sceneCharacterIds || [];
+    els.chips.innerHTML = (chars || []).map(function (character) {
+      var active = selected.includes(Number(character.id));
+      return '<button type="button" class="btn btn-ghost btn-xs img-scene-subject" data-id="' + character.id + '" aria-pressed="' + active + '">' + escapeHtml(character.name) + '</button>';
+    }).join(' ');
+  });
+}
+
 function _refreshAcceptedImagesForTurn(turnId) {
   var turn = state.turns.find(function (item) { return Number(item.id) === Number(turnId); });
   if (!turn) return;
@@ -1315,6 +1333,17 @@ function _applyShotActionToSidebar(text, source) {
     els.action.value = value;
     els.action.placeholder = 'Describe what should be visible in this shot...';
   }
+  var actionLabel = document.querySelector('label[for="img-sidebar-action"]');
+  var characterLabel = document.querySelector('label[for="img-sidebar-character-action"]');
+  if (actionLabel) actionLabel.textContent = mode === 'fullbody' ? 'Fullbody action (editable)' : 'Scene description (editable)';
+  if (characterLabel) characterLabel.classList.toggle('hidden', mode === 'fullbody');
+  if (els.characterAction) els.characterAction.classList.toggle('hidden', mode === 'fullbody');
+  if (els.subjects) els.subjects.classList.toggle('hidden', mode !== 'scene');
+  if (els.framing) {
+    els.framing.value = state.imageGen.framing || 'auto';
+    els.framing.querySelector('option[value="close"]').disabled = mode === 'fullbody';
+    if (mode === 'fullbody' && els.framing.value === 'close') els.framing.value = 'auto';
+  }
   if (els.hint) els.hint.textContent = _shotActionSourceHint(source);
   if (state.imageGen) state.imageGen.actionText = value;
 }
@@ -1333,7 +1362,9 @@ function _loadShotActionForSidebar(sid, turnId) {
   var token = ++_shotActionLoadToken;
   _setShotActionLoading(true);
 
-  API.getShotAction(loadSid, loadTurnId)
+  var mode = state.imageGen && state.imageGen.mode === 'fullbody' ? 'fullbody' : 'scene';
+  var characterId = state.imageGen && state.imageGen.characterId;
+  API.getShotAction(loadSid, loadTurnId, { mode: mode, characterId: characterId })
     .then(function (res) {
       if (token !== _shotActionLoadToken) return null;
       if (!state.imageGen || Number(state.imageGen.turnId) !== loadTurnId) return null;
@@ -1341,6 +1372,16 @@ function _loadShotActionForSidebar(sid, turnId) {
       var text = (res && res.text) ? String(res.text).trim() : '';
       var source = (res && res.source) || 'empty';
       var needsSuggest = !!(res && res.needs_suggest) || !text;
+      if (mode === 'scene' && res) {
+        state.imageGen.sceneCharacterIds = Array.isArray(res.subject_ids) ? res.subject_ids.map(Number).filter(Boolean).slice(0, 2) : [];
+        state.imageGen.framing = res.framing || 'auto';
+        _populateSceneSubjectChips();
+        _syncImageModeControls();
+      }
+      if (mode === 'fullbody' && res) {
+        state.imageGen.framing = res.framing || 'auto';
+        _syncImageModeControls();
+      }
 
       if (!needsSuggest) {
         _applyShotActionToSidebar(text, source);
@@ -1348,7 +1389,7 @@ function _loadShotActionForSidebar(sid, turnId) {
         return null;
       }
 
-      return API.suggestShotAction(loadSid, loadTurnId).then(function (sug) {
+      return API.suggestShotAction(loadSid, loadTurnId, { mode: mode, characterId: characterId }).then(function (sug) {
         if (token !== _shotActionLoadToken) return;
         if (!state.imageGen || Number(state.imageGen.turnId) !== loadTurnId) return;
         var sugText = (sug && sug.text) ? String(sug.text).trim() : text;
@@ -1396,7 +1437,10 @@ function _flushShotActionDraftSave() {
   var pending = _shotActionDraftPending;
   _shotActionDraftPending = null;
   if (!pending || !pending.sid || !pending.turnId) return;
-  API.saveShotActionDraft(pending.sid, pending.turnId, pending.text).catch(function (err) {
+  var mode = state.imageGen && state.imageGen.mode === 'fullbody' ? 'fullbody' : 'scene';
+  var body = { mode: mode, text: pending.text, characterId: state.imageGen && state.imageGen.characterId, framing: state.imageGen && state.imageGen.framing };
+  if (mode === 'scene') body.subjectIds = state.imageGen && state.imageGen.sceneCharacterIds;
+  API.saveShotActionDraft(pending.sid, pending.turnId, body).catch(function (err) {
     console.error('shot-action draft save failed', err);
   });
 }
@@ -1455,6 +1499,7 @@ function openImageSidebar(opts) {
   _markSelectedImageTurn(state.imageGen.turnId);
   _populateLookSelect(els.look);
   _populateImageCharSelect(els.char);
+  _populateSceneSubjectChips();
   _syncImageModeControls();
   if (state.imageGen.scenarioId && state.imageGen.turnId) {
     _loadTurnImages(els.result, state.imageGen.scenarioId, state.imageGen.turnId);
@@ -1477,6 +1522,7 @@ function _readImageSidebarIntoState() {
   if (els.look && els.look.value) state.imageGen.lookId = Number(els.look.value);
   if (els.char && els.char.value) state.imageGen.characterId = Number(els.char.value);
   else state.imageGen.characterId = null;
+  if (els.framing) state.imageGen.framing = els.framing.value || 'auto';
 }
 
 function wireImageSidebarOnce() {
@@ -1492,6 +1538,7 @@ function wireImageSidebarOnce() {
     if (e.target.id === 'img-sidebar-mode') {
       _readImageSidebarIntoState();
       _syncImageModeControls();
+      _loadShotActionForSidebar(state.imageGen.scenarioId, state.imageGen.turnId);
       return;
     }
     if (e.target.id === 'img-sidebar-look' && e.target.value) {
@@ -1503,7 +1550,20 @@ function wireImageSidebarOnce() {
     }
     if (e.target.id === 'img-sidebar-char') {
       state.imageGen.characterId = e.target.value ? Number(e.target.value) : null;
+      if (state.imageGen.mode === 'fullbody') _loadShotActionForSidebar(state.imageGen.scenarioId, state.imageGen.turnId);
     }
+    if (e.target.id === 'img-sidebar-framing') state.imageGen.framing = e.target.value || 'auto';
+  });
+
+  els.root.addEventListener('click', function (e) {
+    var chip = e.target.closest('.img-scene-subject');
+    if (!chip || !state.imageGen || state.imageGen.mode !== 'scene') return;
+    var id = Number(chip.dataset.id);
+    var current = state.imageGen.sceneCharacterIds || [];
+    if (current.includes(id)) state.imageGen.sceneCharacterIds = current.filter(function (value) { return value !== id; });
+    else if (current.length < 2) state.imageGen.sceneCharacterIds = current.concat(id);
+    else { showToast('Choose at most two scene subjects.', 'error'); return; }
+    _populateSceneSubjectChips();
   });
 
   if (els.action) {
@@ -1541,6 +1601,8 @@ function wireImageSidebarOnce() {
         sceneText: state.imageGen.actionText,
         characterAction: state.imageGen.characterAction,
         characterId: state.imageGen.characterId,
+        sceneCharacterIds: state.imageGen.sceneCharacterIds,
+        framing: state.imageGen.framing,
       });
       if (genMode === 'portrait' || genMode === 'fullbody') {
         var charId = state.imageGen.characterId ? Number(state.imageGen.characterId) : 0;

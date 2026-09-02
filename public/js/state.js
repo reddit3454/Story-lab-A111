@@ -28,6 +28,8 @@ export var state = {
     characterId: null,
     actionText: '',
     characterAction: '',
+    sceneCharacterIds: [],
+    framing: 'auto',
   },
 };
 

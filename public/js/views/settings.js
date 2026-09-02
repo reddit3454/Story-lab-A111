@@ -693,7 +693,9 @@ function _renderTestResults() {
       '<img src="' + r.url + '" style="width:100%;display:block">' +
       '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;font-size:11px;color:var(--text-muted)">' +
         '<span>seed ' + r.seed + ' • ' + Math.round(r.generation_time_ms / 100) / 10 + 's</span>' +
-        '<button type="button" class="btn btn-xs btn-secondary le-test-save" data-idx="' + i + '" style="margin-left:auto" ' + (r.saved ? 'disabled' : '') + '>' + (r.saved ? 'Saved' : 'Save') + '</button>' +
+        (r.saved ? '<span style="margin-left:auto">Saved</span>' :
+          '<button type="button" class="btn btn-xs btn-secondary le-test-save" data-idx="' + i + '" style="margin-left:auto">Save</button>' +
+          '<button type="button" class="btn btn-danger-ghost btn-xs le-test-delete" data-idx="' + i + '">Delete</button>') +
       '</div>' +
     '</div>';
   }).join('');
@@ -890,6 +892,24 @@ function _wireTestResultButtons(editorEl) {
       }).catch(function (e) {
         btn.disabled = false;
         showToast('Save failed: ' + e.message, 'error');
+      });
+    };
+  });
+  editorEl.querySelectorAll('.le-test-delete').forEach(function (btn) {
+    btn.onclick = function () {
+      var idx = Number(btn.dataset.idx);
+      var result = _lookEditorState.testResults[idx];
+      if (!result || result.saved || !_lookEditorState.scratchFilenames.has(result.filename)) return;
+      btn.disabled = true;
+      API.cleanupTestLookImages([result.filename]).then(function () {
+        _lookEditorState.scratchFilenames.delete(result.filename);
+        _lookEditorState.testResults.splice(idx, 1);
+        document.getElementById('le-test-results').innerHTML = _renderTestResults();
+        _wireTestResultButtons(editorEl);
+        showToast('Test image deleted.', 'info');
+      }).catch(function (e) {
+        btn.disabled = false;
+        showToast('Delete failed: ' + e.message, 'error');
       });
     };
   });

@@ -16,6 +16,7 @@ import {
   normalizeShotAction,
   SHOT_ACTION_PLACEHOLDER,
 } from '../services/image-shot-action.js';
+import { normalizeVisualDirection, parseVisualDirections } from '../services/visual-direction.js';
 
 const router = Router({ mergeParams: true });
 const _activeTurns = new Map();
@@ -333,29 +334,47 @@ router.get('/:turnId/shot-action', function (req, res) {
   const { scenarioId, turnId } = req.params;
   const turn = db.prepare('SELECT * FROM turns WHERE id = ? AND scenario_id = ?').get(turnId, scenarioId);
   if (!turn) return res.status(404).json({ error: 'Turn not found' });
-  const resolved = resolveShotActionSync(turn);
+  const mode = req.query.mode || 'scene';
+  const characterId = Number(req.query.characterId);
+  const cast = db.prepare('SELECT c.id, c.name FROM characters c JOIN scenario_characters sc ON sc.character_id = c.id WHERE sc.scenario_id = ?').all(scenarioId);
+  const directions = parseVisualDirections(turn.image_direction_json, cast);
+  const saved = mode === 'fullbody' ? directions.fullbody_by_character[String(characterId)] : directions.scene;
+  if (mode === 'fullbody' && !saved) {
+    return res.json({ text: '', source: 'empty', needs_suggest: false, placeholder: 'Describe the selected character doing something visible.', subject_ids: [], framing: 'auto' });
+  }
+  const resolved = saved?.action_text ? { text: saved.action_text, source: 'user_draft', needs_suggest: false } : resolveShotActionSync(turn);
   res.json({
     text: resolved.text,
     source: resolved.source,
     needs_suggest: resolved.needs_suggest,
     placeholder: SHOT_ACTION_PLACEHOLDER,
+    subject_ids: mode === 'scene' ? (saved?.subject_ids || []) : [],
+    framing: saved?.framing || 'auto',
   });
 });
 
 router.put('/:turnId/shot-action', function (req, res) {
   const { scenarioId, turnId } = req.params;
-  const { text } = req.body || {};
-  const turn = db.prepare('SELECT id FROM turns WHERE id = ? AND scenario_id = ?').get(turnId, scenarioId);
+  const { text, mode = 'scene', subjectIds, framing, characterId } = req.body || {};
+  const turn = db.prepare('SELECT * FROM turns WHERE id = ? AND scenario_id = ?').get(turnId, scenarioId);
   if (!turn) return res.status(404).json({ error: 'Turn not found' });
+  if (mode !== 'scene' && mode !== 'fullbody') return res.status(400).json({ error: 'invalid mode' });
+  const cast = db.prepare('SELECT c.id, c.name FROM characters c JOIN scenario_characters sc ON sc.character_id = c.id WHERE sc.scenario_id = ?').all(scenarioId);
+  const normalizedDirection = normalizeVisualDirection({ text, subjectIds, framing }, cast, mode, characterId);
+  if (normalizedDirection.errors.length) return res.status(400).json({ error: normalizedDirection.errors.join('; ') });
+  const directions = parseVisualDirections(turn.image_direction_json, cast);
+  if (mode === 'fullbody') directions.fullbody_by_character[String(Number(characterId))] = normalizedDirection.direction;
+  else directions.scene = normalizedDirection.direction;
   const normalized = text != null && String(text).trim()
     ? normalizeShotAction(String(text))
     : null;
-  db.prepare('UPDATE turns SET image_action_draft = ? WHERE id = ? AND scenario_id = ?').run(
-    normalized,
+  db.prepare('UPDATE turns SET image_action_draft = ?, image_direction_json = ? WHERE id = ? AND scenario_id = ?').run(
+    mode === 'scene' ? normalized : turn.image_action_draft,
+    JSON.stringify(directions),
     turnId,
     scenarioId,
   );
-  res.json({ text: normalized || '', source: normalized ? 'user_draft' : 'empty' });
+  res.json({ text: normalizedDirection.direction.action_text, source: 'user_draft', subject_ids: normalizedDirection.direction.subject_ids || [], framing: normalizedDirection.direction.framing });
 });
 
 router.post('/:turnId/shot-action/suggest', async function (req, res) {
