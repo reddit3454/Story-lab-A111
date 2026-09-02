@@ -27,6 +27,49 @@ export function formatStoryContent(text) {
     .join('');
 }
 
+export function groupAcceptedImagesByTurn(images) {
+  var grouped = {};
+  (images || []).forEach(function (image) {
+    if (!image || !image.accepted || image.turn_id == null) return;
+    var key = String(image.turn_id);
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(image);
+  });
+  return grouped;
+}
+
+export function renderAcceptedStoryImages(scenarioId, images) {
+  if (!Array.isArray(images) || !images.length) return '';
+  var cards = images.map(function (image) {
+    var src = '/story-images/' + encodeURIComponent(scenarioId) + '/' + encodeURIComponent(image.filename || '');
+    var mode = String(image.mode || 'story').toLowerCase();
+    return '<figure class="turn-accepted-image" data-story-image-id="' + escapeHtml(image.id) + '">' +
+      '<img src="' + src + '" alt="Accepted ' + escapeHtml(mode) + ' image" loading="lazy">' +
+    '</figure>';
+  }).join('');
+  return '<div class="turn-accepted-images">' + cards + '</div>';
+}
+
+export function buildImageGenerationOptions({
+  turnId,
+  mode = 'scene',
+  sceneText = '',
+  characterAction = '',
+  characterId = null,
+} = {}) {
+  var options = {
+    turnId: turnId,
+    mode: mode,
+    actionText: String(sceneText || '').trim(),
+  };
+  var trimmedAction = String(characterAction || '').trim();
+  if (trimmedAction) options.characterAction = trimmedAction;
+  if ((mode === 'portrait' || mode === 'fullbody') && characterId) {
+    options.characterIds = [Number(characterId)];
+  }
+  return options;
+}
+
 // Response ID for the "A5-11" addressing scheme (see
 // docs/superpowers/specs/2026-07-15-narrator-line-numbering-design.md). Counts narrator-role
 // turns only, in turn_number order, ignoring interleaved user/other-role turns. Returns null

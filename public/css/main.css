@@ -1925,6 +1925,26 @@ pre {
 }
 .turn-image-btn:hover { color: var(--accent-hover); border-color: var(--accent); }
 
+.turn-accepted-images {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+.turn-accepted-image {
+  margin: 0;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+}
+.turn-accepted-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 /* Selected turn while image sidebar is open — feed width unchanged */
 .turn.is-image-selected {
   outline: 1px solid rgba(100, 180, 255, 0.35);
@@ -2041,6 +2061,17 @@ pre {
   color: var(--text-primary);
   font-size: 12px;
   padding: 6px 8px;
+}
+.play-image-sidebar .turn-image-character-action {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-input, var(--bg-raised));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 7px 8px;
+  font-family: var(--font-ui);
 }
 .play-image-sidebar .turn-image-generate-btn {
   width: 100%;

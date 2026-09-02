@@ -21,6 +21,37 @@ const LOOK_B = {
 const MASTER_NEGATIVE = 'lowres, bad anatomy, bad hands';
 
 describe('buildPrompt — assembly order', () => {
+  it('places optional character action after identity and before the editable scene description', () => {
+    const { prompt, parts } = buildPrompt({
+      look: LOOK_A,
+      characters: ['Riley, tall woman, red hair'],
+      characterAction: 'Riley reaching toward the open window',
+      actionText: 'rain crossing a quiet bedroom at night',
+      clothingText: 'blue dress',
+      locationTags: 'cozy bedroom',
+    });
+
+    const charIdx = prompt.indexOf('Riley, tall woman');
+    const actionIdx = prompt.indexOf('Riley reaching toward the open window');
+    const sceneIdx = prompt.indexOf('rain crossing a quiet bedroom at night');
+    const locationIdx = prompt.indexOf('cozy bedroom');
+    assert.ok(charIdx < actionIdx, 'character identity must precede the optional action');
+    assert.ok(actionIdx < sceneIdx, 'optional action must precede the broader scene description');
+    assert.ok(sceneIdx < locationIdx, 'scene description must precede location and clothing');
+    assert.equal(parts.character_action, 'Riley reaching toward the open window');
+    assert.equal(parts.action, 'rain crossing a quiet bedroom at night');
+  });
+
+  it('omits a blank character action without adding prompt debris', () => {
+    const { prompt, parts } = buildPrompt({
+      characters: ['Riley'],
+      characterAction: '   ',
+      actionText: 'standing in a hallway',
+    });
+    assert.equal(prompt, 'Riley, standing in a hallway');
+    assert.equal(parts.character_action, '');
+  });
+
   it('places style prefix first, then character, action, location+clothing, style suffix last', () => {
     const { prompt } = buildPrompt({
       look: LOOK_A,
@@ -95,6 +126,14 @@ describe('buildPrompt — same content, different Look changes only the style bl
 });
 
 describe('buildPrompt — content cannot smuggle style words', () => {
+  it('strips style vocabulary from the optional character action', () => {
+    const { parts } = buildPrompt({
+      look: LOOK_A,
+      characterAction: 'cinematic masterpiece of Riley running through rain in 8k',
+    });
+    assert.equal(parts.character_action, 'of Riley running through rain in');
+  });
+
   it('strips style vocabulary from action text', () => {
     const { parts } = buildPrompt({
       look: LOOK_A,

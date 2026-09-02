@@ -5,9 +5,10 @@
 // from exactly one place: the active Look):
 //   1) Style   — Look prompt_prefix + LoRA tags  (front)
 //   2) Character — appearance description(s) + FaceID note
-//   3) Action  — user-editable scene/action text (style-word-stripped)
-//   4) Location + clothing (style-word-stripped)
-//   5) Style   — Look prompt_suffix (back, bookending the content)
+//   3) Character action — optional pose/activity instruction (style-word-stripped)
+//   4) Scene description — user-editable scene text (style-word-stripped)
+//   5) Location + clothing (style-word-stripped)
+//   6) Style   — Look prompt_suffix (back, bookending the content)
 // Negative prompt: Look negative (style) + master anatomy/safety negative.
 
 // Words/phrases that describe rendering STYLE rather than scene CONTENT.
@@ -68,6 +69,7 @@ export function loraTags(look) {
  * @param {string[]} characters   pre-built character appearance strings
  *                                (see character-appearance.js#buildCharacterAppearance)
  * @param {string}   actionText   user-editable action/scene text (content)
+ * @param {string}   characterAction optional selected-character pose/activity
  * @param {string}   clothingText clothing state description (content)
  * @param {string}   locationTags location description/tags (content)
  * @param {string}   masterNegative structural anatomy/safety negative — never
@@ -81,6 +83,7 @@ export function loraTags(look) {
 export function buildPrompt({
   look = null,
   characters = [],
+  characterAction = '',
   actionText = '',
   clothingText = '',
   locationTags = '',
@@ -94,12 +97,13 @@ export function buildPrompt({
   const styleSuffix = look?.prompt_suffix || '';
 
   const characterPart = (characters || []).filter(Boolean).join(', ');
+  const characterActionPart = stripStyleWords(characterAction);
   const actionPart = stripStyleWords(actionText);
   const locationPart = stripStyleWords(locationTags);
   const clothingPart = stripStyleWords(clothingText);
   const locationAndClothing = [locationPart, clothingPart].filter(Boolean).join(', ');
 
-  const promptSections = [stylePrefix, characterPart, actionPart, locationAndClothing, styleSuffix]
+  const promptSections = [stylePrefix, characterPart, characterActionPart, actionPart, locationAndClothing, styleSuffix]
     .filter(Boolean);
   const prompt = promptSections.join(', ');
 
@@ -113,6 +117,7 @@ export function buildPrompt({
       style_prefix: stylePrefix,
       style_suffix: styleSuffix,
       character: characterPart,
+      character_action: characterActionPart,
       action: actionPart,
       location: locationPart,
       clothing: clothingPart,

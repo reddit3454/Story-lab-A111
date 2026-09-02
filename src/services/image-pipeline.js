@@ -57,7 +57,7 @@ function _audit(pipelineRunId, scenarioId, turnId, stage, status, message, extra
  * One orchestrator for every image type. mode: 'scene' | 'portrait' | 'fullbody'.
  * Always on-command — never call this automatically from a narrator turn.
  */
-export async function generate({ scenarioId, turnId = null, mode = 'scene', actionText, characterIds = null } = {}) {
+export async function generate({ scenarioId, turnId = null, mode = 'scene', actionText, characterAction = '', characterIds = null } = {}) {
   const pipelineRunId = crypto.randomUUID();
   const t0 = Date.now();
 
@@ -158,6 +158,7 @@ export async function generate({ scenarioId, turnId = null, mode = 'scene', acti
     const built = buildPrompt({
       look: config.look,
       characters: appearances,
+      characterAction,
       actionText: resolvedAction,
       clothingText,
       locationTags,

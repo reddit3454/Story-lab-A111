@@ -1,5 +1,5 @@
 import { state, chatColors, getNpcColor } from '../state.js';
-import { escapeHtml, formatStoryContent, formatNarratorLinesWithGutter, narratorResponseLabel, avatarHtml } from '../utils.js';
+import { escapeHtml, formatStoryContent, formatNarratorLinesWithGutter, narratorResponseLabel, avatarHtml, groupAcceptedImagesByTurn, renderAcceptedStoryImages, buildImageGenerationOptions } from '../utils.js';
 import { showToast, showConfirm, setLoading, statusDotsHtml } from '../ui.js';
 
 var _ws = null;
@@ -179,13 +179,16 @@ export function initPlay(scenarioId) {
             '<select id="img-sidebar-mode" class="turn-image-mode-select" title="Image type">' +
               '<option value="scene">Scene</option>' +
               '<option value="portrait">Portrait</option>' +
-              '<option value="fullbody">Fullbody</option>' +
+              '<option value="fullbody">Full body</option>' +
             '</select>' +
             '<select id="img-sidebar-char" class="turn-image-char-select hidden" title="Character for portrait/fullbody">' +
               '<option value="">Character...</option>' +
             '</select>' +
-            '<select id="img-sidebar-look" class="turn-image-look-select"><option value="">Loading Looks...</option></select>' +
           '</div>' +
+          '<label class="play-image-sidebar-label" for="img-sidebar-character-action">Character action (optional)</label>' +
+          '<input id="img-sidebar-character-action" class="turn-image-character-action" type="text" placeholder="e.g. fastening one earring">' +
+          '<label class="play-image-sidebar-label" for="img-sidebar-look">Image workflow</label>' +
+          '<select id="img-sidebar-look" class="turn-image-look-select"><option value="">Loading Looks...</option></select>' +
           '<button type="button" class="turn-image-generate-btn" id="img-sidebar-generate">Generate</button>' +
           '<div id="img-sidebar-status" class="turn-image-status"></div>' +
           '<div id="img-sidebar-result" class="turn-image-result"></div>' +
@@ -205,6 +208,7 @@ export function initPlay(scenarioId) {
     API.getScenario(scenarioId),
     API.getTurns(scenarioId),
     API.getConfig().catch(function () { return {}; }),
+    API.getImages(scenarioId).catch(function () { return []; }),
   ])
     .then(function (results) {
       var scenResp = results[0];
@@ -216,6 +220,7 @@ export function initPlay(scenarioId) {
       state.allLocations = scenResp.locations || [];
       var rawTurns = Array.isArray(results[1]) ? results[1] : (results[1].turns || []);
       state.turns = rawTurns.map(function(t) { return Object.assign({ speaker: t.role }, t); });
+      state.acceptedImagesByTurn = groupAcceptedImagesByTurn(results[3]);
 
       document.getElementById('play-scenario-title').textContent = state.currentScenario.title || 'Untitled Story';
 
@@ -294,6 +299,10 @@ function createTurnElement(turn) {
   div.dataset.turnNumber = turn.turn_number || '';
 
   var numHtml = '<div class="turn-meta-num">' + (turn.turn_number || '') + '</div>';
+  var acceptedImagesHtml = renderAcceptedStoryImages(
+    state.currentScenario && state.currentScenario.id,
+    state.acceptedImagesByTurn[String(turn.id)] || []
+  );
 
   if (isUser) {
     // Guidance-first: user turns are directives, not character speech
@@ -304,6 +313,7 @@ function createTurnElement(turn) {
           '<div class="turn-speaker guidance-label">Guidance</div>' +
         '</div>' +
         '<div class="turn-text story-font guidance-text">' + escapeHtml(content) + '</div>' +
+        acceptedImagesHtml +
         '<div class="turn-footer">' +
           '<button class="turn-user-edit-btn" data-turn-id="' + turn.id + '" title="Edit">&#9998;</button>' +
           '<button class="turn-delete-btn btn btn-xs btn-danger-ghost" data-turn-id="' + turn.id + '" title="Delete turn">&#x2715;</button>' +
@@ -363,6 +373,7 @@ function createTurnElement(turn) {
       '<div class="turn-inner">' +
         speakerHtml +
         '<div class="turn-text story-font"' + npcTextStyle + '>' + bodyHtml + '</div>' +
+        acceptedImagesHtml +
         '<div class="turn-footer">' +
           '<button class="turn-rate-btn' + ratingUp   + '" data-turn-id="' + turn.id + '" data-rating="1"  title="Good">+</button>' +
           '<button class="turn-rate-btn' + ratingDown + '" data-turn-id="' + turn.id + '" data-rating="-1" title="Bad">-</button>' +
@@ -1140,6 +1151,7 @@ function _getImageSidebarEls() {
   return {
     root: document.getElementById('play-image-sidebar'),
     action: document.getElementById('img-sidebar-action'),
+    characterAction: document.getElementById('img-sidebar-character-action'),
     mode: document.getElementById('img-sidebar-mode'),
     char: document.getElementById('img-sidebar-char'),
     look: document.getElementById('img-sidebar-look'),
@@ -1240,6 +1252,34 @@ function _buildTurnImageCardHtml(scenarioId, image) {
       '<button type="button" class="turn-image-delete-btn" title="Delete this image">Delete</button>' +
     '</div>' +
   '</div>';
+}
+
+function _refreshAcceptedImagesForTurn(turnId) {
+  var turn = state.turns.find(function (item) { return Number(item.id) === Number(turnId); });
+  if (!turn) return;
+  replaceOrAppendTurnElement(turn);
+}
+
+function _storeAcceptedImage(image) {
+  if (!image || image.turn_id == null) return;
+  var key = String(image.turn_id);
+  var current = state.acceptedImagesByTurn[key] || [];
+  state.acceptedImagesByTurn[key] = current.filter(function (item) {
+    return Number(item.id) !== Number(image.id);
+  });
+  if (image.accepted) state.acceptedImagesByTurn[key].push(image);
+  _refreshAcceptedImagesForTurn(image.turn_id);
+}
+
+function _removeAcceptedImage(imageId) {
+  Object.keys(state.acceptedImagesByTurn).some(function (turnId) {
+    var current = state.acceptedImagesByTurn[turnId] || [];
+    var next = current.filter(function (image) { return Number(image.id) !== Number(imageId); });
+    if (next.length === current.length) return false;
+    state.acceptedImagesByTurn[turnId] = next;
+    _refreshAcceptedImagesForTurn(turnId);
+    return true;
+  });
 }
 
 function _markSelectedImageTurn(turnId) {
@@ -1381,7 +1421,7 @@ function closeImageSidebar() {
 function openImageSidebar(opts) {
   opts = opts || {};
   if (!state.imageGen) {
-    state.imageGen = { open: false, turnId: null, scenarioId: null, mode: 'scene', lookId: null, characterId: null, actionText: '' };
+    state.imageGen = { open: false, turnId: null, scenarioId: null, mode: 'scene', lookId: null, characterId: null, actionText: '', characterAction: '' };
   }
   state.imageGen.open = true;
   state.imageGen.scenarioId = opts.scenarioId || (state.currentScenario && state.currentScenario.id) || null;
@@ -1401,6 +1441,10 @@ function openImageSidebar(opts) {
   if (els.action) {
     els.action.value = '';
     els.action.placeholder = 'Loading scene description...';
+  }
+  if (els.characterAction) {
+    els.characterAction.value = '';
+    state.imageGen.characterAction = '';
   }
   if (els.mode) els.mode.value = state.imageGen.mode || 'scene';
   if (els.status) {
@@ -1428,6 +1472,7 @@ function _readImageSidebarIntoState() {
   var els = _getImageSidebarEls();
   if (!state.imageGen) return;
   if (els.action) state.imageGen.actionText = els.action.value;
+  if (els.characterAction) state.imageGen.characterAction = els.characterAction.value;
   if (els.mode) state.imageGen.mode = els.mode.value;
   if (els.look && els.look.value) state.imageGen.lookId = Number(els.look.value);
   if (els.char && els.char.value) state.imageGen.characterId = Number(els.char.value);
@@ -1470,6 +1515,12 @@ function wireImageSidebarOnce() {
     });
   }
 
+  if (els.characterAction) {
+    els.characterAction.addEventListener('input', function () {
+      state.imageGen.characterAction = els.characterAction.value;
+    });
+  }
+
   if (els.generate) {
     els.generate.onclick = function () {
       _readImageSidebarIntoState();
@@ -1484,11 +1535,13 @@ function wireImageSidebarOnce() {
       }
       var genMode = state.imageGen.mode || 'scene';
       if (genMode !== 'scene' && genMode !== 'portrait' && genMode !== 'fullbody') genMode = 'scene';
-      var genOpts = {
+      var genOpts = buildImageGenerationOptions({
         turnId: tid,
         mode: genMode,
-        actionText: (state.imageGen.actionText || '').trim(),
-      };
+        sceneText: state.imageGen.actionText,
+        characterAction: state.imageGen.characterAction,
+        characterId: state.imageGen.characterId,
+      });
       if (genMode === 'portrait' || genMode === 'fullbody') {
         var charId = state.imageGen.characterId ? Number(state.imageGen.characterId) : 0;
         if (!charId) {
@@ -1496,7 +1549,6 @@ function wireImageSidebarOnce() {
           els.status.classList.add('is-error');
           return;
         }
-        genOpts.characterIds = [charId];
       }
 
       els.generate.disabled = true;
@@ -1538,6 +1590,7 @@ function wireImageSidebarOnce() {
       imageAcceptBtn.disabled = true;
       API.acceptImage(acceptSid, acceptId).then(function (updated) {
         acceptCard.outerHTML = _buildTurnImageCardHtml(acceptSid, updated);
+        _storeAcceptedImage(updated);
         showToast('Image accepted.', 'success');
       }).catch(function (err) {
         showToast('Accept failed: ' + (err.message || 'unknown error'), 'error');
@@ -1575,6 +1628,7 @@ function wireImageSidebarOnce() {
       showConfirm('Delete Image', 'Remove this generated image from the story? The file will be deleted.', function () {
         API.deleteImage(delSid, delId).then(function () {
           delCard.remove();
+          _removeAcceptedImage(delId);
           showToast('Image deleted.', 'info');
         }).catch(function (err) {
           showToast('Delete failed: ' + (err.message || 'unknown error'), 'error');

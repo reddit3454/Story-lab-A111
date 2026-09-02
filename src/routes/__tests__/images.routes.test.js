@@ -112,6 +112,31 @@ test('POST /generate happy path: writes a file, inserts a scene_images row with 
   assert.ok(stages.includes('complete'));
 });
 
+test('POST /generate injects optional characterAction separately before scene description', async (t) => {
+  mockA1111Fetch(t);
+  const { scenarioId, charId } = seedScenario();
+
+  const res = await realFetch(`${baseUrl}/api/scenarios/${scenarioId}/images/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mode: 'portrait',
+      characterIds: [charId],
+      actionText: 'beside a rain-streaked window',
+      characterAction: 'Riley fastening one earring',
+    }),
+  });
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  const row = db.prepare('SELECT * FROM scene_images WHERE id = ?').get(json.image.id);
+  const parts = JSON.parse(row.prompt_parts_json);
+
+  assert.equal(parts.character_action, 'Riley fastening one earring');
+  assert.equal(parts.action, 'beside a rain-streaked window');
+  assert.ok(row.prompt_used.indexOf(parts.character) < row.prompt_used.indexOf(parts.character_action));
+  assert.ok(row.prompt_used.indexOf(parts.character_action) < row.prompt_used.indexOf(parts.action));
+});
+
 test('switching the active Look changes the style block on the next generation', async (t) => {
   mockA1111Fetch(t);
   const { scenarioId } = seedScenario();

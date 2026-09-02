@@ -17,6 +17,7 @@ export var state = {
   a1111Ok:            null,
   allLocations:       [],
   characterStates:    {},   // charId -> { moodcurrent, arousalcurrent } — live mood state
+  acceptedImagesByTurn: {}, // turnId -> accepted scene_images rows rendered in the story thread
   // Play image generator (right sidebar) - on-command only, never auto on turns
   imageGen: {
     open: false,
@@ -26,6 +27,7 @@ export var state = {
     lookId: null,
     characterId: null,
     actionText: '',
+    characterAction: '',
   },
 };
 
