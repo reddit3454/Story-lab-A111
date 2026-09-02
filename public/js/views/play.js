@@ -1345,6 +1345,7 @@ function _applyShotActionToSidebar(text, source) {
     if (mode === 'fullbody' && els.framing.value === 'close') els.framing.value = 'auto';
   }
   if (els.hint) els.hint.textContent = _shotActionSourceHint(source);
+  if (els.shotLoading) els.shotLoading.classList.add('hidden');
   if (state.imageGen) state.imageGen.actionText = value;
 }
 
