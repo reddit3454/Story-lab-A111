@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "H:/MEDIA/Model_pose_reference/Structure"
+		},
+		{
+			"path": "../../../ComfyUI/models"
+		}
+	],
+	"settings": {}
+}

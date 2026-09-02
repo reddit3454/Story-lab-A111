@@ -53,14 +53,15 @@ function modelHasTools(name) {
 // ---------------------------------------------------------------------------
 var PATH_HISTORY_KEY = 'story-lab-llamacpp-path-history';
 
+// Paths verified on disk 2026-09-01. Mag-Mell + Violet-Lotus live on J:\ now
+// (moved off H:\ in the H->J model migration); the rest are still on H:\.
 var KNOWN_LLAMACPP_MODELS = [
-  { label: 'MN-Violet-Lotus-12B Q4_K_M',                       path: 'H:\\Models\\violet_lotus\\MN-Violet-Lotus-12B.Q4_K_M.gguf' },
-  { label: 'MN-12B-Mag-Mell-R1 Q4_K_M',                       path: 'H:\\Models\\MN-12B-Mag-Mell-R1\\MN-12B-Mag-Mell-R1-Q4_K_M.gguf' },
-  { label: 'MN-12B-Mag-Mell-R1 F16',                           path: 'H:\\Models\\MN-12B-Mag-Mell-R1\\MN-12B-Mag-Mell-R1-F16.gguf' },
+  { label: 'MN-Violet-Lotus-12B Q4_K_M',                       path: 'J:\\Models\\violet_lotus\\MN-Violet-Lotus-12B.Q4_K_M.gguf' },
+  { label: 'MN-12B-Mag-Mell-R1 Q4_K_M',                       path: 'J:\\Models\\MN-12B-Mag-Mell-R1\\MN-12B-Mag-Mell-R1-Q4_K_M.gguf' },
+  { label: 'MN-12B-Mag-Mell-R1 F16',                           path: 'J:\\Models\\MN-12B-Mag-Mell-R1\\MN-12B-Mag-Mell-R1-F16.gguf' },
   { label: 'Qwen3.5-9B-Uncensored HauhauCS Aggressive Q4_K_M', path: 'H:\\Models\\Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M\\Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf' },
   { label: 'dolphin-2.9.3-mistral-nemo-12b Q4_K_M',            path: 'H:\\Models\\dolphin-2.9.3-mistral-nemo-12b\\dolphin-2.9.3-mistral-nemo-12b.Q4_K_M.gguf' },
-  { label: 'dolphin-2.9.1-llama3-8b Q4_K_M',                  path: 'H:\\Models\\Dolphin2.9.1-llama3-8b-gguf\\dolphin-2.9.1-llama-3-8b-Q4_K_M.gguf' },
-  { label: 'UC-gemma-4-E4B Uncensored Q4_K_M',                 path: 'H:\\Models\\UC-gemma-4-E4B-uncensored\\gemma-4-E4B-it-uncensored-Q4_K_M.gguf' },
+  { label: 'gemma-4-E4B-it Uncensored Q4_K_M',                 path: 'H:\\Models\\gemma-4-E4B-it-uncensored-Q4_K_M\\gemma-4-E4B-it-uncensored-Q4_K_M.gguf' },
 ];
 
 function getPathHistory() {

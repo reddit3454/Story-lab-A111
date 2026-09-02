@@ -1,38 +1,13 @@
 import db from '../db.js';
-import * as ollama from './ollama.js';
-import { log, logError } from '../logger.js';
-import { getScenarioClothing, setScenarioRuntimeClothing } from './clothing.js';
-
-export const EMOTION_JSON_SCHEMA = {
-  type: 'object',
-  properties: {
-    updates: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          characterId: { type: 'number' },
-          moodDelta: { type: 'integer' },
-          arousalDelta: { type: 'integer' },
-        },
-        required: ['characterId', 'moodDelta', 'arousalDelta'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['updates'],
-  additionalProperties: false,
-};
-
-const EMOTION_SYSTEM = [
-  'You are an emotional state tracker for a collaborative story system.',
-  'Return ONLY JSON matching the schema: { "updates": [ { "characterId", "moodDelta", "arousalDelta" } ] }.',
-  'moodDelta and arousalDelta are integers from -2 to 2.',
-  'moodDelta: positive = warmer/happier, negative = colder/upset.',
-  'arousalDelta: rises when a character flirts, touches, undresses, or escalates sexually.',
-  'Use characterId values ONLY from the provided list. Do not invent characters. No markdown.',
-].join(' ');
-
+import { log } from '../logger.js';
+import { getScenarioClothing } from './clothing.js';
+import {
+  clampMood,
+  clampArousal,
+  migrateLegacyArousalMax,
+  effectiveArousalCeiling,
+  effectiveArousalForBehavior,
+} from './arousal-rules.js';
 
 const _getState = db.prepare(
   'SELECT * FROM scenario_character_state WHERE scenario_id = ? AND character_id = ?'
@@ -41,35 +16,15 @@ const _listStates = db.prepare(
   'SELECT * FROM scenario_character_state WHERE scenario_id = ?'
 );
 const _getChar = db.prepare(
-  'SELECT id, name, moodbaseline, arousalmax, arousaltriggers, moodtriggerspos, moodtriggersneg FROM characters WHERE id = ?'
+  'SELECT id, name, moodbaseline, arousalmax, arousalthreshold, arousallockeduntil, arousaltriggers, moodtriggerspos, moodtriggersneg FROM characters WHERE id = ?'
 );
 const _getCast = db.prepare(`
-  SELECT c.id, c.name, c.moodbaseline, c.arousalmax, c.arousallockeduntil, c.arousaltriggers, c.moodtriggerspos, c.moodtriggersneg, c.is_user_character
+  SELECT c.id, c.name, c.moodbaseline, c.arousalmax, c.arousalthreshold, c.arousallockeduntil, c.arousaltriggers, c.moodtriggerspos, c.moodtriggersneg, c.is_user_character
   FROM characters c
   JOIN scenario_characters sc ON c.id = sc.character_id
   WHERE sc.scenario_id = ?
   ORDER BY c.name
 `);
-
-function _clampMood(v) {
-  return Math.min(5, Math.max(1, Math.round(Number(v) || 3)));
-}
-
-function _clampArousal(v, max) {
-  const ceiling = Math.min(10, Math.max(1, Number(max) || 10));
-  return Math.min(ceiling, Math.max(1, Math.round(Number(v) || 1)));
-}
-
-function _effectiveArousalForBehavior(char, mood, arousal) {
-  const moodVal = _clampMood(mood);
-  const raw = _clampArousal(arousal, char?.arousalmax ?? 10);
-  const lock = Number(char?.arousallockeduntil) || 2;
-  let cap = raw;
-  if (lock >= 4 && moodVal < 5) cap = Math.min(cap, 3);
-  else if (lock >= 3 && moodVal < 4) cap = Math.min(cap, 3);
-  else if (lock >= 2 && moodVal < 3) cap = Math.min(cap, 2);
-  return cap;
-}
 
 const ACTION_BY_AROUSAL = {
   1: 'Behave normally. No flirtation, no sexual initiative, no lingering physical focus on others.',
@@ -84,7 +39,9 @@ const ACTION_BY_AROUSAL = {
   10: 'MUST initiate sex acts now - not hints or teasing. Start or demand penetration, oral, manual sex, or equivalent explicit act in the scene. No waiting, no polite deflection, no fade-to-black unless personality explicitly forbids it.',
 };
 
-export function buildCastBehaviorBlock(characters, characterStates) {
+export function buildCastBehaviorBlock(characters, characterStates, options = {}) {
+  const nsfwEnabled = options.nsfwEnabled !== false;
+  const explicitMode = options.explicitMode !== false;
   const npcs = (characters || []).filter(c => !c.is_user_character);
   if (!npcs.length) return '';
 
@@ -101,7 +58,22 @@ export function buildCastBehaviorBlock(characters, characterStates) {
     if (!st) continue;
     const mood = st.moodcurrent;
     const raw = st.arousalcurrent;
-    const effective = _effectiveArousalForBehavior(c, mood, raw);
+    const ceiling = effectiveArousalCeiling({
+      arousalmax: c.arousalmax,
+      nsfwEnabled,
+      explicitMode,
+      sfwArousalCeiling: options.sfwArousalCeiling,
+    });
+    const beh = effectiveArousalForBehavior({
+      mood,
+      arousal: raw,
+      arousallockeduntil: c.arousallockeduntil,
+      ceiling,
+    });
+    let effective = beh.effective;
+    if (!nsfwEnabled) {
+      effective = Math.min(effective, 3);
+    }
     const actionLine = ACTION_BY_AROUSAL[effective] || ACTION_BY_AROUSAL[3];
 
     let block = `${c.name}: mood ${mood}/5, arousal ${raw}/10`;
@@ -127,13 +99,15 @@ Warmth triggers (these improve mood when present): ${String(c.moodtriggerspos).t
   }
 
   lines.push('Do NOT write high-arousal NPCs as emotionally flat or purely conversational. They must ACT on their arousal level.');
-  lines.push('At arousal 10, NPCs MUST initiate explicit sex acts in the narration - not merely desire them.');
+  if (explicitMode && nsfwEnabled) {
+    lines.push('At arousal 10, NPCs MUST initiate explicit sex acts in the narration - not merely desire them.');
+  }
   return lines.join('\n');
 }
 
 export function buildEmotionalDirective(moodcurrent, arousalcurrent) {
-  const mood = _clampMood(moodcurrent);
-  const arousal = _clampArousal(arousalcurrent, 10);
+  const mood = clampMood(moodcurrent);
+  const arousal = clampArousal(arousalcurrent, 10);
 
   const moodMap = {
     1: 'cold, closed off, minimal warmth',
@@ -171,7 +145,7 @@ export function ensureScenarioCharacterState(scenarioId, characterId) {
   if (existing) return existing;
 
   const char = _getChar.get(characterId);
-  const mood = _clampMood(char?.moodbaseline ?? 3);
+  const mood = clampMood(char?.moodbaseline ?? 3);
   const startRow = db.prepare(
     'SELECT starting_clothing FROM scenario_characters WHERE scenario_id = ? AND character_id = ?'
   ).get(scenarioId, characterId);
@@ -205,11 +179,17 @@ export function listScenarioCharacterStates(scenarioId) {
   });
 }
 
-export function updateScenarioCharacterStateManual(scenarioId, characterId, { moodcurrent, arousalcurrent }) {
+export function updateScenarioCharacterStateManual(scenarioId, characterId, { moodcurrent, arousalcurrent, config } = {}) {
   const char = _getChar.get(characterId);
   ensureScenarioCharacterState(scenarioId, characterId);
-  const mood = _clampMood(moodcurrent);
-  const arousal = _clampArousal(arousalcurrent, char?.arousalmax ?? 10);
+  const mood = clampMood(moodcurrent);
+  const ceiling = effectiveArousalCeiling({
+    arousalmax: migrateLegacyArousalMax(char?.arousalmax),
+    nsfwEnabled: config?.nsfw_enabled !== false,
+    explicitMode: config?.explicit_mode !== false,
+    sfwArousalCeiling: config?.sfw_arousal_ceiling,
+  });
+  const arousal = clampArousal(arousalcurrent, ceiling);
   db.prepare(`
     UPDATE scenario_character_state
     SET moodcurrent = ?, arousalcurrent = ?, mood_momentum = 0, arousal_momentum = 0,
@@ -225,131 +205,78 @@ export function deleteScenarioCharacterState(scenarioId, characterId) {
   ).run(scenarioId, characterId);
 }
 
-export async function processEmotionalUpdateAfterTurn({
-  scenarioId,
-  narratorTurn,
-  characters,
-  config = {},
-}) {
-  const cast = characters && characters.length ? characters : _getCast.all(scenarioId);
-  if (!cast.length || !narratorTurn?.content_text) return [];
+/**
+ * Write the scene-state extractor's per-character mood/arousal to
+ * scenario_character_state as ABSOLUTE values (not deltas). The extractor reads
+ * the whole beat and reports where each character sits now, so there is no
+ * momentum to accumulate - momentum columns are reset to 0. NSFW/SFW ceilings
+ * and the mood-gate still apply (via arousal-rules) so the behavior bands the
+ * narrator sees stay bounded.
+ *
+ * @param scenarioId
+ * @param characterUpdates  [{ characterId, mood (1-5), arousal (1-10) }] from extractSceneState
+ * @param config            resolveMasterConfig() output
+ * @returns { characters: [{characterId,name,moodcurrent,arousalcurrent}], gates: [...] }
+ */
+export function applySceneStateToCharacters(scenarioId, characterUpdates, config = {}) {
+  if (config.emotion_tracking_enabled === false) return { characters: [], gates: [] };
+  if (!Array.isArray(characterUpdates) || !characterUpdates.length) return { characters: [], gates: [] };
 
-  const states = listScenarioCharacterStates(scenarioId);
-  let presentStates = states;
-  try {
-    const card = narratorTurn.scene_card_json
-      ? JSON.parse(narratorTurn.scene_card_json)
-      : null;
-    if (card && Array.isArray(card.characters_present) && card.characters_present.length) {
-      const names = new Set(
-        card.characters_present.map(c => String(c.name || '').toLowerCase()).filter(Boolean)
-      );
-      presentStates = states.filter(s => {
-        const ch = cast.find(c => c.id === s.characterId);
-        return ch && names.has(String(ch.name || '').toLowerCase());
-      });
-    }
-  } catch (_) {}
+  const castById = new Map(_getCast.all(scenarioId).map((c) => [c.id, c]));
+  const changed = [];
+  const gates = [];
 
-  if (!presentStates.length) presentStates = states;
-
-  const model = (config.prompt_extractor_model || config.narrator_model || '').trim();
-  if (!model) return [];
-
-  const characterList = presentStates.map(function (s) {
-    const ch = cast.find(c => c.id === s.characterId);
-    return `- ${ch?.name || s.characterId} (id: ${s.characterId}, currentMood: ${s.moodcurrent}, currentArousal: ${s.arousalcurrent})`;
-  }).join('\n');
-
-  const emotionUser = [
-    'Read the narrator response and determine how each listed character emotional state changed during this beat.',
-    '',
-    'Narrator response:',
-    narratorTurn.content_text,
-    '',
-    'Characters present:',
-    characterList,
-    '',
-    'Return JSON: { "updates": [ { "characterId": <id from list>, "moodDelta": <-2..2>, "arousalDelta": <-2..2> } ] }',
-    'Use +1 or +2 arousal when the character initiated touch, showed desire, or escalated physically. Use 0 only if unaffected.',
-  ].join('\n');
-
-  let updates;
-  try {
-    const result = await ollama.generate({
-      model,
-      system: EMOTION_SYSTEM,
-      prompt: emotionUser,
-      format: EMOTION_JSON_SCHEMA,
-      options: { num_predict: 400, temperature: 0.1, top_p: 0.9 },
-    });
-    const rawText = String(result.response || '').trim();
-    const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-    const parsed = JSON.parse(cleaned);
-    if (Array.isArray(parsed)) {
-      updates = parsed;
-    } else if (parsed && Array.isArray(parsed.updates)) {
-      updates = parsed.updates;
-    } else {
-      return [];
-    }
-  } catch (err) {
-    logError('character-state', 'emotional-parse-failed', err);
-    return [];
-  }
-
-  const updatedCharacters = [];
-  for (const update of updates) {
-    const charId = Number(update.characterId);
-    if (!Number.isFinite(charId)) continue;
-
-    const state = presentStates.find(s => s.characterId === charId);
-    if (!state) continue;
-
-    const char = cast.find(c => c.id === charId);
+  for (const u of characterUpdates) {
+    const charId = Number(u.characterId);
+    const char = castById.get(charId);
     if (!char) continue;
 
     const row = getScenarioCharacterState(scenarioId, charId) || ensureScenarioCharacterState(scenarioId, charId);
-    const moodDelta = Math.max(-2, Math.min(2, Number(update.moodDelta) || 0));
-    const arousalDelta = Math.max(-2, Math.min(2, Number(update.arousalDelta) || 0));
 
-    let newMoodMomentum = (row.mood_momentum || 0) + moodDelta;
-    let newArousalMomentum = (row.arousal_momentum || 0) + arousalDelta;
-    let newMood = row.moodcurrent;
-    let newArousal = row.arousalcurrent;
+    const ceiling = effectiveArousalCeiling({
+      arousalmax: migrateLegacyArousalMax(char.arousalmax),
+      nsfwEnabled: config.nsfw_enabled !== false,
+      explicitMode: config.explicit_mode !== false,
+      sfwArousalCeiling: config.sfw_arousal_ceiling,
+    });
 
-    if (Math.abs(newMoodMomentum) >= 2) {
-      newMood = _clampMood(row.moodcurrent + Math.sign(newMoodMomentum));
-      newMoodMomentum = 0;
-    }
-    const arousalThreshold = row.arousalcurrent >= 5 ? 4 : 2;
-    if (Math.abs(newArousalMomentum) >= arousalThreshold) {
-      newArousal = _clampArousal(
-        row.arousalcurrent + Math.sign(newArousalMomentum),
-        char.arousalmax ?? 10
-      );
-      newArousalMomentum = 0;
-    }
+    // The extractor reports an absolute read of the whole beat. Cap how far it
+    // can move in one turn so a single over-read (a "flutter" scored as 8)
+    // can't spike the state - it settles over a few turns instead.
+    const AROUSAL_STEP = 3;
+    const MOOD_STEP = 2;
+    const wantMood = clampMood(u.mood);
+    const wantArousal = clampArousal(u.arousal, ceiling);
+    const newMood = Math.max(row.moodcurrent - MOOD_STEP, Math.min(row.moodcurrent + MOOD_STEP, wantMood));
+    const newArousal = Math.max(row.arousalcurrent - AROUSAL_STEP, Math.min(row.arousalcurrent + AROUSAL_STEP, wantArousal));
+
+    if (newMood === row.moodcurrent && newArousal === row.arousalcurrent) continue;
 
     db.prepare(`
       UPDATE scenario_character_state
-      SET moodcurrent = ?, arousalcurrent = ?, mood_momentum = ?, arousal_momentum = ?,
+      SET moodcurrent = ?, arousalcurrent = ?, mood_momentum = 0, arousal_momentum = 0,
           updated_at = datetime('now')
       WHERE scenario_id = ? AND character_id = ?
-    `).run(newMood, newArousal, newMoodMomentum, newArousalMomentum, scenarioId, charId);
+    `).run(newMood, newArousal, scenarioId, charId);
 
-    if (newMood !== row.moodcurrent || newArousal !== row.arousalcurrent) {
-      updatedCharacters.push({
-        characterId: charId,
-        name: char.name,
-        moodcurrent: newMood,
-        arousalcurrent: newArousal,
+    const beh = effectiveArousalForBehavior({
+      mood: newMood,
+      arousal: newArousal,
+      arousallockeduntil: char.arousallockeduntil,
+      ceiling,
+    });
+    if (beh.gated) {
+      gates.push({
+        characterId: charId, name: char.name,
+        moodcurrent: newMood, arousalcurrent: newArousal,
+        effectiveArousal: beh.effective, reason: beh.reason,
       });
     }
+    changed.push({ characterId: charId, name: char.name, moodcurrent: newMood, arousalcurrent: newArousal });
   }
 
-  if (updatedCharacters.length) {
-    log('character-state', 'emotional-updated', { scenarioId, count: updatedCharacters.length });
+  if (changed.length) {
+    log('character-state', 'scene-state-applied', { scenarioId, count: changed.length });
   }
-  return updatedCharacters;
+  return { characters: changed, gates };
 }

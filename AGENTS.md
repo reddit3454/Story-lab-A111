@@ -1,5 +1,5 @@
 # Story-Lab - AI Assistant Guidance
-# Status: ACTIVE - Port: 4090 - Last updated: 2026-09-02
+# Status: ACTIVE - Port: 4090 - Last updated: 2026-07-20
 
 Location: E:\TheHub\projects\Story-lab-A111
 Master knowledge: story-lab-a1111-master-knowledge.md (read this first for full context)
@@ -33,15 +33,6 @@ reintroduce ComfyUI, ImageCore, legacy styles/image_profiles, or dual style syst
    Prompt order every time: Style (active Look) -> Character + FaceID -> Action -> Location + clothing.
    Content stages must strip style words (`prompt-builder.stripStyleWords`). Exactly one active Look.
    Soft-fail when A1111 or FaceID/ControlNet is unavailable (clean HTTP error / skip FaceID, no crash).
-
-8. Scene state (mood / arousal / clothing changes) is NOT self-reported by the narrator.
-   The narrator writes prose only; `src/services/scene-state.js` `extractSceneState()` makes
-   one focused Ollama call over the finished prose (flat, fully-required schema; model
-   `config.scene_state_model`, default `qwen2.5:7b-instruct` - a text instruction model,
-   never the RP narrator model, never a vision model). `turns.js` builds `scene_card_json`
-   from it and caps per-turn arousal movement to +/-3. Verified 2026-09-01: the RP narrator
-   silently stops emitting an appended JSON block once context fills. Do NOT re-add a
-   `buildSceneCardInstruction()` / `---SCENE---` block to the narrator prompt.
 
 ---
 
@@ -97,12 +88,6 @@ Rules:
 Planned features that are ABSENT from disk entirely are not stubs. "File does not exist" is not the same as "stub exists."
 
 Services / routes that do not exist on disk (no file, no code, no stub):
-- src/services/extractor.js - NOT PRESENT. Scene state now comes from
-  `src/services/scene-state.js` `extractSceneState()` (post-turn call over the prose),
-  NOT an inline narrator block (removed 2026-09-01, see Critical Rule 8).
+- src/services/extractor.js - NOT PRESENT (narrator writes scene block inline)
 - src/services/enhancer.js / story-enhancer.js - NOT PRESENT
 - src/routes/styles.js - NOT PRESENT (Looks replaced legacy styles)
-
-Removed 2026-09-01: `processEmotionalUpdateAfterTurn` + `EMOTION_JSON_SCHEMA` (the separate
-mood/arousal delta call). Replaced by `applySceneStateToCharacters()` fed from
-`extractSceneState()`. `relationship_deltas_enabled` is now dormant (no producer).

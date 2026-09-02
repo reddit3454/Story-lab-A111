@@ -26,7 +26,7 @@ Scenario in play
 		-Guidance input box w/ lock button (A text input area. User guidance for the narrator. If lock button enacted: Input = direct response in story)
 		-A button for each character present + Narrator button + Continue button. (Character buttons instruct narrator to respond as that character, 			  Narrator button = respond as the narrator, continue button = respond in any manner that continues the story coherently. 
 		-After narrator responds [img] button will generate an image based off what is happening in the last responses
-		-Character image generation separate to the side: Should auto generate an image prompt when a character is selected from this section. The image 		  should be of the chosen character and focus on what they are doing in the story at that moment. User can edit if needed
+		-Character image generation separate to the side: Should auto generate an image prompt when a character is selected from this section. The image 		  should be of the chosen character and focus on what they are doing in the story at that moment. User can edit if  need some shotsneeded
 		-Generated images should appear inside the story underneath the text area it was generated from
 
 	-Narrator should use character clothing from scenario creation and changes should be kept track of

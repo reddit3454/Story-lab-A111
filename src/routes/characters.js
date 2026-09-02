@@ -1,102 +1,28 @@
+import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
-import { Router } from 'express';
 import db from '../db.js';
-import broadcast from '../broadcast.js';
 import { IMAGES_DIR } from '../paths.js';
+import { parseTags, serializeTags } from '../services/relationship-resolve.js';
+import broadcast from '../broadcast.js';
 import {
   setScenarioRuntimeClothing,
   setScenarioStartingOutfit,
   getScenarioClothing,
 } from '../services/clothing.js';
-import { resolveEffectiveConfig } from '../services/config-resolver.js';
-import { buildA1111Payload, callA1111 } from '../services/image-pipeline.js';
+import { migrateLegacyArousalMax } from '../services/arousal-rules.js';
 
 const router = Router();
 
-/* ── helpers ──────────────────────────────────────────────────────────────── */
-
-function _charDir(charId) {
-  return path.join(IMAGES_DIR, 'characters', String(charId));
-}
-
-// Filename stored in DB is the path relative to IMAGES_DIR so imageSrc() works:
-//   e.g.  "characters/7/references/1234567890.png"
-function _relPath(charId, subfolder, basename) {
-  return `characters/${charId}/${subfolder}/${basename}`;
-}
-
-// Minimal multipart/form-data parser — no dependencies, handles a single file field.
-// Returns { buffer: Buffer, originalName: string }
-async function _readMultipart(req) {
-  return new Promise((resolve, reject) => {
-    const ct = req.headers['content-type'] || '';
-    const bm = ct.match(/boundary=(?:"([^"]+)"|([^\s;]+))/);
-    if (!bm) return reject(new Error('multipart/form-data boundary not found in Content-Type'));
-    const boundary = bm[1] || bm[2];
-    const chunks = [];
-    req.on('data', c => chunks.push(c));
-    req.on('error', reject);
-    req.on('end', () => {
-      try {
-        const body     = Buffer.concat(chunks);
-        const headerSep = Buffer.from('\r\n\r\n');
-        const hStart   = ('--' + boundary + '\r\n').length;
-
-        let hEnd = -1;
-        for (let i = hStart; i <= body.length - headerSep.length; i++) {
-          if (body.subarray(i, i + headerSep.length).equals(headerSep)) { hEnd = i; break; }
-        }
-        if (hEnd === -1) return reject(new Error('Malformed multipart: no header separator'));
-
-        const headerStr = body.subarray(hStart, hEnd).toString('utf8');
-        const fnMatch   = headerStr.match(/filename="([^"]+)"/i);
-        const originalName = fnMatch ? fnMatch[1] : 'upload';
-
-        const dataStart = hEnd + 4;
-
-        const closing = Buffer.from('\r\n--' + boundary);
-        let dataEnd = -1;
-        for (let i = dataStart; i <= body.length - closing.length; i++) {
-          if (body.subarray(i, i + closing.length).equals(closing)) { dataEnd = i; break; }
-        }
-        if (dataEnd === -1) return reject(new Error('Malformed multipart: no closing boundary'));
-
-        resolve({ buffer: body.subarray(dataStart, dataEnd), originalName });
-      } catch (e) { reject(e); }
-    });
-  });
-}
-
-// Assemble the best available image prompt from a character row.
-// Priority: image_prompt_override → image_description → trait columns → appearance_prompt → name
-function _assembleCharacterPrompt(char) {
-  if (char.image_prompt_override?.trim()) return char.image_prompt_override.trim();
-  if (char.image_description?.trim())     return char.image_description.trim();
-  const parts = [];
-  if (char.gender)    parts.push(char.gender);
-  if (char.age_range && char.age_range !== 'adult') parts.push(char.age_range);
-  if (char.height)    parts.push(char.height);
-  if (char.body_type) parts.push(char.body_type + ' build');
-  const hair = [char.hair_color, char.hair_style, char.hair_extras].filter(Boolean);
-  if (hair.length)    parts.push(hair.join(' ') + ' hair');
-  const eyes = [char.eye_color, char.eye_shape].filter(Boolean);
-  if (eyes.length)    parts.push(eyes.join(' ') + ' eyes');
-  if (char.skin_tone) parts.push(char.skin_tone + ' skin');
-  if (char.face_shape) parts.push(char.face_shape + ' face shape');
-  if (char.nose_shape) parts.push(char.nose_shape + ' nose');
-  if (char.lip_shape)  parts.push(char.lip_shape + ' lips');
-  const gL = (char.gender || '').toLowerCase();
-  if (char.breast_size && (gL === 'female' || gL === 'non-binary')) parts.push(char.breast_size + ' breasts');
-  if (char.butt_size)  parts.push(char.butt_size + ' butt');
-  const outfit = char.current_clothing || char.base_clothing || char.default_outfit;
-  if (outfit) parts.push(outfit);
-  if (char.appearance_notes) {
-    const clipped = char.appearance_notes.split(/\.\s+[A-Z]/)[0].slice(0, 120).trim().replace(/[,\s]+$/, '');
-    if (clipped) parts.push(clipped);
-  }
-  if (parts.length) return parts.join(', ');
-  return (char.appearance_prompt?.trim()) || char.name;
+const _FACE_REF_EXT_BY_MIME = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/webp': '.webp',
+};
+function _normalizeArousalMax(raw) {
+  const migrated = migrateLegacyArousalMax(raw == null || raw === '' ? 10 : raw);
+  return Math.min(10, Math.max(1, migrated));
 }
 
 /* ── Character CRUD ───────────────────────────────────────────────────────── */
@@ -111,7 +37,7 @@ router.post('/', function (req, res) {
 
   const result = db.prepare(`
     INSERT INTO characters (
-      name, role, description, image_description, appearance_notes,
+      name, role, description, appearance_notes,
       gender, age_range, height, body_type,
       breast_size, butt_size, penis_state,
       skin_tone, skin_extras,
@@ -122,15 +48,14 @@ router.post('/', function (req, res) {
       personality, is_user, is_user_character,
       moodbaseline, arousalthreshold, arousallockeduntil, arousalmax,
       moodtriggerspos, moodtriggersneg, arousaltriggers,
-      image_prompt_override, unique_trait
+      unique_trait
     ) VALUES (
-      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
     )
   `).run(
     b.name                ?? '',
     b.role                ?? 'character',
     b.description         ?? '',
-    b.image_description   ?? null,
     b.appearance_notes    ?? '',
     b.gender              ?? '',
     b.age_range           ?? 'adult',
@@ -162,11 +87,10 @@ router.post('/', function (req, res) {
     b.moodbaseline        ?? 3,
     b.arousalthreshold    ?? 'medium',
     b.arousallockeduntil  ?? 2,
-    b.arousalmax          ?? 5,
+    _normalizeArousalMax(b.arousalmax),
     b.moodtriggerspos     ?? null,
     b.moodtriggersneg     ?? null,
     b.arousaltriggers     ?? null,
-    b.image_prompt_override ?? null,
     b.unique_trait          ?? null,
   );
 
@@ -187,7 +111,6 @@ router.put('/:id', function (req, res) {
       name                 = COALESCE(?, name),
       role                 = ?,
       description          = ?,
-      image_description    = ?,
       appearance_notes     = ?,
       gender               = ?,
       age_range            = ?,
@@ -223,15 +146,12 @@ router.put('/:id', function (req, res) {
       moodtriggerspos      = ?,
       moodtriggersneg      = ?,
       arousaltriggers      = ?,
-      image_prompt_override = ?,
-      unique_trait          = ?,
-      reference_image       = ?
+      unique_trait          = ?
     WHERE id = ?
   `).run(
     b.name                ?? null,
     b.role                ?? 'character',
     b.description         ?? '',
-    b.image_description   ?? null,
     b.appearance_notes    ?? '',
     b.gender              ?? '',
     b.age_range           ?? 'adult',
@@ -263,13 +183,11 @@ router.put('/:id', function (req, res) {
     b.moodbaseline        ?? 3,
     b.arousalthreshold    ?? 'medium',
     b.arousallockeduntil  ?? 2,
-    b.arousalmax          ?? 5,
+    _normalizeArousalMax(b.arousalmax),
     b.moodtriggerspos     ?? null,
     b.moodtriggersneg     ?? null,
     b.arousaltriggers     ?? null,
-    b.image_prompt_override ?? null,
     b.unique_trait          ?? null,
-    b.reference_image       ?? '',
     req.params.id,
   );
 
@@ -329,217 +247,58 @@ router.patch('/:id/clothing', function (req, res) {
   res.json({ ok: true, character: db.prepare('SELECT * FROM characters WHERE id = ?').get(charId) });
 });
 
-/* ── Character References ─────────────────────────────────────────────────── */
-
-router.get('/:id/references', function (req, res) {
-  const refs = db.prepare(
-    'SELECT * FROM character_references WHERE character_id = ? ORDER BY created_at DESC'
-  ).all(req.params.id);
-  res.json({ references: refs });
-});
-
-// Specific literal routes MUST be before dynamic /:refId or Express swallows them
-router.delete('/:id/references/faceid', function (req, res) {
-  db.prepare('UPDATE characters SET reference_image_path = NULL, reference_image = NULL WHERE id = ?').run(req.params.id);
-  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
-  res.json({ ok: true, character: char });
-});
-
-router.delete('/:id/references/:refId', function (req, res) {
-  const ref = db.prepare('SELECT * FROM character_references WHERE id = ? AND character_id = ?')
-    .get(req.params.refId, req.params.id);
-  if (!ref) return res.status(404).json({ error: 'Reference not found' });
-
-  try {
-    const diskPath = path.join(IMAGES_DIR, ref.filename);
-    if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
-  } catch (_) {}
-
-  db.prepare('DELETE FROM character_references WHERE id = ?').run(req.params.refId);
-  res.json({ ok: true });
-});
-
-router.post('/:id/references/generate', async function (req, res) {
-  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
+// FaceID reference image — uploaded as base64 JSON (no multer / new dependency).
+// Frontend reads the picked file via FileReader and posts { image_base64, mime }.
+router.post('/:id/face-ref', function (req, res) {
+  const charId = parseInt(req.params.id, 10);
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(charId);
   if (!char) return res.status(404).json({ error: 'Character not found' });
 
+  const { image_base64, mime } = req.body || {};
+  if (!image_base64) return res.status(400).json({ error: 'image_base64 is required' });
+
+  const cleanB64 = image_base64.includes(',') ? image_base64.split(',').pop() : image_base64;
+  const ext = _FACE_REF_EXT_BY_MIME[mime] || '.png';
+
+  let buffer;
   try {
-    const config  = resolveEffectiveConfig(db);
-    const baseUrl = config.a1111_url || 'http://127.0.0.1:7860';
-    const prompt  = (req.body && req.body.prompt_override) || _assembleCharacterPrompt(char);
-    const negative = config.master_negative || '';
-
-    const refDir   = path.join(_charDir(req.params.id), 'references');
-    const basename = `${Date.now()}.png`;
-    const savePath = path.join(refDir, basename);
-    fs.mkdirSync(refDir, { recursive: true });
-
-    // Shared with image-pipeline.js's main generation path (VAE override + retry-on-failure) — see CF-4.
-    const payload = buildA1111Payload(config, prompt, negative, null);
-    await callA1111(baseUrl, 'txt2img', payload, savePath);
-
-    const relPath = _relPath(req.params.id, 'references', basename);
-    const ins = db.prepare(
-      'INSERT INTO character_references (character_id, filename, prompt_used) VALUES (?, ?, ?)'
-    ).run(req.params.id, relPath, prompt);
-
-    res.status(201).json({
-      ok: true,
-      reference: db.prepare('SELECT * FROM character_references WHERE id = ?').get(ins.lastInsertRowid),
-    });
+    buffer = Buffer.from(cleanB64, 'base64');
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(400).json({ error: 'image_base64 could not be decoded: ' + err.message });
   }
-});
+  if (!buffer.length) return res.status(400).json({ error: 'decoded image is empty' });
 
-router.post('/:id/references/upload', async function (req, res) {
-  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
-  if (!char) return res.status(404).json({ error: 'Character not found' });
+  const relDir = path.join('characters', String(charId));
+  const relPath = path.join(relDir, `reference${ext}`);
+  const absDir = path.join(IMAGES_DIR, relDir);
+  const absPath = path.join(IMAGES_DIR, relPath);
 
   try {
-    const { buffer, originalName } = await _readMultipart(req);
-    const ext      = path.extname(originalName).toLowerCase() || '.jpg';
-    const basename = `${Date.now()}${ext}`;
-    const refDir   = path.join(_charDir(req.params.id), 'references');
-    fs.mkdirSync(refDir, { recursive: true });
-    fs.writeFileSync(path.join(refDir, basename), buffer);
-
-    const relPath = _relPath(req.params.id, 'references', basename);
-    const ins = db.prepare(
-      'INSERT INTO character_references (character_id, filename) VALUES (?, ?)'
-    ).run(req.params.id, relPath);
-
-    res.status(201).json({
-      ok: true,
-      filename: relPath,
-      reference: db.prepare('SELECT * FROM character_references WHERE id = ?').get(ins.lastInsertRowid),
-    });
+    fs.mkdirSync(absDir, { recursive: true });
+    fs.writeFileSync(absPath, buffer);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Failed to save reference image: ' + err.message });
   }
-});
 
-// :ref may be a numeric character_references.id or a filename basename
-router.post('/:id/references/:ref/accept', function (req, res) {
-  const { id: charId, ref } = req.params;
+  // relPath uses OS separators internally; normalize to forward slashes for a
+  // portable DB value and for building /story-images URLs on the frontend.
+  const storedPath = relPath.split(path.sep).join('/');
+  db.prepare('UPDATE characters SET reference_image_path = ? WHERE id = ?').run(storedPath, charId);
 
-  let row;
-  if (/^\d+$/.test(ref)) {
-    row = db.prepare('SELECT * FROM character_references WHERE id = ? AND character_id = ?').get(ref, charId);
-  } else {
-    row = db.prepare("SELECT * FROM character_references WHERE filename LIKE ? AND character_id = ?")
-      .get('%/' + ref, charId);
-    if (!row) {
-      row = db.prepare('SELECT * FROM character_references WHERE filename = ? AND character_id = ?').get(ref, charId);
-    }
-  }
-  if (!row) return res.status(404).json({ error: 'Reference not found' });
-
-  db.prepare('UPDATE characters SET reference_image_path = ?, reference_image = ? WHERE id = ?')
-    .run(row.filename, row.filename, charId);
-
-  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(charId);
-  res.json({ ok: true, character: char });
-});
-
-/* ── Character Full-Body Images ───────────────────────────────────────────── */
-
-router.get('/:id/fullbody', function (req, res) {
-  const fbs = db.prepare(
-    'SELECT * FROM character_fullbodies WHERE character_id = ? ORDER BY created_at DESC'
-  ).all(req.params.id);
-  res.json({ fullbodies: fbs });
-});
-
-// DEPRECATED: faceid_ref_count/faceid_ref_order have no runtime consumer — the app is
-// single-reference only (see resolvePrimaryCharacterForReference / buildA1111Payload,
-// which read characters.reference_image_path). The UI that called this route has been
-// removed (it was leftover ComfyUI-era copy referencing a node — IPAAdapterFaceIDBatch —
-// that doesn't exist in this A1111-only architecture). Route kept only so any stray
-// caller doesn't 404; do not build new features on these columns without first
-// implementing real multi-reference ControlNet unit support end-to-end.
-router.patch('/:id/faceid-config', function (req, res) {
-  const { faceid_ref_count, faceid_ref_order } = req.body;
-  db.prepare(`UPDATE characters SET faceid_ref_count = ?, faceid_ref_order = ? WHERE id = ?`).run(
-    faceid_ref_count ?? 5,
-    faceid_ref_order ? JSON.stringify(faceid_ref_order) : null,
-    req.params.id,
-  );
-  const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Character not found' });
+  const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(charId);
   res.json(row);
 });
 
-router.post('/:id/fullbody/generate', async function (req, res) {
-  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
+router.delete('/:id/face-ref', function (req, res) {
+  const charId = parseInt(req.params.id, 10);
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(charId);
   if (!char) return res.status(404).json({ error: 'Character not found' });
 
-  try {
-    const config  = resolveEffectiveConfig(db);
-    const baseUrl = config.a1111_url || 'http://127.0.0.1:7860';
-    const prompt  = (req.body && req.body.prompt_override) || _assembleCharacterPrompt(char);
-    const negative = config.master_negative || '';
-
-    const fbDir    = path.join(_charDir(req.params.id), 'fullbody');
-    const basename = `${Date.now()}.png`;
-    const savePath = path.join(fbDir, basename);
-    fs.mkdirSync(fbDir, { recursive: true });
-
-    // Shared with image-pipeline.js's main generation path (VAE override + retry-on-failure) — see CF-4.
-    const payload = buildA1111Payload(config, prompt, negative, null);
-    await callA1111(baseUrl, 'txt2img', payload, savePath);
-
-    const relPath = _relPath(req.params.id, 'fullbody', basename);
-    const ins = db.prepare(
-      'INSERT INTO character_fullbodies (character_id, filename, prompt_used) VALUES (?, ?, ?)'
-    ).run(req.params.id, relPath, prompt);
-
-    const row = db.prepare('SELECT * FROM character_fullbodies WHERE id = ?').get(ins.lastInsertRowid);
-    const all = db.prepare(
-      'SELECT * FROM character_fullbodies WHERE character_id = ? ORDER BY created_at DESC'
-    ).all(req.params.id);
-
-    res.status(201).json({ ok: true, fullbody: row, fullbodies: all });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.delete('/:id/fullbody/:fbId', function (req, res) {
-  const row = db.prepare('SELECT * FROM character_fullbodies WHERE id = ? AND character_id = ?')
-    .get(req.params.fbId, req.params.id);
-  if (!row) return res.status(404).json({ error: 'Full-body image not found' });
-
-  try {
-    const diskPath = path.join(IMAGES_DIR, row.filename);
-    if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
-  } catch (_) {}
-
-  db.prepare('DELETE FROM character_fullbodies WHERE id = ?').run(req.params.fbId);
-  res.json({ ok: true });
-});
-
-router.post('/:id/fullbody/:fbId/set-default', function (req, res) {
-  const row = db.prepare('SELECT * FROM character_fullbodies WHERE id = ? AND character_id = ?')
-    .get(req.params.fbId, req.params.id);
-  if (!row) return res.status(404).json({ error: 'Full-body image not found' });
-
-  db.prepare('UPDATE character_fullbodies SET is_default = 0 WHERE character_id = ?').run(req.params.id);
-  db.prepare('UPDATE character_fullbodies SET is_default = 1 WHERE id = ?').run(req.params.fbId);
-
-  res.json({ ok: true, fullbody: db.prepare('SELECT * FROM character_fullbodies WHERE id = ?').get(req.params.fbId) });
-});
-
-router.post('/:id/fullbody/:fbId/use-as-ref', function (req, res) {
-  const row = db.prepare('SELECT * FROM character_fullbodies WHERE id = ? AND character_id = ?')
-    .get(req.params.fbId, req.params.id);
-  if (!row) return res.status(404).json({ error: 'Full-body image not found' });
-
-  db.prepare('UPDATE characters SET reference_image_path = ?, reference_image = ? WHERE id = ?')
-    .run(row.filename, row.filename, req.params.id);
-
-  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
-  res.json({ ok: true, character: char });
+  // Clears the DB reference only — the file itself is left on disk (never
+  // silently delete user files as a side effect of an unrelated action).
+  db.prepare('UPDATE characters SET reference_image_path = NULL WHERE id = ?').run(charId);
+  const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(charId);
+  res.json(row);
 });
 
 router.get('/:id/relationships', function (req, res) {
@@ -550,10 +309,13 @@ router.get('/:id/relationships', function (req, res) {
     FROM character_relationships cr
     JOIN characters cf ON cf.id = cr.from_character_id
     JOIN characters ct ON ct.id = cr.to_character_id
-    WHERE cr.from_character_id = ? OR cr.to_character_id = ?
+    WHERE cr.scenario_id = 0 AND (cr.from_character_id = ? OR cr.to_character_id = ?)
     ORDER BY cf.name, ct.name
   `).all(req.params.id, req.params.id);
-  res.json(rows);
+  res.json(rows.map(function (row) {
+    const tags = parseTags(row.tags_json);
+    return { ...row, tags, tags_json: serializeTags(tags) };
+  }));
 });
 
 export default router;

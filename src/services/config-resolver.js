@@ -3,7 +3,7 @@ const NUMERIC_KEYS = new Set([
   'sfw_arousal_ceiling',
 ]);
 
-const BOOLEAN_KEYS = new Set(['nsfw_enabled', 'explicit_mode', 'summary_learning_enabled', 'arousal_decay_enabled', 'emotion_tracking_enabled', 'relationship_deltas_enabled', 'mood_gate_toasts_enabled', 'regen_state_snapshot_enabled', 'cast_trigger_chips_enabled', 'scene_heat_readout_enabled']);
+const BOOLEAN_KEYS = new Set(['nsfw_enabled', 'explicit_mode', 'summary_learning_enabled', 'arousal_decay_enabled', 'emotion_tracking_enabled', 'relationship_deltas_enabled', 'mood_gate_toasts_enabled', 'regen_state_snapshot_enabled', 'cast_trigger_chips_enabled', 'scene_heat_readout_enabled', 'scene_state_enabled']);
 
 export function resolveMasterConfig(db) {
   const rows = db.prepare('SELECT key, value FROM global_config').all();

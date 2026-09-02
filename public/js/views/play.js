@@ -1,21 +1,106 @@
 import { state, chatColors, getNpcColor } from '../state.js';
-import { escapeHtml, formatStoryContent, formatNarratorLinesWithGutter, narratorResponseLabel, avatarHtml, imageSrc } from '../utils.js';
-import { showToast, showConfirm, setLoading, openLightbox, setImgStatus, statusDotsHtml } from '../ui.js';
-import { setImageSummaryPanelDefault } from '../play/image-summary-panel.js';
-import {
-  initPromptPanel,
-  refreshPromptPreview,
-  reloadPromptPanelTargets,
-  onPromptPanelImageReady,
-} from '../play/prompt-panel.js';
+import { escapeHtml, formatStoryContent, formatNarratorLinesWithGutter, narratorResponseLabel, avatarHtml } from '../utils.js';
+import { showToast, showConfirm, setLoading, statusDotsHtml } from '../ui.js';
 
 var _ws = null;
 var _turnInFlight = false;
 var _turnPollTimer = null;
 var _lastIngestedNarratorId = null;
 var _wsRetryDelay = 2000;
-var _reloadPortraitPanel = null;
 var _updateScenePresent   = null;
+var _cachedRelationships = [];
+var _playConfig = {};
+
+function deriveSceneHeat(states) {
+  var maxA = 1, label = 'Calm';
+  (states || []).forEach(function (s) {
+    var a = +s.arousalcurrent || 1;
+    if (a > maxA) maxA = a;
+  });
+  if (maxA >= 9) label = 'Explicit';
+  else if (maxA >= 7) label = 'Intense';
+  else if (maxA >= 5) label = 'Desire';
+  else if (maxA >= 3) label = 'Warm';
+  return { level: maxA, label: label };
+}
+
+function _playConfigEnabled(key, defaultOn) {
+  if (!_playConfig || _playConfig[key] == null) return defaultOn !== false;
+  var v = _playConfig[key];
+  return v === true || v === 'true' || v === 1 || v === '1';
+}
+
+function formatRelationshipFocusLine(r) {
+  if (!r) return '';
+  var tags = r.tags || [];
+  var tagPart = tags.length ? ' (' + tags.join(', ') + ')' : '';
+  var strength = Math.min(5, Math.max(1, Math.round(Number(r.strength) || 3)));
+  var line = (r.from_name || '?') + ' -> ' + (r.to_name || '?') + ': ' + (r.relationship_type || 'friend') + tagPart + ' [intensity ' + strength + '/5]';
+  if (r.description && String(r.description).trim()) line += ' (' + String(r.description).trim() + ')';
+  return line;
+}
+
+function _mergeScenarioRelationships(globals, scenarioRels, charIds) {
+  var map = {};
+  (globals || []).forEach(function (r) {
+    if (!charIds.has(r.from_character_id) || !charIds.has(r.to_character_id)) return;
+    map[r.from_character_id + '->' + r.to_character_id] = Object.assign({}, r, { _source: 'global' });
+  });
+  (scenarioRels || []).forEach(function (r) {
+    if (!charIds.has(r.from_character_id) || !charIds.has(r.to_character_id)) return;
+    map[r.from_character_id + '->' + r.to_character_id] = Object.assign({}, r, { _source: 'scenario' });
+  });
+  return Object.keys(map).map(function (k) { return map[k]; });
+}
+
+function _findRelationshipBetween(rels, fromId, toId) {
+  return (rels || []).find(function (r) {
+    return Number(r.from_character_id) === Number(fromId) && Number(r.to_character_id) === Number(toId);
+  }) || (rels || []).find(function (r) {
+    return Number(r.from_character_id) === Number(toId) && Number(r.to_character_id) === Number(fromId);
+  }) || null;
+}
+
+function refreshSceneHeatReadout() {
+  if (!_playConfigEnabled('scene_heat_readout_enabled', true)) return;
+  var heatEl = document.getElementById('cast-scene-heat');
+  if (!heatEl) return;
+  var states = Object.keys(state.characterStates || {}).map(function (id) { return state.characterStates[id]; });
+  var heat = deriveSceneHeat(states);
+  heatEl.textContent = 'Scene heat: ' + heat.label + ' (' + heat.level + '/10)';
+}
+
+function _buildTriggerChipsHtml(c) {
+  if (!_playConfigEnabled('cast_trigger_chips_enabled', true)) return '';
+  var chips = [];
+  function addList(text, cls) {
+    if (!text) return;
+    String(text).split(/[,;\n]+/).forEach(function (part) {
+      part = part.trim();
+      if (!part) return;
+      var display = part.length > 40 ? part.slice(0, 40) + '...' : part;
+      chips.push('<span class="cast-trigger-chip ' + cls + '" style="font-size:10px;padding:1px 5px;border-radius:8px;background:var(--bg-secondary);color:var(--text-muted)" title="' + escapeHtml(part) + '">' + escapeHtml(display) + '</span>');
+    });
+  }
+  addList(c.moodtriggerspos, 'chip-pos');
+  addList(c.moodtriggersneg, 'chip-neg');
+  addList(c.arousaltriggers, 'chip-arousal');
+  return chips.length ? '<div class="cast-trigger-chips" style="display:flex;flex-wrap:wrap;gap:3px;margin-top:4px">' + chips.join('') + '</div>' : '';
+}
+
+function _buildBondFocusHtml(charId, chars, rels) {
+  var parts = [];
+  (chars || []).forEach(function (other) {
+    if (Number(other.id) === Number(charId)) return;
+    var rel = _findRelationshipBetween(rels, charId, other.id);
+    if (!rel) return;
+    var focusText = formatRelationshipFocusLine(rel);
+    parts.push('<button type="button" class="btn btn-ghost btn-xs bond-focus-btn" data-focus-text="' + escapeHtml(focusText) + '" title="Set guidance from bond">Focus ' + escapeHtml(other.name) + '</button>');
+  });
+  return parts.length ? '<div class="cast-bond-focus" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">' + parts.join('') + '</div>' : '';
+}
+
+
 
 export function initPlay(scenarioId) {
   if (!scenarioId) { location.hash = '#dashboard'; return; }
@@ -30,8 +115,6 @@ export function initPlay(scenarioId) {
       '</div>' +
       '<span class="play-title story-font" id="play-scenario-title">Loading...</span>' +
       '<div class="topbar-right">' +
-        '<button class="btn btn-ghost btn-sm" id="btn-img-settings" title="Manage Image Styles">&#9881; Styles</button>' +
-        '<button class="btn btn-ghost btn-sm" id="btn-reset-models" title="Unload A1111 + Ollama models from VRAM to free GPU memory">Free VRAM</button>' +
         '<button class="btn btn-ghost btn-sm" id="btn-scene-info">Scene Info</button>' +
         '<button class="btn btn-ghost btn-sm" id="btn-reset-scene">Reset Scene</button>' +
         '<button class="btn btn-danger btn-sm" id="btn-end-story">End Story</button>' +
@@ -56,18 +139,12 @@ export function initPlay(scenarioId) {
       /* Thread */
       '<div class="play-thread-wrap">' +
         '<div class="play-thread" id="play-thread"><div class="loading-state">Loading story...</div></div>' +
-        '<div id="img-animate-section"></div>' +
-        '<div id="scene-image-history" class="scene-image-history"></div>' +
         '<div class="play-input-area">' +
           '<div class="guidance-bar" id="guidance-bar">' +
             '<div class="guidance-row">' +
               '<div class="guidance-input-wrap">' +
                 '<textarea class="guidance-input" id="guidance-input" placeholder="Guidance (optional) — steer what happens next..." rows="2" autocomplete="off"></textarea>' +
                 '<button class="btn btn-ghost btn-sm guidance-enhance-btn" id="btn-enhance-guidance" title="Enhance guidance with AI">Enhance</button>' +
-              '</div>' +
-              '<div class="filter-rules-wrap filter-rules-disabled" title="Not wired in this build">' +
-                '<label class="filter-rules-label" for="filter-rules-input">Filter Rules (not used)</label>' +
-                '<textarea class="filter-rules-input" id="filter-rules-input" rows="2" disabled autocomplete="off" placeholder="Not available — use Scenario settings for reply length / NSFW / tone."></textarea>' +
               '</div>' +
               '<button class="lock-toggle" id="lock-toggle" title="Lock: guidance becomes the literal submission" aria-pressed="false">' +
                 '<span class="lock-icon">&#128275;</span>' +
@@ -84,26 +161,44 @@ export function initPlay(scenarioId) {
         '</div>' +
       '</div>' +
 
-      '<div class="play-prompt-panel' + (state.portraitPanelOpen ? '' : ' collapsed') + '" id="play-prompt-panel">' +
-        '<button class="prompt-toggle-btn" id="prompt-toggle">' + (state.portraitPanelOpen ? '&raquo;' : '&laquo;') + '</button>' +
-        '<div class="prompt-panel-inner" id="prompt-panel-inner">' +
-          '<div class="prompt-panel-header">Image Prompt</div>' +
-          '<p class="prompt-empty-hint text-muted" id="prompt-empty-hint">Continue the story to build a prompt.</p>' +
-          '<div class="prompt-target-list" id="prompt-target-list"></div>' +
-          '<label class="prompt-field-label" id="prompt-plain-label">Plain English Summary</label>' +
-          '<textarea id="prompt-plain" class="form-input prompt-plain" rows="4" placeholder="Character visual brief (pose/action) or scene moment"></textarea>' +
-          '<label class="prompt-field-label" id="prompt-tags-label">Image Prompt Tags</label>' +
-          '<textarea id="prompt-tags" class="form-input prompt-tags" rows="3" placeholder="Comma-separated tags"></textarea>' +
-          '<div class="prompt-actions">' +
-            '<button type="button" class="btn btn-ghost btn-sm" id="prompt-save-btn">Save</button>' +
-            '<button type="button" class="btn btn-ghost btn-sm" id="prompt-regenerate-btn">Update tags</button><button type="button" class="btn btn-ghost btn-sm" id="prompt-history-btn">History</button><button type="button" class="btn btn-ghost btn-sm" id="prompt-reset-btn">Reset</button>' +
-            '<button type="button" class="btn btn-primary btn-sm" id="prompt-generate-btn">Generate Image</button>' +
+      /* Image generator — page-level right sidebar (not inside turn cards) */
+      '<aside class="play-image-sidebar" id="play-image-sidebar" aria-hidden="true">' +
+        '<div class="play-image-sidebar-header">' +
+          '<div class="play-image-sidebar-heading">' +
+            '<span class="play-image-sidebar-title">Image</span>' +
+            '<span class="play-image-sidebar-turn" id="img-sidebar-turn-label"></span>' +
           '</div>' +
+          '<button type="button" class="play-image-sidebar-close" id="img-sidebar-close" title="Close image panel">&times;</button>' +
         '</div>' +
-        '<div class="prompt-resize-handle" id="prompt-resize-handle"></div>' +
-      '</div>' +
+        '<div class="play-image-sidebar-body">' +
+          '<label class="play-image-sidebar-label" for="img-sidebar-action">Scene description (editable)</label>' +
+          '<p class="play-image-sidebar-hint" id="img-sidebar-action-hint">Describe only what should be visible. Style comes from the selected Look.</p>' +
+          '<div id="img-sidebar-shot-loading" class="play-image-shot-loading hidden" aria-live="polite">Loading scene description...</div>' +
+          '<textarea id="img-sidebar-action" class="turn-image-action" rows="4" placeholder="Describe what should be visible in this shot..."></textarea>' +
+          '<div class="turn-image-controls">' +
+            '<select id="img-sidebar-mode" class="turn-image-mode-select" title="Image type">' +
+              '<option value="scene">Scene</option>' +
+              '<option value="portrait">Portrait</option>' +
+              '<option value="fullbody">Fullbody</option>' +
+            '</select>' +
+            '<select id="img-sidebar-char" class="turn-image-char-select hidden" title="Character for portrait/fullbody">' +
+              '<option value="">Character...</option>' +
+            '</select>' +
+            '<select id="img-sidebar-look" class="turn-image-look-select"><option value="">Loading Looks...</option></select>' +
+          '</div>' +
+          '<button type="button" class="turn-image-generate-btn" id="img-sidebar-generate">Generate</button>' +
+          '<div id="img-sidebar-status" class="turn-image-status"></div>' +
+          '<div id="img-sidebar-result" class="turn-image-result"></div>' +
+        '</div>' +
+      '</aside>' +
 
     '</div>';
+
+  // Fresh Play mount — image sidebar starts closed
+  if (state.imageGen) {
+    state.imageGen.open = false;
+    state.imageGen.turnId = null;
+  }
 
   /* Load data */
   Promise.all([
@@ -113,7 +208,7 @@ export function initPlay(scenarioId) {
   ])
     .then(function (results) {
       var scenResp = results[0];
-      setImageSummaryPanelDefault((results[2] && results[2].image_summary_panel_default) || 'visible');
+      _playConfig = results[2] || {};
       state.currentScenario = Object.assign(
         { characters: scenResp.characters || [] },
         scenResp.scenario || scenResp
@@ -124,19 +219,7 @@ export function initPlay(scenarioId) {
 
       document.getElementById('play-scenario-title').textContent = state.currentScenario.title || 'Untitled Story';
 
-      // Populate filter rules textarea from loaded scenario
-      var _frInput = document.getElementById('filter-rules-input');
-      if (_frInput) {
-        try {
-          var _frc = state.currentScenario.generation_config;
-          var _frCfg = _frc ? (typeof _frc === 'string' ? JSON.parse(_frc) : _frc) : null;
-          if (_frCfg && _frCfg.filterInstructions) _frInput.value = _frCfg.filterInstructions;
-        } catch (_) {}
-      }
-
       renderAllTurns();
-      initPromptPanel(scenarioId);
-      _populateSceneImageHistory();
       renderCharacterFocusButtons(scenarioId);
       loadSidebarTab(state.currentSidebarTab, scenarioId);
       // Pre-load emotional states so cast sidebar bars are ready on first render
@@ -200,114 +283,6 @@ function renderAllTurns() {
 
   scrollThreadToBottom();
   setupTurnFooterListeners();
-}
-
-// ---------------------------------------------------------------------------
-// Thread image card helpers
-// ---------------------------------------------------------------------------
-
-// Build HTML string for a thread image card.
-// meta: { filename, imageId, visualPrompt, videostatus, videoclipfilename }
-function buildTurnImageHtml(meta) {
-  var fn       = meta.filename          || '';
-  var id       = meta.imageId           || '';
-  var vp       = meta.visualPrompt      || '';
-  var vs       = meta.videostatus       || '';
-  var vcf      = meta.videoclipfilename || '';
-
-  // Default motion variant from scenario generation_config
-  var _gc = null;
-  try {
-    var _gcRaw = state.currentScenario && state.currentScenario.generation_config;
-    if (_gcRaw) _gc = typeof _gcRaw === 'string' ? JSON.parse(_gcRaw) : _gcRaw;
-  } catch (_) {}
-  var defVariant = (_gc && _gc.videoMotionStyle) || 'lownoise';
-
-  // Video element — always rendered, hidden until ready
-  var videoHtml = '<video class="turn-img-video" autoplay loop muted playsinline ' +
-    (vs === 'ready' && vcf
-      ? 'style="width:100%;display:block;" src="' + escapeHtml(imageSrc(vcf)) + '"'
-      : 'style="width:100%;display:none;"') +
-    '></video>';
-
-  // Animate overlay button — always rendered; hidden by CSS until hover; hidden while generating/ready
-  var animBtnHide = (vs === 'generating' || vs === 'ready') ? ' style="display:none;"' : '';
-  var animBtnHtml = '<button class="turn-img-animate-btn"' + animBtnHide + ' title="Animate this scene">&#9654; Clip</button>';
-
-  // Status line text and class
-  var statusText = '';
-  var statusExtra = ' hidden';
-  if (vs === 'generating') { statusText = 'Generating clip...'; statusExtra = ' turn-img-video-status-generating'; }
-  else if (vs === 'ready') { statusText = 'Clip ready';          statusExtra = ' turn-img-video-status-ready'; }
-  else if (vs === 'error') { statusText = 'Clip failed - retry'; statusExtra = ' turn-img-video-status-error'; }
-
-  // Animate panel (variant + submit) — always rendered
-  var animPanelHtml = '<div class="turn-img-animate-panel hidden">' +
-      '<select class="turn-img-animate-variant">' +
-        '<option value="lownoise"'  + (defVariant === 'lownoise'  ? ' selected' : '') + '>Low Motion</option>' +
-        '<option value="highnoise"' + (defVariant === 'highnoise' ? ' selected' : '') + '>High Motion</option>' +
-      '</select>' +
-      '<button class="turn-img-animate-cancel-btn">Cancel</button>' +
-      '<button class="turn-img-animate-submit-btn">Generate Clip</button>' +
-    '</div>';
-
-  return '<div class="turn-image"' +
-    ' data-image-prompt="'    + escapeHtml(vp)        + '"' +
-    ' data-image-filename="'  + escapeHtml(fn)        + '"' +
-    (id  ? ' data-image-id="'           + escapeHtml(String(id))  + '"' : '') +
-    ' data-video-status="'    + escapeHtml(vs)        + '"' +
-    (vcf ? ' data-videoclipfilename="'  + escapeHtml(vcf)         + '"' : '') +
-    '>' +
-      '<div class="turn-image-wrap" style="max-width:520px;width:100%;overflow:hidden;margin:0 auto;position:relative;border-radius:10px;">' +
-        videoHtml +
-        '<img src="' + escapeHtml(imageSrc(fn)) + '" alt="Scene image" ' +
-          'style="width:100%;display:block;cursor:zoom-in;" ' +
-          'data-lightbox-src="' + escapeHtml(imageSrc(fn)) + '" />' +
-        '<button class="turn-img-save-btn"    title="Download image">&#8595; Save</button>' +
-        '<button class="turn-img-edit-btn"    title="Edit prompt and regenerate">&#9998; Edit</button>' +
-        '<button class="turn-img-delete-btn"  title="Delete image">&#10005;</button>' +
-        animBtnHtml +
-      '</div>' +
-      '<div class="turn-img-video-status' + statusExtra + '">' + escapeHtml(statusText) + '</div>' +
-      animPanelHtml +
-    '</div>';
-}
-
-// Update an existing thread image card's video UI in-place (no full re-render).
-// videoState: { videostatus, videoclipfilename }
-function _updateThreadImageVideoUi(cardEl, videoState) {
-  if (!cardEl) return;
-  var vs  = videoState.videostatus       || null;
-  var vcf = videoState.videoclipfilename || null;
-
-  var wrap      = cardEl.querySelector('.turn-image-wrap');
-  var videoEl   = wrap  && wrap.querySelector('.turn-img-video');
-  var statusEl  = cardEl.querySelector('.turn-img-video-status');
-  var animBtn   = wrap  && wrap.querySelector('.turn-img-animate-btn');
-  var animPanel = cardEl.querySelector('.turn-img-animate-panel');
-
-  cardEl.dataset.videoStatus = vs || '';
-  if (vcf) cardEl.dataset.videoclipfilename = vcf;
-
-  if (vs === 'ready' && vcf) {
-    if (videoEl) { videoEl.src = imageSrc(vcf); videoEl.style.display = 'block'; }
-    if (statusEl) { statusEl.textContent = 'Clip ready'; statusEl.className = 'turn-img-video-status turn-img-video-status-ready'; }
-    if (animBtn)  animBtn.style.display  = 'none';
-    if (animPanel) animPanel.classList.add('hidden');
-  } else if (vs === 'generating') {
-    if (videoEl)  videoEl.style.display  = 'none';
-    if (statusEl) { statusEl.textContent = 'Generating clip...'; statusEl.className = 'turn-img-video-status turn-img-video-status-generating'; }
-    if (animBtn)  animBtn.style.display  = 'none';
-    if (animPanel) animPanel.classList.add('hidden');
-  } else if (vs === 'error') {
-    if (videoEl)  videoEl.style.display  = 'none';
-    if (statusEl) { statusEl.textContent = 'Clip failed - retry'; statusEl.className = 'turn-img-video-status turn-img-video-status-error'; }
-    if (animBtn)  animBtn.style.display  = '';
-  } else {
-    if (videoEl)  videoEl.style.display  = 'none';
-    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'turn-img-video-status hidden'; }
-    if (animBtn)  animBtn.style.display  = '';
-  }
 }
 
 function createTurnElement(turn) {
@@ -381,16 +356,6 @@ function createTurnElement(turn) {
     }
     var ratingUp   = turn.user_rating ===  1 ? ' active-up'   : '';
     var ratingDown = turn.user_rating === -1 ? ' active-down'  : '';
-    var imageHtml  = turn.image_filename
-      ? buildTurnImageHtml({
-          filename:          turn.image_filename,
-          imageId:           turn.image_id           || null,
-          visualPrompt:      turn.image_visual_prompt || '',
-          videostatus:       turn.image_videostatus   || '',
-          videoclipfilename: turn.image_videoclipfilename || '',
-          accepted:          turn.image_accepted      || 0
-        })
-      : '';
     var bodyHtml = turn.speaker === 'narrator'
       ? formatNarratorLinesWithGutter(content)
       : formatStoryContent(content);
@@ -402,23 +367,15 @@ function createTurnElement(turn) {
           '<button class="turn-rate-btn' + ratingUp   + '" data-turn-id="' + turn.id + '" data-rating="1"  title="Good">+</button>' +
           '<button class="turn-rate-btn' + ratingDown + '" data-turn-id="' + turn.id + '" data-rating="-1" title="Bad">-</button>' +
           '<button class="turn-regen-btn" data-turn-id="' + turn.id + '" title="Regenerate this beat">&#8635;</button>' +
-          '<button class="turn-gen-img-btn" data-turn-id="' + turn.id + '" title="Generate image for this turn">Img</button>' +
+          '<button class="turn-image-btn" data-turn-id="' + turn.id + '" title="Generate an image for this beat">&#128444;</button>' +
           '<button class="turn-delete-btn btn btn-xs btn-danger-ghost" data-turn-id="' + turn.id + '" title="Delete turn">&#x2715;</button>' +
         '</div>' +
       '</div>' +
-      '<div class="turn-image-slot">' + imageHtml + '</div>' +
       '<div class="turn-regen-panel hidden">' +
         '<textarea class="regen-instruction" placeholder="Optional: give guidance for the rewrite..." rows="2"></textarea>' +
         '<div class="regen-actions">' +
           '<button class="regen-cancel-btn">Cancel</button>' +
           '<button class="regen-submit-btn">Regenerate</button>' +
-        '</div>' +
-      '</div>' +
-      '<div class="turn-img-edit-panel hidden">' +
-        '<textarea class="img-edit-prompt" rows="3" placeholder="Edit the image prompt..."></textarea>' +
-        '<div class="regen-actions">' +
-          '<button class="img-edit-cancel-btn">Cancel</button>' +
-          '<button class="img-edit-submit-btn">Regenerate Image</button>' +
         '</div>' +
       '</div>';
   }
@@ -459,7 +416,6 @@ function _syncTurnsFromServer(scenarioId, optimId) {
     sortTurns();
     renderAllTurns();
     scrollThreadToBottom();
-    refreshPromptPreview();
   });
 }
 
@@ -479,7 +435,6 @@ function _pollForTurnCompletion(scenarioId, optimId, prevCount) {
         sortTurns();
         renderAllTurns();
         scrollThreadToBottom();
-        refreshPromptPreview();
         _turnPollTimer = null;
         if (mapped.length > prevCount) {
           showToast('Story updated.', 'info');
@@ -548,7 +503,6 @@ function ingestTurnResponse(response, optimId) {
     if (response.clothing_updates && response.clothing_updates.length && state.currentScenario) {
       handleClothingUpdate({ scenarioId: state.currentScenario.id, characters: response.clothing_updates });
     }
-    refreshPromptPreview();
   } catch (err) {
     console.error('[play] ingestTurnResponse failed:', err);
     showToast('Turn display failed: ' + err.message, 'error');
@@ -570,7 +524,6 @@ function ingestNarratorTurnFromWs(turn, scenarioId) {
       sortTurns();
       renderAllTurns();
       scrollThreadToBottom();
-      refreshPromptPreview();
     } catch (innerErr) {
       console.error('[play] ingestNarratorTurnFromWs fallback failed:', innerErr);
     }
@@ -692,52 +645,6 @@ function setupPlayInteractions(scenarioId) {
     };
   }
 
-  /* Portrait panel toggle */
-  var portraitToggleBtn = document.getElementById('prompt-toggle');
-  if (portraitToggleBtn) {
-    portraitToggleBtn.addEventListener('click', function () {
-      state.portraitPanelOpen = !state.portraitPanelOpen;
-      localStorage.setItem('story-lab-portraits', state.portraitPanelOpen);
-      var pp = document.getElementById('play-prompt-panel');
-      if (pp) {
-        pp.classList.toggle('collapsed', !state.portraitPanelOpen);
-        if (!state.portraitPanelOpen) {
-          pp.style.width = '';
-        } else {
-          var savedPp = localStorage.getItem('story-lab-prompt-width');
-          var ppW = savedPp ? clampPromptPanelWidth(savedPp) : null;
-          if (ppW) pp.style.width = ppW + 'px';
-        }
-      }
-      portraitToggleBtn.innerHTML = state.portraitPanelOpen ? '&raquo;' : '&laquo;';
-    });
-  }
-
-  /* Free VRAM -- unloads A1111 checkpoint + all loaded Ollama models */
-  var resetModelsBtn = document.getElementById('btn-reset-models');
-  if (resetModelsBtn) {
-    resetModelsBtn.addEventListener('click', function () {
-      resetModelsBtn.disabled = true;
-      resetModelsBtn.textContent = 'Freeing...';
-      API.freeVram()
-        .then(function (result) {
-          var nOllama = (result && result.freed && result.freed.ollama && result.freed.ollama.length) || 0;
-          var a1111 = (result && result.freed && result.freed.a1111) || 'done';
-          showToast('VRAM freed. A1111: ' + a1111 + ', Ollama: ' + nOllama, 'success');
-          resetModelsBtn.textContent = 'Freed';
-          setTimeout(function () {
-            resetModelsBtn.textContent = 'Free VRAM';
-            resetModelsBtn.disabled = false;
-          }, 3000);
-        })
-        .catch(function (err) {
-          showToast('Free VRAM failed: ' + err.message, 'error');
-          resetModelsBtn.textContent = 'Free VRAM';
-          resetModelsBtn.disabled = false;
-        });
-    });
-  }
-
   /* Scene presence tracking — which characters are currently in the scene */
   var _scenePresent = null;   // Set of lowercased char names in the current scene
   var _statusMode   = false;  // Whether we're in status-edit mode
@@ -780,8 +687,6 @@ function setupPlayInteractions(scenarioId) {
     if (statusBtn) statusBtn.classList.toggle('active', _statusMode);
   }
 
-  /* Load character portraits */
-  _reloadPortraitPanel = function () { reloadPromptPanelTargets(); refreshPromptPreview(); };
   _updateScenePresent = function (added, removed) {
     if (!_scenePresent) return;
     (added || []).forEach(function (c) { _scenePresent.add(c.name.toLowerCase()); });
@@ -856,7 +761,6 @@ function setupPlayInteractions(scenarioId) {
           API.addCharacterToScenario(scenarioId, id)
             .then(function () {
               showToast((char ? char.name : 'Character') + ' added to story.', 'success');
-              reloadPromptPanelTargets(); refreshPromptPreview();
             })
             .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
         });
@@ -876,7 +780,6 @@ function setupPlayInteractions(scenarioId) {
           API.removeCharacterFromScenario(scenarioId, id)
             .then(function () {
               showToast((char ? char.name : 'Character') + ' removed.', 'info');
-              reloadPromptPanelTargets(); refreshPromptPreview();
             })
             .catch(function (err) { showToast('Failed to remove: ' + err.message, 'error'); });
         });
@@ -905,7 +808,6 @@ function setupPlayInteractions(scenarioId) {
       var btn = e.target.closest('.qcmd-btn');
       if (!btn) return;
       var cmd = btn.dataset.cmd;
-      if (cmd === '[image]') { generateSceneImage(scenarioId); return; }
       if (!_beginTurnSubmit()) { showToast('Already generating a turn. Please wait...', 'info'); return; }
       addTypingIndicator();
       var prevCount = state.turns.length;
@@ -1020,57 +922,22 @@ function setupPlayInteractions(scenarioId) {
     };
   }
 
-  /* Filter rules — local only (no backend endpoint for per-scenario image config in A1111 version) */
-  var filterRulesInput = document.getElementById('filter-rules-input');
-  if (filterRulesInput) {
-    filterRulesInput.oninput = function () {
-      // Kept as local state only; not persisted
-    };
-  }
-
-  var imgSettingsBtn = document.getElementById('btn-img-settings');
-  if (imgSettingsBtn) {
-    imgSettingsBtn.onclick = function () {
-      location.hash = '#styles?scenario=' + scenarioId;
-    };
-  }
-
   initResizablePanels();
 }
 
 // -------------------------------------------------------------------------
-// initResizablePanels — drag-to-resize sidebar and portrait panel
+// initResizablePanels — drag-to-resize sidebar
 // -------------------------------------------------------------------------
-function clampPromptPanelWidth(width) {
-  var PP_MAX = 360;
-  var w = parseInt(width, 10);
-  if (isNaN(w)) return null;
-  return Math.min(PP_MAX, Math.max(220, w));
-}
-
 function initResizablePanels() {
   var SB_MIN = 140, SB_MAX = 500;
-  var PP_MIN = 100, PP_MAX = 200;
 
   var sbHandle = document.getElementById('sidebar-resize-handle');
-  var ppHandle = document.getElementById('prompt-resize-handle');
   var sidebar  = document.getElementById('play-sidebar');
-  var portrait = document.getElementById('play-prompt-panel');
 
-  // Restore saved widths on load (only when expanded)
+  // Restore saved width on load (only when expanded)
   var savedSbWidth = localStorage.getItem('story-lab-sidebar-width');
-  var savedPpWidth = localStorage.getItem('story-lab-portrait-width');
   if (state.sidebarOpen && savedSbWidth && sidebar) {
     sidebar.style.width = parseInt(savedSbWidth, 10) + 'px';
-  }
-  if (state.portraitPanelOpen && savedPpWidth && portrait) {
-    var ppW = clampPromptPanelWidth(savedPpWidth);
-    if (ppW) {
-      portrait.style.width = ppW + 'px';
-      if (String(ppW) !== String(parseInt(savedPpWidth, 10))) {
-        localStorage.setItem('story-lab-portrait-width', String(ppW));
-      }
-    }
   }
 
   function setupDrag(handle, panel, growLeft, min, max, storageKey) {
@@ -1103,19 +970,13 @@ function initResizablePanels() {
 
   // Sidebar: handle on right edge, drag right = grow
   setupDrag(sbHandle, sidebar, false, SB_MIN, SB_MAX, 'story-lab-sidebar-width');
-  // Portrait: handle on left edge, drag left = grow
-  setupDrag(ppHandle, portrait, true, PP_MIN, PP_MAX, 'story-lab-portrait-width');
 }
-
-// -------------------------------------------------------------------------
-// Styles page — per-scenario image style CRUD (replaces openImageSettingsPanel)
-// -------------------------------------------------------------------------
 
 function setupTurnFooterListeners() {
   var thread = document.getElementById('play-thread');
   if (!thread) return;
 
-  // Turn rate buttons are local-only (no turn rating endpoint in A1111 backend)
+  // Turn rate buttons are local-only (no turn rating endpoint)
   thread.querySelectorAll('.turn-rate-btn').forEach(function (btn) {
     btn.onclick = function () {
       var rating = Number(btn.dataset.rating);
@@ -1153,14 +1014,6 @@ function setupTurnFooterListeners() {
           .catch(function () { showToast('Could not delete turn', 'error'); });
         return;
       }
-      // Generate image for this turn
-      var genImgBtn = e.target.closest('.turn-gen-img-btn');
-      if (genImgBtn) {
-        var genTurnId = Number(genImgBtn.dataset.turnId);
-        var genScenId = state.currentScenario && state.currentScenario.id;
-        if (genScenId) generateSceneImage(genScenId, genTurnId);
-        return;
-      }
       // Toggle panel open/close
       var regenBtn = e.target.closest('.turn-regen-btn');
       if (regenBtn) {
@@ -1174,6 +1027,21 @@ function setupTurnFooterListeners() {
       if (cancelBtn) {
         var closePanel = cancelBtn.closest('.turn-regen-panel');
         if (closePanel) closePanel.classList.add('hidden');
+        return;
+      }
+      // Image button — open page-level right sidebar for this turn (never nest in the card)
+      var imageBtn = e.target.closest('.turn-image-btn');
+      if (imageBtn) {
+        var imgTurnEl = imageBtn.closest('.turn');
+        if (!imgTurnEl) return;
+        var openTurnId = Number(imgTurnEl.dataset.turnId);
+        var openSid = state.currentScenario && state.currentScenario.id;
+        if (!openSid || !openTurnId) return;
+        openImageSidebar({
+          scenarioId: openSid,
+          turnId: openTurnId,
+        });
+        _loadShotActionForSidebar(openSid, openTurnId);
         return;
       }
       // User turn edit — toggle panel
@@ -1207,88 +1075,11 @@ function setupTurnFooterListeners() {
         var ueSaveTa     = ueSavePanel && ueSavePanel.querySelector('.user-edit-content');
         var ueNewContent = ueSaveTa ? ueSaveTa.value.trim() : '';
         if (!ueNewContent) { showToast('Cannot save empty content.', 'error'); return; }
-        // Turn editing is not yet implemented in A1111 backend
+        // Turn editing is not yet implemented
         showToast('Turn editing is not yet implemented.', 'info');
         if (ueSavePanel) ueSavePanel.classList.add('hidden');
         return;
       }
-      // Save image — trigger browser download
-      var saveImgBtn = e.target.closest('.turn-img-save-btn');        if (saveImgBtn) {
-        var saveWrap  = saveImgBtn.closest('.turn-image-wrap');
-        var saveImgEl = saveWrap && saveWrap.querySelector('img');
-        if (!saveImgEl) return;
-        var saveUrl  = saveImgEl.src;
-        var saveName = saveUrl.split('/').pop().split('?')[0] || 'story-image.png';
-        var a = document.createElement('a');
-        a.href = saveUrl;
-        a.download = saveName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        return;
-      }
-      // Delete image — remove from DB then from DOM
-      var deleteImgBtn = e.target.closest('.turn-img-delete-btn');
-      if (deleteImgBtn) {
-        var delTurnEl = deleteImgBtn.closest('.turn');
-        if (!delTurnEl) return;
-        var delTurnId = Number(delTurnEl.dataset.turnId);
-        var delImgScenId = state.currentScenario && state.currentScenario.id;
-        var imgDiv    = delTurnEl.querySelector('.turn-image');
-        if (!imgDiv) return;
-        API.getImages(delImgScenId, delTurnId).then(function (data) {
-          var images = Array.isArray(data) ? data : (data && data.images) || [];
-          var removeFromDom = function () {
-            if (imgDiv.parentNode) imgDiv.parentNode.removeChild(imgDiv);
-            state.turns = state.turns.map(function (t) {
-              return t.id === delTurnId ? Object.assign({}, t, { image_filename: null }) : t;
-            });
-          };
-          if (!images.length) { removeFromDom(); return; }
-          var latest = images[images.length - 1];
-          API.deleteImage(delImgScenId, latest.id)
-            .then(function () { removeFromDom(); showToast('Image deleted.', 'success'); })
-            .catch(function (err) { showToast('Delete failed: ' + err.message, 'error'); });
-        }).catch(function (err) { showToast('Delete failed: ' + err.message, 'error'); });
-        return;
-      }
-      // Image edit button — populate textarea from stored prompt, toggle panel
-      var imgEditBtn = e.target.closest('.turn-img-edit-btn');
-      if (imgEditBtn) {
-        var imgEditTurnEl = imgEditBtn.closest('.turn');
-        var imgEditPanel  = imgEditTurnEl && imgEditTurnEl.querySelector('.turn-img-edit-panel');
-        var imgEditDiv    = imgEditTurnEl && imgEditTurnEl.querySelector('.turn-image');
-        if (imgEditPanel) {
-          var imgEditTa = imgEditPanel.querySelector('.img-edit-prompt');
-          if (imgEditTa) imgEditTa.value = (imgEditDiv && imgEditDiv.dataset.imagePrompt) || '';
-          imgEditPanel.classList.toggle('hidden');
-        }
-        return;
-      }
-      // Image edit cancel
-      var imgCancelBtn = e.target.closest('.img-edit-cancel-btn');
-      if (imgCancelBtn) {
-        var imgClosePanel = imgCancelBtn.closest('.turn-img-edit-panel');
-        if (imgClosePanel) imgClosePanel.classList.add('hidden');
-        return;
-      }
-      // Image edit submit — regenerate image with edited prompt
-      var imgSubmitBtn = e.target.closest('.img-edit-submit-btn');
-      if (imgSubmitBtn) {
-        var imgPanel  = imgSubmitBtn.closest('.turn-img-edit-panel');
-        var imgTurnEl = imgPanel && imgPanel.closest('.turn');
-        if (!imgPanel || !imgTurnEl) return;
-        var imgTurnId = Number(imgTurnEl.dataset.turnId);
-        var imgScenId = state.currentScenario && state.currentScenario.id;
-        var imgTaEl   = imgPanel.querySelector('.img-edit-prompt');
-        var promptVal = imgTaEl ? imgTaEl.value.trim() : '';
-        if (!promptVal) { showToast('Prompt cannot be empty.', 'error'); return; }
-        // Image prompt editing not yet implemented in A1111 backend — trigger fresh generation instead
-        imgPanel.classList.add('hidden');
-        generateSceneImage(imgScenId, imgTurnId);
-        return;
-      }
-      // Character-focused image button
       // Submit text regenerate
       var submitBtn = e.target.closest('.regen-submit-btn');
       if (!submitBtn) return;
@@ -1298,41 +1089,499 @@ function setupTurnFooterListeners() {
       var turnId      = Number(regenTurnEl.dataset.turnId);
       var scenarioId  = state.currentScenario && state.currentScenario.id;
       var instrEl     = regenPanel.querySelector('.regen-instruction');
-      var instrVal    = instrEl ? instrEl.value : '';
+      var instrVal    = instrEl ? instrEl.value.trim() : '';
+      if (!scenarioId || !turnId) return;
 
-      // Turn regeneration is not yet implemented in A1111 backend
-      showToast('Turn regeneration is not yet implemented.', 'info');
+      submitBtn.disabled = true;
+      var prevLabel = submitBtn.textContent;
+      submitBtn.textContent = 'Regenerating...';
       regenPanel.classList.add('hidden');
+      addTypingIndicator();
+      showToast('Regenerating response...', 'info');
+
+      API.regenerateTurn(scenarioId, turnId, { guidance: instrVal })
+        .then(function (res) {
+          var turn = res && (res.turn || res.narrator_turn);
+          if (!turn) throw new Error('No regenerated turn returned');
+          if (res.clothing_updates && res.clothing_updates.length) {
+            handleClothingUpdate({ scenarioId: scenarioId, characters: res.clothing_updates });
+          }
+          var mapped = Object.assign({ speaker: turn.role || 'narrator' }, turn);
+          _upsertTurnInState(mapped);
+          replaceOrAppendTurnElement(mapped);
+          _lastIngestedNarratorId = turn.id;
+          showToast('Response regenerated.', 'success');
+        })
+        .catch(function (err) {
+          showToast('Regenerate failed: ' + (err.message || err), 'error');
+          regenPanel.classList.remove('hidden');
+        })
+        .finally(function () {
+          removeTypingIndicator();
+          submitBtn.disabled = false;
+          submitBtn.textContent = prevLabel;
+        });
     });
   }
 
-  // Animate delegation for thread image cards
-  if (!thread._animateDelegateAttached) {
-    thread._animateDelegateAttached = true;
-    thread.addEventListener('click', function (e) {
-      // Animate overlay button — toggle the animate panel
-      var animBtn = e.target.closest('.turn-img-animate-btn');
-      if (animBtn) {
-        var imgCard = animBtn.closest('.turn-image');
-        var panel   = imgCard && imgCard.querySelector('.turn-img-animate-panel');
-        if (panel) panel.classList.toggle('hidden');
-        return;
+  // Picking a different Look in a turn's image panel activates it globally —
+  // there is exactly one active Look at a time (the dropdown always reflects
+  // and controls global state, never a per-generation override).
+}
+
+
+// Populates a Look <select> from the API, marking the currently active Look
+// selected. Safe to call every time the image panel is opened.
+// ---------------------------------------------------------------------------
+// Image generator — page-level right sidebar (not nested in turn cards)
+// ---------------------------------------------------------------------------
+
+function _getImageSidebarEls() {
+  return {
+    root: document.getElementById('play-image-sidebar'),
+    action: document.getElementById('img-sidebar-action'),
+    mode: document.getElementById('img-sidebar-mode'),
+    char: document.getElementById('img-sidebar-char'),
+    look: document.getElementById('img-sidebar-look'),
+    generate: document.getElementById('img-sidebar-generate'),
+    status: document.getElementById('img-sidebar-status'),
+    result: document.getElementById('img-sidebar-result'),
+    turnLabel: document.getElementById('img-sidebar-turn-label'),
+    hint: document.getElementById('img-sidebar-action-hint'),
+    shotLoading: document.getElementById('img-sidebar-shot-loading'),
+    close: document.getElementById('img-sidebar-close'),
+    container: document.getElementById('play-container'),
+  };
+}
+
+function _syncImageModeControls() {
+  var els = _getImageSidebarEls();
+  if (!els.mode || !els.char) return;
+  var mode = els.mode.value;
+  if (mode === 'portrait' || mode === 'fullbody') {
+    els.char.classList.remove('hidden');
+  } else {
+    els.char.classList.add('hidden');
+  }
+}
+
+function _populateImageCharSelect(selectEl) {
+  if (!selectEl) return;
+  var sid = state.currentScenario && state.currentScenario.id;
+  if (!sid) {
+    selectEl.innerHTML = '<option value="">No scenario</option>';
+    return;
+  }
+  selectEl.innerHTML = '<option value="">Loading cast...</option>';
+  API.getScenarioCharacters(sid).then(function (chars) {
+    if (!Array.isArray(chars) || !chars.length) {
+      selectEl.innerHTML = '<option value="">No characters in cast</option>';
+      return;
+    }
+    var selected = state.imageGen && state.imageGen.characterId ? String(state.imageGen.characterId) : '';
+    selectEl.innerHTML = '<option value="">Select character...</option>' + chars.map(function (c) {
+      return '<option value="' + c.id + '"' + (String(c.id) === selected ? ' selected' : '') + '>' +
+        escapeHtml(c.name || ('Character ' + c.id)) + '</option>';
+    }).join('');
+  }).catch(function () {
+    selectEl.innerHTML = '<option value="">Failed to load cast</option>';
+  });
+}
+
+function _populateLookSelect(selectEl) {
+  if (!selectEl) return;
+  API.getLooks().then(function (looks) {
+    if (!Array.isArray(looks) || !looks.length) {
+      selectEl.innerHTML = '<option value="">No Looks configured</option>';
+      return;
+    }
+    var preferred = state.imageGen && state.imageGen.lookId ? String(state.imageGen.lookId) : '';
+    selectEl.innerHTML = looks.map(function (l) {
+      var sel = preferred ? String(l.id) === preferred : !!l.is_active;
+      return '<option value="' + l.id + '"' + (sel ? ' selected' : '') + '>' +
+        escapeHtml(l.name) + (l.is_active ? ' (active)' : '') + '</option>';
+    }).join('');
+  }).catch(function () {
+    selectEl.innerHTML = '<option value="">Failed to load Looks</option>';
+  });
+}
+
+function _loadTurnImages(resultEl, scenarioId, turnId) {
+  if (!resultEl || !scenarioId || !turnId) return;
+  API.getImages(scenarioId, turnId).then(function (rows) {
+    if (!Array.isArray(rows) || !rows.length) {
+      resultEl.innerHTML = '';
+      return;
+    }
+    resultEl.innerHTML = rows.map(function (image) {
+      return _buildTurnImageCardHtml(scenarioId, image);
+    }).join('');
+  }).catch(function () {
+    // Soft-fail: leave whatever is already shown rather than wiping the panel.
+  });
+}
+
+function _buildTurnImageCardHtml(scenarioId, image) {
+  var src = '/story-images/' + scenarioId + '/' + encodeURIComponent(image.filename);
+  var meta = (image.mode || 'scene') + ' &middot; ' + (image.generation_method || 'txt2img') +
+    (image.model_name ? ' &middot; ' + escapeHtml(image.model_name) : '');
+  if (image.accepted) meta += ' &middot; accepted';
+  var rating = Number(image.user_rating || 0);
+  var upActive = rating === 1 ? ' is-active' : '';
+  var downActive = rating === -1 ? ' is-active' : '';
+  var acceptActive = image.accepted ? ' is-active' : '';
+  return '<div class="turn-image-card" data-image-id="' + image.id + '" data-scenario-id="' + scenarioId + '">' +
+    '<img src="' + src + '" alt="Generated image" loading="lazy">' +
+    '<div class="turn-image-card-meta">' + meta + '</div>' +
+    '<div class="turn-image-card-actions">' +
+      '<button type="button" class="turn-image-accept-btn' + acceptActive + '" title="Accept this image">Accept</button>' +
+      '<button type="button" class="turn-image-rate-btn' + upActive + '" data-rating="1" title="Rate good">+</button>' +
+      '<button type="button" class="turn-image-rate-btn' + downActive + '" data-rating="-1" title="Rate bad">-</button>' +
+      '<button type="button" class="turn-image-delete-btn" title="Delete this image">Delete</button>' +
+    '</div>' +
+  '</div>';
+}
+
+function _markSelectedImageTurn(turnId) {
+  document.querySelectorAll('.turn.is-image-selected').forEach(function (el) {
+    el.classList.remove('is-image-selected');
+  });
+  if (!turnId) return;
+  var el = document.querySelector('.turn[data-turn-id="' + turnId + '"]');
+  if (el) el.classList.add('is-image-selected');
+}
+
+
+var _shotActionDraftTimer = null;
+var _shotActionDraftPending = null;
+var _shotActionLoadToken = 0;
+
+function _shotActionSourceHint(source) {
+  var map = {
+    user_draft: 'Saved draft for this turn.',
+    scene_card: 'Loaded from scene card.',
+    cached: 'Loaded from cached scene summary.',
+    llm: 'Suggested from this turn (editable).',
+    heuristic: 'Suggested from this turn (editable).',
+    empty: 'Describe only what should be visible. Style comes from the selected Look.',
+  };
+  return map[source] || map.empty;
+}
+
+function _applyShotActionToSidebar(text, source) {
+  var els = _getImageSidebarEls();
+  var value = text != null ? String(text) : '';
+  if (els.action) {
+    els.action.value = value;
+    els.action.placeholder = 'Describe what should be visible in this shot...';
+  }
+  if (els.hint) els.hint.textContent = _shotActionSourceHint(source);
+  if (state.imageGen) state.imageGen.actionText = value;
+}
+
+function _setShotActionLoading(isLoading) {
+  var els = _getImageSidebarEls();
+  if (els.shotLoading) els.shotLoading.classList.toggle('hidden', !isLoading);
+  if (els.action) els.action.disabled = !!isLoading;
+}
+
+function _loadShotActionForSidebar(sid, turnId) {
+  var loadSid = Number(sid);
+  var loadTurnId = Number(turnId);
+  if (!loadSid || !loadTurnId) return;
+
+  var token = ++_shotActionLoadToken;
+  _setShotActionLoading(true);
+
+  API.getShotAction(loadSid, loadTurnId)
+    .then(function (res) {
+      if (token !== _shotActionLoadToken) return null;
+      if (!state.imageGen || Number(state.imageGen.turnId) !== loadTurnId) return null;
+
+      var text = (res && res.text) ? String(res.text).trim() : '';
+      var source = (res && res.source) || 'empty';
+      var needsSuggest = !!(res && res.needs_suggest) || !text;
+
+      if (!needsSuggest) {
+        _applyShotActionToSidebar(text, source);
+        _setShotActionLoading(false);
+        return null;
       }
-      // Cancel animate
-      var animCancel = e.target.closest('.turn-img-animate-cancel-btn');
-      if (animCancel) {
-        var panel = animCancel.closest('.turn-img-animate-panel');
-        if (panel) panel.classList.add('hidden');
-        return;
+
+      return API.suggestShotAction(loadSid, loadTurnId).then(function (sug) {
+        if (token !== _shotActionLoadToken) return;
+        if (!state.imageGen || Number(state.imageGen.turnId) !== loadTurnId) return;
+        var sugText = (sug && sug.text) ? String(sug.text).trim() : text;
+        var sugSource = (sug && sug.source) || (sugText ? 'heuristic' : 'empty');
+        _applyShotActionToSidebar(sugText, sugSource);
+        _setShotActionLoading(false);
+      }).catch(function (err) {
+        if (token !== _shotActionLoadToken) return;
+        if (!state.imageGen || Number(state.imageGen.turnId) !== loadTurnId) return;
+        _applyShotActionToSidebar(text, text ? source : 'empty');
+        _setShotActionLoading(false);
+        console.error('shot-action suggest failed', err);
+      });
+    })
+    .catch(function (err) {
+      if (token !== _shotActionLoadToken) return;
+      _setShotActionLoading(false);
+      var els = _getImageSidebarEls();
+      if (els.action) els.action.placeholder = 'Describe what should be visible in this shot...';
+      if (els.hint) {
+        els.hint.textContent = 'Could not auto-load scene description. Type one manually.';
       }
-      // Submit animate — fire the animation job
-      var animSubmit = e.target.closest('.turn-img-animate-submit-btn');
-      if (animSubmit) {
-        showToast('Video animation is not available in this version.', 'info');
-        return;
+      console.error('shot-action load failed', err);
+    });
+}
+
+function _scheduleSaveShotActionDraft(sid, turnId, text) {
+  _shotActionDraftPending = {
+    sid: Number(sid),
+    turnId: Number(turnId),
+    text: text != null ? String(text) : '',
+  };
+  if (_shotActionDraftTimer) clearTimeout(_shotActionDraftTimer);
+  _shotActionDraftTimer = setTimeout(function () {
+    _shotActionDraftTimer = null;
+    _flushShotActionDraftSave();
+  }, 600);
+}
+
+function _flushShotActionDraftSave() {
+  if (_shotActionDraftTimer) {
+    clearTimeout(_shotActionDraftTimer);
+    _shotActionDraftTimer = null;
+  }
+  var pending = _shotActionDraftPending;
+  _shotActionDraftPending = null;
+  if (!pending || !pending.sid || !pending.turnId) return;
+  API.saveShotActionDraft(pending.sid, pending.turnId, pending.text).catch(function (err) {
+    console.error('shot-action draft save failed', err);
+  });
+}
+
+function closeImageSidebar() {
+  _flushShotActionDraftSave();
+  _shotActionLoadToken++;
+  _setShotActionLoading(false);
+  var els = _getImageSidebarEls();
+  if (els.root) {
+    els.root.classList.remove('is-open');
+    els.root.setAttribute('aria-hidden', 'true');
+  }
+  if (els.container) els.container.classList.remove('image-sidebar-open');
+  _markSelectedImageTurn(null);
+  if (state.imageGen) {
+    state.imageGen.open = false;
+    state.imageGen.turnId = null;
+  }
+}
+
+function openImageSidebar(opts) {
+  opts = opts || {};
+  if (!state.imageGen) {
+    state.imageGen = { open: false, turnId: null, scenarioId: null, mode: 'scene', lookId: null, characterId: null, actionText: '' };
+  }
+  state.imageGen.open = true;
+  state.imageGen.scenarioId = opts.scenarioId || (state.currentScenario && state.currentScenario.id) || null;
+  state.imageGen.turnId = opts.turnId || null;
+  if (opts.mode) state.imageGen.mode = opts.mode;
+
+  var els = _getImageSidebarEls();
+  if (!els.root) return;
+
+  els.root.classList.add('is-open');
+  els.root.setAttribute('aria-hidden', 'false');
+  if (els.container) els.container.classList.add('image-sidebar-open');
+
+  if (els.turnLabel) {
+    els.turnLabel.textContent = state.imageGen.turnId ? ('Turn #' + state.imageGen.turnId) : '';
+  }
+  if (els.action) {
+    els.action.value = '';
+    els.action.placeholder = 'Loading scene description...';
+  }
+  if (els.mode) els.mode.value = state.imageGen.mode || 'scene';
+  if (els.status) {
+    els.status.textContent = '';
+    els.status.classList.remove('is-error');
+  }
+
+  _markSelectedImageTurn(state.imageGen.turnId);
+  _populateLookSelect(els.look);
+  _populateImageCharSelect(els.char);
+  _syncImageModeControls();
+  if (state.imageGen.scenarioId && state.imageGen.turnId) {
+    _loadTurnImages(els.result, state.imageGen.scenarioId, state.imageGen.turnId);
+  } else if (els.result) {
+    els.result.innerHTML = '';
+  }
+
+  wireImageSidebarOnce();
+  if (els.action) {
+    try { els.action.focus(); } catch (e) {}
+  }
+}
+
+function _readImageSidebarIntoState() {
+  var els = _getImageSidebarEls();
+  if (!state.imageGen) return;
+  if (els.action) state.imageGen.actionText = els.action.value;
+  if (els.mode) state.imageGen.mode = els.mode.value;
+  if (els.look && els.look.value) state.imageGen.lookId = Number(els.look.value);
+  if (els.char && els.char.value) state.imageGen.characterId = Number(els.char.value);
+  else state.imageGen.characterId = null;
+}
+
+function wireImageSidebarOnce() {
+  var els = _getImageSidebarEls();
+  if (!els.root || els.root._imageSidebarWired) return;
+  els.root._imageSidebarWired = true;
+
+  if (els.close) {
+    els.close.onclick = function () { closeImageSidebar(); };
+  }
+
+  els.root.addEventListener('change', function (e) {
+    if (e.target.id === 'img-sidebar-mode') {
+      _readImageSidebarIntoState();
+      _syncImageModeControls();
+      return;
+    }
+    if (e.target.id === 'img-sidebar-look' && e.target.value) {
+      state.imageGen.lookId = Number(e.target.value);
+      API.activateLook(Number(e.target.value)).catch(function (err) {
+        showToast('Failed to activate Look: ' + err.message, 'error');
+      });
+      return;
+    }
+    if (e.target.id === 'img-sidebar-char') {
+      state.imageGen.characterId = e.target.value ? Number(e.target.value) : null;
+    }
+  });
+
+  if (els.action) {
+    els.action.addEventListener('input', function () {
+      state.imageGen.actionText = els.action.value;
+      if (state.imageGen.scenarioId && state.imageGen.turnId) {
+        _scheduleSaveShotActionDraft(state.imageGen.scenarioId, state.imageGen.turnId, els.action.value);
       }
     });
   }
+
+  if (els.generate) {
+    els.generate.onclick = function () {
+      _readImageSidebarIntoState();
+      var sid = state.imageGen.scenarioId;
+      var tid = state.imageGen.turnId;
+      if (!sid || !tid) {
+        if (els.status) {
+          els.status.textContent = 'No turn selected.';
+          els.status.classList.add('is-error');
+        }
+        return;
+      }
+      var genMode = state.imageGen.mode || 'scene';
+      if (genMode !== 'scene' && genMode !== 'portrait' && genMode !== 'fullbody') genMode = 'scene';
+      var genOpts = {
+        turnId: tid,
+        mode: genMode,
+        actionText: (state.imageGen.actionText || '').trim(),
+      };
+      if (genMode === 'portrait' || genMode === 'fullbody') {
+        var charId = state.imageGen.characterId ? Number(state.imageGen.characterId) : 0;
+        if (!charId) {
+          els.status.textContent = 'Pick a character for ' + genMode + ' mode.';
+          els.status.classList.add('is-error');
+          return;
+        }
+        genOpts.characterIds = [charId];
+      }
+
+      els.generate.disabled = true;
+      els.status.textContent = 'Generating...';
+      els.status.classList.remove('is-error');
+
+      var lookPromise = Promise.resolve();
+      if (els.look && els.look.value) {
+        lookPromise = API.activateLook(Number(els.look.value));
+      }
+
+      lookPromise.then(function () {
+        return API.generateImage(sid, genOpts);
+      }).then(function (result) {
+        els.status.textContent = '';
+        if (result && result.image && els.result) {
+          if (!els.result.querySelector('[data-image-id="' + result.image.id + '"]')) {
+            els.result.insertAdjacentHTML('afterbegin', _buildTurnImageCardHtml(sid, result.image));
+          }
+        }
+      }).catch(function (err) {
+        els.status.textContent = 'Failed: ' + (err.message || 'unknown error');
+        els.status.classList.add('is-error');
+      }).finally(function () {
+        els.generate.disabled = false;
+      });
+    };
+  }
+
+  // Accept / rate / delete on cards inside the sidebar
+  els.root.addEventListener('click', function (e) {
+    var imageAcceptBtn = e.target.closest('.turn-image-accept-btn');
+    if (imageAcceptBtn) {
+      var acceptCard = imageAcceptBtn.closest('.turn-image-card');
+      if (!acceptCard) return;
+      var acceptSid = Number(acceptCard.dataset.scenarioId);
+      var acceptId = Number(acceptCard.dataset.imageId);
+      if (!acceptSid || !acceptId) return;
+      imageAcceptBtn.disabled = true;
+      API.acceptImage(acceptSid, acceptId).then(function (updated) {
+        acceptCard.outerHTML = _buildTurnImageCardHtml(acceptSid, updated);
+        showToast('Image accepted.', 'success');
+      }).catch(function (err) {
+        showToast('Accept failed: ' + (err.message || 'unknown error'), 'error');
+        imageAcceptBtn.disabled = false;
+      });
+      return;
+    }
+
+    var imageRateBtn = e.target.closest('.turn-image-rate-btn');
+    if (imageRateBtn) {
+      var rateCard = imageRateBtn.closest('.turn-image-card');
+      if (!rateCard) return;
+      var rateSid = Number(rateCard.dataset.scenarioId);
+      var rateId = Number(rateCard.dataset.imageId);
+      if (!rateSid || !rateId) return;
+      var nextRating = Number(imageRateBtn.dataset.rating);
+      if (imageRateBtn.classList.contains('is-active')) nextRating = 0;
+      imageRateBtn.disabled = true;
+      API.rateImage(rateSid, rateId, nextRating).then(function (updated) {
+        rateCard.outerHTML = _buildTurnImageCardHtml(rateSid, updated);
+      }).catch(function (err) {
+        showToast('Rate failed: ' + (err.message || 'unknown error'), 'error');
+        imageRateBtn.disabled = false;
+      });
+      return;
+    }
+
+    var imageDeleteBtn = e.target.closest('.turn-image-delete-btn');
+    if (imageDeleteBtn) {
+      var delCard = imageDeleteBtn.closest('.turn-image-card');
+      if (!delCard) return;
+      var delSid = Number(delCard.dataset.scenarioId);
+      var delId = Number(delCard.dataset.imageId);
+      if (!delSid || !delId) return;
+      showConfirm('Delete Image', 'Remove this generated image from the story? The file will be deleted.', function () {
+        API.deleteImage(delSid, delId).then(function () {
+          delCard.remove();
+          showToast('Image deleted.', 'info');
+        }).catch(function (err) {
+          showToast('Delete failed: ' + (err.message || 'unknown error'), 'error');
+        });
+      });
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,24 +1663,10 @@ function renderCharacterFocusButtons(scenarioId) {
     var initial = char.name ? char.name[0].toUpperCase() : '?';
 
     // Avatar
-    if (char.reference_image_path) {
-      var img = document.createElement('img');
-      img.src = imageSrc(char.reference_image_path);
-      img.alt = initial;
-      img.className = 'focus-btn-avatar';
-      img.onerror = function () {
-        var fallback = document.createElement('span');
-        fallback.className = 'focus-btn-initial';
-        fallback.textContent = initial;
-        btn.replaceChild(fallback, img);
-      };
-      btn.appendChild(img);
-    } else {
-      var initEl = document.createElement('span');
-      initEl.className = 'focus-btn-initial';
-      initEl.textContent = initial;
-      btn.appendChild(initEl);
-    }
+    var initEl = document.createElement('span');
+    initEl.className = 'focus-btn-initial';
+    initEl.textContent = initial;
+    btn.appendChild(initEl);
 
     var label = document.createElement('span');
     label.className = 'focus-btn-label';
@@ -1448,277 +1683,8 @@ function renderCharacterFocusButtons(scenarioId) {
   });
 }
 
-function generateSceneImage(scenarioId, turnId) {
-  // Show the floating status pill immediately — WS events will update it as the pipeline runs.
-  setImgStatus('Preparing image...');
-
-  // Show a pending indicator on the target turn card footer.
-  var turnEl    = turnId ? document.querySelector('[data-turn-id="' + turnId + '"]') : null;
-  var footer    = turnEl && turnEl.querySelector('.turn-footer');
-  var pendingEl = null;
-  if (footer && !footer.querySelector('.turn-img-pending')) {
-    pendingEl = document.createElement('span');
-    pendingEl.className = 'turn-img-pending';
-    pendingEl.textContent = 'Generating image...';
-    footer.appendChild(pendingEl);
-  }
-
-  // Image is always injected into the thread via the WS image_ready event handler.
-  // This call only fires the job; no synchronous DOM injection happens here.
-  return API.generateSceneImage(scenarioId, turnId || null)
-    .then(function () {
-      // Job accepted — WS image_ready will call buildTurnImageHtml and insert
-      // the card into the correct turn's .turn-image-slot.
-    })
-    .catch(function (e) {
-      if (pendingEl) {
-        pendingEl.className = 'turn-img-error';
-        pendingEl.textContent = 'Image failed: ' + escapeHtml(e.message);
-      } else {
-        showToast('Image failed: ' + e.message, 'error');
-      }
-    })
-    .finally(function () {
-      var b = document.getElementById('btn-gen-scene-img');
-      if (b) setLoading(b, false);
-    });
-}
-
-
-function _populateSceneImageHistory() {
-  if (!state._sceneImageCache) state._sceneImageCache = {};
-  var imageTurns = state.turns.filter(function (t) { return t.image_filename; });
-  // Build the in-memory cache only — images are already shown inline in the thread.
-  // Calling displayImage here would also render them in #scene-image-history (below the
-  // thread in the layout), which takes up flex space and leaves only a sliver of story visible.
-  imageTurns.forEach(function (t) {
-    if (!t.image_id) return;
-    state._sceneImageCache[t.image_id] = {
-      id:                 t.image_id,
-      filename:           t.image_filename,
-      visual_prompt_sent: t.image_visual_prompt     || '',
-      videostatus:        t.image_videostatus       || null,
-      videoclipfilename:  t.image_videoclipfilename || null,
-      turn_number:        t.turn_number,
-      turn_id:            t.id,
-    };
-  });
-}
-
-function displayImage(img) {
-  if (!img) return;
-  if (img.id) {
-    state.currentImageData = img;
-    if (!state._sceneImageCache) state._sceneImageCache = {};
-    state._sceneImageCache[img.id] = img;
-  }
-
-  var container = document.getElementById('scene-image-history');
-  if (!container) return;
-
-  var src = imageSrc(img.filename);
-  var videoHtml = '';
-  if (img.videostatus === 'ready' && img.videoclipfilename) {
-    var vsrc = imageSrc(img.videoclipfilename);
-    videoHtml = '<video class="scene-image-video" autoplay loop muted playsinline controls ' +
-                'style="width:100%;display:block;border-radius:4px;margin-bottom:4px;" ' +
-                'src="' + escapeHtml(vsrc) + '"></video>';
-  }
-
-  var turnNum = img.turn_number || null;
-  if (!turnNum && (img.turn_id || img.turnId)) {
-    var _tid = img.turn_id || img.turnId;
-    var _t = Array.isArray(state.turns) && state.turns.find(function (t) { return t.id === Number(_tid) || t.id === _tid; });
-    if (_t) turnNum = _t.turn_number;
-  }
-  var label = turnNum ? 'Turn ' + turnNum : '';
-
-  var innerHtml =
-    videoHtml +
-    '<img class="scene-image-item" src="' + escapeHtml(src) + '" alt="Scene image" ' +
-      'data-lightbox-src="' + escapeHtml(src) + '" ' +
-      'onerror="this.parentElement.innerHTML=\'<div class=\\\"image-error\\\">Image not found</div>\'">' +
-    (label ? '<div class="scene-image-label">' + escapeHtml(label) + '</div>' : '');
-
-  // Update existing entry in place (e.g. after video becomes ready)
-  if (img.id) {
-    var existing = container.querySelector('[data-image-id="' + img.id + '"]');
-    if (existing) {
-      existing.innerHTML = innerHtml;
-      var imgEl2 = existing.querySelector('.scene-image-item');
-      if (imgEl2) imgEl2.onclick = function () { openLightbox(imgEl2.dataset.lightboxSrc); };
-      refreshAnimatePanel();
-      return;
-    }
-  }
-
-  var entry = document.createElement('div');
-  entry.className = 'scene-image-entry';
-  if (img.id)                         entry.dataset.imageId = String(img.id);
-  if (img.turn_id || img.turnId)      entry.dataset.turnId  = String(img.turn_id || img.turnId);
-  entry.innerHTML = innerHtml;
-
-  var imgEl = entry.querySelector('.scene-image-item');
-  if (imgEl) imgEl.onclick = function () { openLightbox(imgEl.dataset.lightboxSrc); };
-
-  container.insertBefore(entry, container.firstChild);
-  refreshAnimatePanel();
-}
-
-function addImageToHistory(img) {
-  // Unified into displayImage; kept for WS-patch compatibility
-  displayImage(img);
-}
-
-window._displayImage         = displayImage;
-window._addImageToHistory    = addImageToHistory;
-window._refreshAnimatePanel  = refreshAnimatePanel;
 window._renderAllTurns       = renderAllTurns;
 window._setupTurnFooterListeners = setupTurnFooterListeners;
-
-// Render the animate/video controls below the image rating area.
-// Called whenever the displayed image changes or a WS video event arrives.
-function refreshAnimatePanel() {
-  var section = document.getElementById('img-animate-section');
-  if (!section) return;
-  var img = state.currentImageData;
-  if (!img) { section.innerHTML = ''; return; }
-
-  var vs = img.videostatus       || null;
-  var vf = img.videoclipfilename || null;
-
-  // Video is ready — clip is already visible above the still; just show a note.
-  if (vs === 'ready' && vf) {
-    section.innerHTML = '<div style="font-size:11px;color:#888;margin-top:4px;padding:0 2px;">Clip ready</div>';
-    return;
-  }
-
-  // Generation in progress.
-  if (vs === 'generating') {
-    section.innerHTML =
-      '<div style="font-size:12px;color:#aaa;margin-top:6px;display:flex;align-items:center;gap:6px;">' +
-        '<span class="spinner-inline"></span>Generating clip...' +
-      '</div>';
-    return;
-  }
-
-  // Show Animate for any image that has a DB id and a filename.
-  if (!img.id || !img.filename) { section.innerHTML = ''; return; }
-
-  // Error or null state — show Animate button (with optional error note).
-  var errorNote = (vs === 'error')
-    ? '<div style="font-size:11px;color:#c06060;margin-bottom:4px;">Clip failed. Retry:</div>'
-    : '';
-
-  // Derive per-panel defaults from scenario generation_config
-  var _animGenConfig = null;
-  try {
-    var _gc = state.currentScenario && state.currentScenario.generation_config;
-    if (_gc) _animGenConfig = typeof _gc === 'string' ? JSON.parse(_gc) : _gc;
-  } catch (_) {}
-  var _defaultVariant     = (_animGenConfig && _animGenConfig.videoMotionStyle) || 'lownoise';
-  var _defaultNsfwEnhance = !!(_animGenConfig && _animGenConfig.videoNsfwEnhance);
-
-  section.innerHTML =
-    errorNote +
-    '<button class="btn btn-ghost btn-sm" id="btn-animate-img" style="margin-top:2px;">Animate</button>' +
-    '<div id="animate-controls" style="display:none;margin-top:8px;">' +
-      '<textarea id="animate-prompt" rows="2" ' +
-        'placeholder="Motion prompt (optional - leave blank for auto)" ' +
-        'style="width:100%;font-size:12px;resize:vertical;padding:4px;' +
-               'box-sizing:border-box;background:var(--bg-input,#1e1e2e);' +
-               'color:var(--text-primary,#eee);border:1px solid #444;border-radius:4px;">' +
-      '</textarea>' +
-      '<div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
-        '<label style="font-size:12px;color:#aaa;">Motion:</label>' +
-        '<select id="animate-variant" ' +
-          'style="font-size:12px;background:var(--bg-input,#1e1e2e);' +
-                 'color:var(--text-primary,#eee);border:1px solid #444;' +
-                 'border-radius:4px;padding:2px 6px;">' +
-          '<option value="lownoise"'  + (_defaultVariant === 'lownoise'  ? ' selected' : '') + '>Low Motion</option>' +
-          '<option value="highnoise"' + (_defaultVariant === 'highnoise' ? ' selected' : '') + '>High Motion</option>' +
-        '</select>' +
-        '<label style="font-size:12px;color:#aaa;display:flex;align-items:center;gap:4px;cursor:pointer;">' +
-          '<input type="checkbox" id="animate-nsfw-enhance"' + (_defaultNsfwEnhance ? ' checked' : '') + ' style="cursor:pointer;">' +
-          'Adult Enhance' +
-        '</label>' +
-        '<button class="btn btn-ghost btn-sm" id="btn-animate-cancel" style="margin-left:auto;">Cancel</button>' +
-        '<button class="btn btn-primary btn-sm" id="btn-animate-submit">Generate Clip</button>' +
-      '</div>' +
-    '</div>';
-
-  var animateBtn = document.getElementById('btn-animate-img');
-  var controls   = document.getElementById('animate-controls');
-  var cancelBtn  = document.getElementById('btn-animate-cancel');
-  var submitBtn  = document.getElementById('btn-animate-submit');
-
-  if (animateBtn) {
-    animateBtn.onclick = function () {
-      animateBtn.style.display = 'none';
-      if (controls) controls.style.display = '';
-    };
-  }
-  if (cancelBtn) {
-    cancelBtn.onclick = function () {
-      if (controls) controls.style.display = 'none';
-      if (animateBtn) animateBtn.style.display = '';
-    };
-  }
-  if (submitBtn) {
-    submitBtn.onclick = function () {
-      showToast('Video animation is not available in this version.', 'info');
-    };
-  }
-}
-
-function showSetAsReferenceModal() {
-  if (!state.currentImageId || !state.currentScenario) return;
-  var chars = state.currentScenario.characters || [];
-  var overlay = document.getElementById('modal-overlay');
-  overlay.innerHTML =
-    '<div class="modal">' +
-      '<h3 class="modal-title">Set as Character Reference</h3>' +
-      '<p class="modal-message">Select which character this image represents:</p>' +
-      '<div class="modal-char-list">' +
-        (chars.length
-          ? chars.map(function (c) {
-              return '<button class="char-select-btn" data-char-id="' + c.id + '">' +
-                '<div class="char-avatar">' + escapeHtml(c.name[0].toUpperCase()) + '</div>' +
-                '<span>' + escapeHtml(c.name) + '</span>' +
-                '</button>';
-            }).join('')
-          : '<p class="text-muted" style="padding:12px">No characters in this story.</p>'
-        ) +
-      '</div>' +
-      '<div class="modal-footer"><button class="btn btn-secondary" id="modal-cancel-ref">Cancel</button></div>' +
-    '</div>';
-  overlay.classList.remove('hidden');
-  overlay.querySelectorAll('.char-select-btn').forEach(function (btn) {
-    btn.onclick = function () {
-      var charId = Number(btn.dataset.charId);
-      var refScenId = state.currentScenario && state.currentScenario.id;
-      API.acceptImage(refScenId, state.currentImageId, { set_as_character_reference: true, character_id: charId })
-        .then(function (updated) {
-          overlay.classList.add('hidden');
-          showToast('Set as character reference!', 'success');
-          if (updated && updated.id) {
-            state._sceneImageCache[updated.id] = updated;
-            if (state.currentImageId === updated.id) {
-              state.currentImageData = updated;
-              refreshAnimatePanel();
-            }
-          }
-        })
-        .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
-    };
-  });
-  document.getElementById('modal-cancel-ref').onclick = function () { overlay.classList.add('hidden'); };
-  overlay.onclick = function (e) { if (e.target === overlay) overlay.classList.add('hidden'); };
-}
-
-// ---------------------------------------------------------------------------
-// Style preset data removed — styles are now per-scenario DB records (image_styles table)
-// ---------------------------------------------------------------------------
 
 function showSceneInfo() {
   var scenario = state.currentScenario;
@@ -1781,12 +1747,6 @@ function showSceneInfo() {
     }).join('');
   }
 
-  var lastImgPrompt = '';
-  var allImgDivs = document.querySelectorAll('#play-thread .turn-image[data-image-prompt]');
-  if (allImgDivs.length) {
-    lastImgPrompt = allImgDivs[allImgDivs.length - 1].dataset.imagePrompt || '';
-  }
-
   var snapshotRows =
     '<hr style="border:none;border-top:1px solid var(--border);margin:10px 0 6px">' +
     infoRow('Scene Setting', scenario.setting || '-') +
@@ -1799,15 +1759,6 @@ function showSceneInfo() {
       ? '<div class="setting-row" style="align-items:flex-start">' +
           '<span style="font-weight:600;color:var(--text-muted);min-width:140px">Char States</span>' +
           '<div style="flex:1">' + charStatesHtml + '</div>' +
-        '</div>'
-      : '') +
-    (lastImgPrompt
-      ? '<div class="setting-row" style="align-items:flex-start">' +
-          '<span style="font-weight:600;color:var(--text-muted);min-width:140px">Last Image Prompt</span>' +
-          '<pre style="margin:0;font-size:10px;white-space:pre-wrap;word-break:break-word;' +
-            'color:var(--text-muted);flex:1;max-height:110px;overflow-y:auto;' +
-            'background:var(--bg-secondary,#1a1a2e);padding:6px 8px;border-radius:4px;border:1px solid var(--border)">' +
-            escapeHtml(lastImgPrompt) + '</pre>' +
         '</div>'
       : '');
 
@@ -1827,32 +1778,15 @@ function showSceneInfo() {
               '</div>'
             : '') +
           infoRow('Location', locationName) +
-          '<div class="setting-row">' +
-            '<span style="font-weight:600;color:var(--text-muted);min-width:140px">Image Style</span>' +
-            '<span style="color:var(--text)" id="scene-info-img-model">' + escapeHtml(scenario.image_model || 'Default') + '</span>' +
-          '</div>' +
           infoRow('Reply Length', scenario.reply_length || 'medium') +
           infoRow('Tone', scenario.tone || '-') +
           infoRow('NSFW', scenario.nsfw_enabled ? 'Yes' : 'No') +
-          '<div class="setting-row" style="display:flex;align-items:center;gap:8px">' +
-            '<span style="font-weight:600;color:var(--text-muted);min-width:140px">Append Start</span>' +
-            '<input type="text" class="form-input" id="si-append-start" style="flex:1;width:auto" placeholder="tag1, tag2, etc" value="' + escapeHtml(scenario.append_start || '') + '">' +
-          '</div>' +
-          '<div class="setting-row" style="display:flex;align-items:center;gap:8px">' +
-            '<span style="font-weight:600;color:var(--text-muted);min-width:140px">Append Middle</span>' +
-            '<input type="text" class="form-input" id="si-append-middle" style="flex:1;width:auto" placeholder="tag1, tag2, etc" value="' + escapeHtml(scenario.append_middle || '') + '">' +
-          '</div>' +
-          '<div class="setting-row" style="display:flex;align-items:center;gap:8px">' +
-            '<span style="font-weight:600;color:var(--text-muted);min-width:140px">Append End</span>' +
-            '<input type="text" class="form-input" id="si-append-end" style="flex:1;width:auto" placeholder="tag1, tag2, etc" value="' + escapeHtml(scenario.append_end || '') + '">' +
-          '</div>' +
           snapshotRows +
         '</div>' +
       '</div>' +
 
       '<div class="modal-footer">' +
-        '<button class="btn btn-ghost" id="close-scene-info">Close</button>' +
-        '<button class="btn btn-primary" id="save-scene-info">Save</button>' +
+        '<button class="btn btn-primary" id="close-scene-info">Close</button>' +
       '</div>' +
     '</div>';
 
@@ -1860,374 +1794,6 @@ function showSceneInfo() {
 
   document.getElementById('close-scene-info').onclick = function () { overlay.classList.add('hidden'); };
   overlay.onclick = function (e) { if (e.target === overlay) overlay.classList.add('hidden'); };
-
-  document.getElementById('save-scene-info').onclick = function () {
-    var btn = document.getElementById('save-scene-info');
-    var payload = {
-      append_start:  document.getElementById('si-append-start').value.trim(),
-      append_middle: document.getElementById('si-append-middle').value.trim(),
-      append_end:    document.getElementById('si-append-end').value.trim(),
-    };
-    btn.disabled = true;
-    API.updateScenario(scenario.id, payload)
-      .then(function (updated) {
-        state.currentScenario = Object.assign({}, state.currentScenario, updated);
-        showToast('Scene info saved.', 'success');
-        overlay.classList.add('hidden');
-      })
-      .catch(function (err) { showToast('Save failed: ' + err.message, 'error'); })
-      .finally(function () { btn.disabled = false; });
-  };
-}
-
-function _loadSiPromptTab(scenarioId) {
-  var container = document.getElementById('si-prompt-content');
-  if (!container || container.dataset.loaded === '1') return;
-  container.dataset.loaded = '1';
-
-  var SI_WORKFLOWS  = ['story-sdxl-create', 'story-sdxl-consistency', 'story-sdxl-refiner', 'story-sdxl-faceid', 'story-sdxl-faceid-batch', 'story-sdxl-faceid-batch-control2'];
-  var SI_SAMPLERS   = [
-    'euler', 'euler_ancestral', 'heun', 'heunpp2', 'dpm_2', 'dpm_2_ancestral',
-    'lms', 'dpm_fast', 'dpm_adaptive', 'dpmpp_2s_ancestral', 'dpmpp_sde',
-    'dpmpp_sde_gpu', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_2m_sde_gpu',
-    'dpmpp_3m_sde', 'dpmpp_3m_sde_gpu', 'ddpm', 'lcm', 'ipndm', 'ipndm_v',
-    'deis', 'ddim', 'uni_pc', 'uni_pc_bh2', 'exp_heun_2_x0', 'ssa',
-    'res_multistep', 'res_multistep_ancestral'
-  ];
-  var SI_SCHEDULERS = [
-    'normal', 'karras', 'exponential', 'sgm_uniform', 'simple',
-    'ddim_uniform', 'beta', 'linear_quadratic', 'kl_optimal'
-  ];
-
-  function _siSelectOpts(list, cur, emptyLabel) {
-    var h = '<option value="">' + escapeHtml(emptyLabel) + '</option>';
-    list.forEach(function (v) {
-      h += '<option value="' + escapeHtml(v) + '"' + (v === cur ? ' selected' : '') + '>' + escapeHtml(v) + '</option>';
-    });
-    return h;
-  }
-
-  API.getScenarioPromptConstruction(scenarioId).then(function (data) {
-    var gc  = data.scenarioConfig  || {};
-    var gl  = data.globalConfig    || {};
-    var eff = data.effectiveConfig || {};
-
-    var prefixPlaceholder = gl.promptPrefix || 'Masterpiece, hyper-realistic, Hyper-realism, ultra-detailed, vibrant colors, rich contrast';
-    var suffixPlaceholder = gl.promptSuffix || 'perfect anatomy, perfect face, perfect hands, perfect body, sharp focus, 8k resolution';
-    var negPlaceholder    = gl.negativePrompt || '(from global default)';
-
-    var prefixMode  = gc.qualityPrefixMode  || 'override';
-    var suffixMode  = gc.qualitySuffixMode  || 'override';
-    var negMode     = gc.negativeMode       || 'override';
-
-    function _modeToggle(id, current) {
-      return '<div style="display:flex;gap:6px;margin-bottom:4px">' +
-        '<label style="display:flex;align-items:center;gap:3px;font-size:10px;cursor:pointer;color:var(--text-muted)">' +
-          '<input type="radio" name="' + id + '-mode" id="' + id + '-mode-override" value="override"' +
-            (current === 'override' ? ' checked' : '') + ' style="margin:0"> Override' +
-        '</label>' +
-        '<label style="display:flex;align-items:center;gap:3px;font-size:10px;cursor:pointer;color:var(--text-muted)">' +
-          '<input type="radio" name="' + id + '-mode" id="' + id + '-mode-append" value="append"' +
-            (current === 'append' ? ' checked' : '') + ' style="margin:0"> Append' +
-        '</label>' +
-      '</div>';
-    }
-
-    container.innerHTML =
-      '<div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">' +
-        'Override or append to prompt construction for this scenario. Leave blank to use the global default set in Settings.' +
-      '</div>' +
-
-      '<div class="pc-field" style="margin-bottom:14px">' +
-        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
-          '<input type="checkbox" id="si-pc-skip-enhance"' + (data.skip_enhance ? ' checked' : '') + '>' +
-          '<span style="font-weight:600;font-size:12px">Skip Scene Extraction</span>' +
-        '</label>' +
-        '<p class="text-muted" style="font-size:10px;margin:4px 0 0 22px">Uses character appearance directly instead of AI-analyzing the story text.</p>' +
-      '</div>' +
-
-      '<div class="pc-field">' +
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">' +
-          '<label class="pc-label" style="margin-bottom:0">Quality Prefix</label>' +
-          _modeToggle('si-pc-prefix', prefixMode) +
-        '</div>' +
-        '<textarea class="form-input pc-textarea" id="si-pc-prefix" rows="2" spellcheck="false" ' +
-          'placeholder="' + escapeHtml(prefixPlaceholder) + '">' +
-          escapeHtml(gc.qualityPrefix || '') +
-        '</textarea>' +
-      '</div>' +
-
-      '<div class="pc-field">' +
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">' +
-          '<label class="pc-label" style="margin-bottom:0">Quality Suffix</label>' +
-          _modeToggle('si-pc-suffix', suffixMode) +
-        '</div>' +
-        '<textarea class="form-input pc-textarea" id="si-pc-suffix" rows="2" spellcheck="false" ' +
-          'placeholder="' + escapeHtml(suffixPlaceholder) + '">' +
-          escapeHtml(gc.qualitySuffix || '') +
-        '</textarea>' +
-      '</div>' +
-
-      '<div class="pc-field">' +
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">' +
-          '<label class="pc-label" style="margin-bottom:0">Negative Prompt</label>' +
-          _modeToggle('si-pc-negative', negMode) +
-        '</div>' +
-        '<textarea class="form-input pc-textarea" id="si-pc-negative" rows="3" spellcheck="false" ' +
-          'placeholder="' + escapeHtml(negPlaceholder.slice(0, 80)) + '...">' +
-          escapeHtml(gc.negativeOverride || '') +
-        '</textarea>' +
-      '</div>' +
-
-      '<hr style="border:none;border-top:1px solid var(--border);margin:14px 0 10px">' +
-      '<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:var(--text)">Generation Parameters</div>' +
-      '<div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">' +
-        'Override workflow/steps/sampler for this scenario. Effective values (when no override) shown in placeholders.' +
-      '</div>' +
-
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">' +
-        '<div class="form-group" style="margin:0">' +
-          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
-            '<label class="form-label" style="margin:0">Workflow</label>' +
-            '<button type="button" class="btn btn-ghost btn-xs" id="si-pc-workflow-make-default" title="Set this workflow as the global default for all new scenarios" style="font-size:10px;padding:2px 7px">Make Default</button>' +
-          '</div>' +
-          '<select class="form-input" id="si-pc-workflow">' + _siSelectOpts(SI_WORKFLOWS, gc.workflow || '', 'Auto (effective: ' + escapeHtml(eff.workflow || 'story-sdxl-create') + ')') + '</select>' +
-        '</div>' +
-        '<div class="form-group" style="margin:0">' +
-          '<label class="form-label">Sampler</label>' +
-          '<select class="form-input" id="si-pc-sampler">' + _siSelectOpts(SI_SAMPLERS, gc.sampler || '', 'Auto (effective: ' + escapeHtml(eff.sampler || 'exp_heun_2_x0') + ')') + '</select>' +
-        '</div>' +
-      '</div>' +
-
-      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:10px">' +
-        '<div class="form-group" style="margin:0">' +
-          '<label class="form-label">Scheduler</label>' +
-          '<select class="form-input" id="si-pc-scheduler" style="min-width:0;font-size:11px">' + _siSelectOpts(SI_SCHEDULERS, gc.scheduler || '', 'Auto (' + escapeHtml(eff.scheduler || 'kl_optimal') + ')') + '</select>' +
-        '</div>' +
-        '<div class="form-group" style="margin:0">' +
-          '<label class="form-label">Steps</label>' +
-          '<input class="form-input" id="si-pc-steps" type="number" min="1" max="150" ' +
-            'placeholder="' + escapeHtml(String(eff.steps || 30)) + '" ' +
-            'value="' + escapeHtml(gc.steps != null ? String(gc.steps) : '') + '">' +
-        '</div>' +
-        '<div class="form-group" style="margin:0">' +
-          '<label class="form-label">CFG</label>' +
-          '<input class="form-input" id="si-pc-cfg" type="number" min="0" max="30" step="0.5" ' +
-            'placeholder="' + escapeHtml(String(eff.cfg || 7.5)) + '" ' +
-            'value="' + escapeHtml(gc.cfg != null ? String(gc.cfg) : '') + '">' +
-        '</div>' +
-        '<div class="form-group" style="margin:0">' +
-          '<label class="form-label">W x H</label>' +
-          '<div style="display:flex;gap:4px">' +
-            '<input class="form-input" id="si-pc-width" type="number" min="256" max="2048" step="8" ' +
-              'placeholder="' + escapeHtml(String(eff.width || 1024)) + '" ' +
-              'value="' + escapeHtml(gc.width != null ? String(gc.width) : '') + '" style="min-width:0">' +
-            '<input class="form-input" id="si-pc-height" type="number" min="256" max="2048" step="8" ' +
-              'placeholder="' + escapeHtml(String(eff.height || 1024)) + '" ' +
-              'value="' + escapeHtml(gc.height != null ? String(gc.height) : '') + '" style="min-width:0">' +
-          '</div>' +
-        '</div>' +
-      '</div>' +
-
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">' +
-        '<div class="form-group" style="margin:0">' +
-          '<label class="form-label" title="Fraction of total steps used by the base model (0.5–1.0). Remainder goes to the SDXL refiner. e.g. 0.8 = 80% base, 20% refiner. Only applies to workflows that use SeargeSDXLSamplerV3 (story-sdxl-faceid-batch-control2).">Refiner Base Ratio <span style="color:var(--text-faint);font-size:10px;font-weight:400">(0.0–1.0)</span></label>' +
-          '<input class="form-input" id="si-pc-refiner-ratio" type="number" min="0.1" max="1.0" step="0.05" ' +
-            'placeholder="' + escapeHtml(String(eff.refiner_base_ratio != null ? eff.refiner_base_ratio : 0.8)) + '" ' +
-            'value="' + escapeHtml(gc.refiner_base_ratio != null ? String(gc.refiner_base_ratio) : '') + '" ' +
-            'style="font-size:13px">' +
-          '<p class="form-hint" style="font-size:10px;margin:3px 0 0">Base pass share — higher = more base denoising, less refiner polish. Default 0.8.</p>' +
-        '</div>' +
-        '<div class="form-group" style="margin:0">' +
-          '<label class="form-label" title="Extra prep steps run by the refiner before the main refiner pass. Default 4. Only applies to SeargeSDXLSamplerV3 workflows.">Refiner Prep Steps</label>' +
-          '<input class="form-input" id="si-pc-refiner-prep" type="number" min="0" max="20" step="1" ' +
-            'placeholder="' + escapeHtml(String(eff.refiner_prep_steps != null ? eff.refiner_prep_steps : 4)) + '" ' +
-            'value="' + escapeHtml(gc.refiner_prep_steps != null ? String(gc.refiner_prep_steps) : '') + '" ' +
-            'style="font-size:13px">' +
-          '<p class="form-hint" style="font-size:10px;margin:3px 0 0">Warm-up steps before refiner pass. Default 4.</p>' +
-        '</div>' +
-      '</div>' +
-
-      '<div style="display:flex;gap:8px;margin-top:10px">' +
-        '<button class="btn btn-primary" id="si-pc-save-btn">Save Overrides</button>' +
-        '<button class="btn btn-ghost" id="si-pc-clear-btn">Clear All (use global)</button>' +
-      '</div>' +
-
-      '<hr style="border:none;border-top:1px solid var(--border);margin:16px 0 10px">' +
-      '<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:var(--text)">Character Consistency (FaceID)</div>' +
-      '<div class="pc-field" style="margin-bottom:10px">' +
-        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
-          '<input type="checkbox" id="si-pc-consistency-enabled"' + (gc.image_consistency_enabled ? ' checked' : '') + '>' +
-          '<span style="font-weight:600;font-size:12px">Enable Character Consistency</span>' +
-        '</label>' +
-        '<p class="text-muted" style="font-size:10px;margin:4px 0 0 22px">Uses the primary character\'s reference image. Generate one on the Characters page first.</p>' +
-      '</div>' +
-      '<div id="si-pc-consistency-row"' + (!gc.image_consistency_enabled ? ' style="display:none"' : '') + '>' +
-        '<div class="pc-field" style="margin-bottom:8px">' +
-          '<label class="pc-label" style="display:flex;justify-content:space-between">' +
-            '<span>Consistency Strength</span>' +
-            '<span id="si-pc-strength-val">' + (gc.consistency_strength != null ? Number(gc.consistency_strength).toFixed(2) : '0.50') + '</span>' +
-          '</label>' +
-          '<input type="range" id="si-pc-consistency-strength" min="0" max="0.8" step="0.05" ' +
-            'value="' + (gc.consistency_strength != null ? gc.consistency_strength : 0.5) + '" ' +
-            'style="width:100%;accent-color:var(--accent)">' +
-        '</div>' +
-      '</div>' +
-
-      (data.lastPrompt
-        ? '<div class="pc-field" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">' +
-            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
-              '<label class="pc-label" style="margin-bottom:0">Last Generated Prompt</label>' +
-              '<button class="btn btn-ghost btn-sm" id="si-pc-copy-prompt" style="font-size:11px;padding:2px 8px">Copy</button>' +
-            '</div>' +
-            '<p class="text-muted" style="font-size:10px;margin-bottom:6px">Read-only. Exact prompt sent for the most recent image in this scenario.</p>' +
-            '<textarea class="form-input pc-textarea" id="si-pc-last-prompt" rows="5" readonly style="opacity:0.7;resize:vertical">' + escapeHtml(data.lastPrompt) + '</textarea>' +
-          '</div>'
-        : '<div style="margin-top:12px;color:var(--text-muted);font-size:11px">No images generated yet in this scenario.</div>');
-
-    function _getMode(name) {
-      var el = document.querySelector('input[name="' + name + '-mode"]:checked');
-      return el ? el.value : 'override';
-    }
-
-    function _collectOverrides() {
-      var stepsRaw        = (document.getElementById('si-pc-steps').value         || '').trim();
-      var cfgRaw          = (document.getElementById('si-pc-cfg').value           || '').trim();
-      var widthRaw        = (document.getElementById('si-pc-width').value         || '').trim();
-      var heightRaw       = (document.getElementById('si-pc-height').value        || '').trim();
-      var refRatioRaw     = (document.getElementById('si-pc-refiner-ratio').value || '').trim();
-      var refPrepRaw      = (document.getElementById('si-pc-refiner-prep').value  || '').trim();
-      var skipEnhance     = document.getElementById('si-pc-skip-enhance').checked;
-      var conEnabled      = document.getElementById('si-pc-consistency-enabled').checked;
-      var conStrength     = parseFloat(document.getElementById('si-pc-consistency-strength').value);
-      var refRatioParsed  = refRatioRaw  ? Math.max(0.1, Math.min(1.0, Number(refRatioRaw)))  : null;
-      var refPrepParsed   = refPrepRaw   ? Math.max(0,   Math.min(20,  Math.round(Number(refPrepRaw)))) : null;
-      return {
-        skip_enhance:      skipEnhance,
-        qualityPrefix:     (document.getElementById('si-pc-prefix').value   || '').trim() || null,
-        qualityPrefixMode: _getMode('si-pc-prefix'),
-        qualitySuffix:     (document.getElementById('si-pc-suffix').value   || '').trim() || null,
-        qualitySuffixMode: _getMode('si-pc-suffix'),
-        negative_override: (document.getElementById('si-pc-negative').value || '').trim() || null,
-        negativeMode:      _getMode('si-pc-negative'),
-        workflow:  (document.getElementById('si-pc-workflow').value  || '') || null,
-        sampler:   (document.getElementById('si-pc-sampler').value   || '') || null,
-        scheduler: (document.getElementById('si-pc-scheduler').value || '') || null,
-        steps:     stepsRaw  ? Number(stepsRaw)  : null,
-        cfg:       cfgRaw    ? Number(cfgRaw)    : null,
-        width:     widthRaw  ? Number(widthRaw)  : null,
-        height:    heightRaw ? Number(heightRaw) : null,
-        refiner_base_ratio:  refRatioParsed,
-        refiner_prep_steps:  refPrepParsed,
-        image_consistency_enabled: conEnabled,
-        consistency_strength: Number.isFinite(conStrength) ? conStrength : 0.5,
-      };
-    }
-
-    var conCheck   = document.getElementById('si-pc-consistency-enabled');
-    var conRow     = document.getElementById('si-pc-consistency-row');
-    var conSlider  = document.getElementById('si-pc-consistency-strength');
-    var conValSpan = document.getElementById('si-pc-strength-val');
-    if (conCheck && conRow) {
-      conCheck.onchange = function () {
-        conRow.style.display = conCheck.checked ? '' : 'none';
-      };
-    }
-    if (conSlider && conValSpan) {
-      conSlider.oninput = function () {
-        conValSpan.textContent = parseFloat(conSlider.value).toFixed(2);
-      };
-    }
-
-    var makeDefaultBtn = document.getElementById('si-pc-workflow-make-default');
-    if (makeDefaultBtn) {
-      makeDefaultBtn.onclick = function () {
-        var selectedWorkflow = (document.getElementById('si-pc-workflow').value || '').trim();
-        if (!selectedWorkflow) {
-          showToast('Select a workflow first, then click Make Default.', 'error');
-          return;
-        }
-        makeDefaultBtn.disabled = true;
-        makeDefaultBtn.textContent = 'Saving...';
-        API.savePromptConstruction({ defaultWorkflow: selectedWorkflow })
-          .then(function () {
-            showToast('\u201c' + selectedWorkflow + '\u201d is now the global default workflow.', 'success');
-          })
-          .catch(function (e) { showToast('Failed to set default: ' + e.message, 'error'); })
-          .finally(function () {
-            makeDefaultBtn.disabled = false;
-            makeDefaultBtn.textContent = 'Make Default';
-          });
-      };
-    }
-
-    document.getElementById('si-pc-save-btn').onclick = function () {
-      var btn = document.getElementById('si-pc-save-btn');
-      btn.disabled = true;
-      btn.textContent = 'Saving...';
-      API.updateScenarioImageConfig(scenarioId, _collectOverrides())
-        .then(function () { showToast('Prompt overrides saved.', 'success'); })
-        .catch(function (e) { showToast('Save failed: ' + e.message, 'error'); })
-        .finally(function () { btn.disabled = false; btn.textContent = 'Save Overrides'; });
-    };
-
-    var copyBtn = document.getElementById('si-pc-copy-prompt');
-    if (copyBtn) {
-      copyBtn.onclick = function () {
-        var ta = document.getElementById('si-pc-last-prompt');
-        if (!ta) return;
-        navigator.clipboard.writeText(ta.value)
-          .then(function () { showToast('Prompt copied.', 'success'); })
-          .catch(function () {
-            ta.select();
-            document.execCommand('copy');
-            showToast('Prompt copied.', 'success');
-          });
-      };
-    }
-    document.getElementById('si-pc-clear-btn').onclick = function () {
-      document.getElementById('si-pc-prefix').value    = '';
-      document.getElementById('si-pc-suffix').value    = '';
-      document.getElementById('si-pc-negative').value  = '';
-      document.getElementById('si-pc-workflow').value       = '';
-      document.getElementById('si-pc-sampler').value        = '';
-      document.getElementById('si-pc-scheduler').value      = '';
-      document.getElementById('si-pc-steps').value          = '';
-      document.getElementById('si-pc-cfg').value            = '';
-      document.getElementById('si-pc-width').value          = '';
-      document.getElementById('si-pc-height').value         = '';
-      document.getElementById('si-pc-refiner-ratio').value  = '';
-      document.getElementById('si-pc-refiner-prep').value   = '';
-      document.getElementById('si-pc-skip-enhance').checked = false;
-      var conCheckEl = document.getElementById('si-pc-consistency-enabled');
-      var conRowEl   = document.getElementById('si-pc-consistency-row');
-      if (conCheckEl) conCheckEl.checked = false;
-      if (conRowEl)   conRowEl.style.display = 'none';
-      var btn = document.getElementById('si-pc-save-btn');
-      btn.disabled = true;
-      btn.textContent = 'Saving...';
-      API.updateScenarioImageConfig(scenarioId, {
-        skip_enhance: false,
-        qualityPrefix: null, qualityPrefixMode: 'override',
-        qualitySuffix: null, qualitySuffixMode: 'override',
-        negative_override: null, negativeMode: 'override',
-        workflow: null, sampler: null, scheduler: null,
-        steps: null, cfg: null, width: null, height: null,
-        refiner_base_ratio: null, refiner_prep_steps: null,
-        image_consistency_enabled: false, consistency_strength: null
-      }).then(function () {
-        showToast('Overrides cleared.', 'success');
-      }).catch(function (e) {
-        showToast('Clear failed: ' + e.message, 'error');
-      }).finally(function () {
-        btn.disabled = false;
-        btn.textContent = 'Save Overrides';
-      });
-    };
-
-  }).catch(function (e) {
-    container.innerHTML = '<p class="text-muted">Failed to load: ' + escapeHtml(e.message) + '</p>';
-  });
 }
 
 function showRecapPanel(recap) {
@@ -2274,7 +1840,7 @@ function renderMemoryTab(container, scenarioId) {
     var memData    = results[1];
     var memories   = Array.isArray(memData) ? memData : (memData.memories || []);
     var manualMems = memories.filter(function (m) { return m.memory_type === 'manual'; });
-    var summary    = null; // auto-summary field not in A1111 backend turns
+    var summary    = null; // auto-summary field not present on turns
 
     container.innerHTML =
       '<div class="sidebar-tab-content">' +
@@ -2512,9 +2078,16 @@ function renderRulesTab(container, scenarioId) {
 
 function renderCastTab(container, scenarioId) {
   _loadCharacterStates(scenarioId).then(function () {
-    return API.getScenarioCharacters(scenarioId);
-  }).then(function (data) {
+    return Promise.all([
+      API.getScenarioCharacters(scenarioId),
+      API.getRelationships(),
+      API.getScenarioRelationships(scenarioId),
+    ]);
+  }).then(function (results) {
+    var data = results[0];
     var chars = Array.isArray(data) ? data : [];
+    var charIds = new Set(chars.map(function (c) { return c.id; }));
+    _cachedRelationships = _mergeScenarioRelationships(results[1] || [], results[2] || [], charIds);
     chars.forEach(function (c) {
       if (!state.characterStates[c.id]) state.characterStates[c.id] = {};
       state.characterStates[c.id].current_clothing = String(c.scenario_clothing || c.current_clothing || c.starting_clothing || '').trim();
@@ -2533,6 +2106,7 @@ function renderCastTab(container, scenarioId) {
           '<h4>Cast</h4>' +
           '<button class="btn btn-ghost btn-xs" id="cast-tab-add-btn" title="Add a character to this story">+ Add</button>' +
         '</div>' +
+        (_playConfigEnabled('scene_heat_readout_enabled', true) ? '<div id="cast-scene-heat" style="font-size:11px;color:var(--text-muted);margin-bottom:6px"></div>' : '') +
         '<div id="cast-tab-add-panel" style="display:none;padding:6px 0 8px">' +
           '<input type="text" class="form-input" id="cast-tab-search" placeholder="Search characters..." style="font-size:12px;margin-bottom:4px">' +
           '<div id="cast-tab-avail-list" style="max-height:160px;overflow-y:auto"></div>' +
@@ -2554,6 +2128,8 @@ function renderCastTab(container, scenarioId) {
                       ? '<div class="cast-card-notes">' + escapeHtml(c.appearance_notes.slice(0, 80)) + (c.appearance_notes.length > 80 ? '…' : '') + '</div>'
                       : '') +
                     (isNpc ? _buildMoodBarsHtml(c.id) + _buildClothingHtml(c.id) : '') +
+                    _buildTriggerChipsHtml(c) +
+                    _buildBondFocusHtml(c.id, chars, _cachedRelationships) +
                   '</div>' +
                   '<button class="btn btn-ghost btn-xs cast-tab-remove-btn" ' +
                     'data-char-id="' + c.id + '" data-char-name="' + escapeHtml(c.name) + '" ' +
@@ -2611,7 +2187,6 @@ function renderCastTab(container, scenarioId) {
             .then(function () {
               showToast(charName + ' removed.', 'info');
               renderCastTab(container, scenarioId);
-              if (_reloadPortraitPanel) reloadPromptPanelTargets(); refreshPromptPreview();
             })
             .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
         });
@@ -2677,6 +2252,17 @@ function renderCastTab(container, scenarioId) {
       closeBtn.onclick = function () { if (addPanel) addPanel.style.display = 'none'; };
     }
 
+    container.querySelectorAll('.bond-focus-btn').forEach(function (btn) {
+      btn.onclick = function () {
+        var gi = document.getElementById('guidance-input');
+        if (gi) {
+          gi.value = btn.getAttribute('data-focus-text') || '';
+          gi.focus();
+        }
+      };
+    });
+    refreshSceneHeatReadout();
+
   }).catch(function (e) {
     container.innerHTML = '<div class="error-state">Failed: ' + escapeHtml(e.message) + '</div>';
   });
@@ -2691,25 +2277,31 @@ function renderRelationshipsTab(container, scenarioId) {
     'mentor', 'student', 'cousin', 'mother', 'father', 'brother',
     'sister', 'neighbor',
   ];
+  var REL_TAGS = ['attraction', 'trust', 'tension', 'history', 'taboo'];
 
   Promise.all([
     API.getRelationships(),
+    API.getScenarioRelationships(scenarioId),
     API.getScenarioCharacters(scenarioId),
   ]).then(function (results) {
-    var allRels = Array.isArray(results[0]) ? results[0] : [];
-    var chars   = Array.isArray(results[1]) ? results[1] : [];
+    var globals = Array.isArray(results[0]) ? results[0] : [];
+    var scenarioRels = Array.isArray(results[1]) ? results[1] : [];
+    var chars = Array.isArray(results[2]) ? results[2] : [];
     var charIds = new Set(chars.map(function (c) { return c.id; }));
-    // Filter to relationships where BOTH characters are in this scenario's cast
-    var rels = allRels.filter(function (r) {
-      return charIds.has(r.from_character_id) && charIds.has(r.to_character_id);
-    });
+    var rels = _mergeScenarioRelationships(globals, scenarioRels, charIds);
+    _cachedRelationships = rels.slice();
 
     var charOpts = chars.map(function (c) {
       return '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>';
     }).join('');
-
     var typeOpts = REL_TYPES.map(function (t) {
       return '<option value="' + t + '">' + t[0].toUpperCase() + t.slice(1) + '</option>';
+    }).join('');
+    var tagChecks = REL_TAGS.map(function (t) {
+      return '<label style="font-size:11px;cursor:pointer"><input type="checkbox" class="rel-tag-cb" value="' + t + '"> ' + t + '</label>';
+    }).join(' ');
+    var strengthOpts = [1, 2, 3, 4, 5].map(function (s) {
+      return '<option value="' + s + '"' + (s === 3 ? ' selected' : '') + '>' + s + '</option>';
     }).join('');
 
     container.innerHTML =
@@ -2718,33 +2310,38 @@ function renderRelationshipsTab(container, scenarioId) {
           '<h4>Relationships</h4>' +
           '<button class="btn btn-ghost btn-xs" id="btn-add-rel">+ Add</button>' +
         '</div>' +
-
         '<div id="rel-add-form" style="display:none;padding:6px 0 8px;border-bottom:1px solid var(--border);margin-bottom:8px">' +
-          '<select class="form-input" id="rel-from" style="font-size:12px;margin-bottom:4px">' +
-            '<option value="">From...</option>' + charOpts +
-          '</select>' +
-          '<select class="form-input" id="rel-to" style="font-size:12px;margin-bottom:4px">' +
-            '<option value="">To...</option>' + charOpts +
-          '</select>' +
+          '<input type="hidden" id="rel-edit-id" value="">' +
+          '<input type="hidden" id="rel-edit-source" value="">' +
+          '<select class="form-input" id="rel-from" style="font-size:12px;margin-bottom:4px"><option value="">From...</option>' + charOpts + '</select>' +
+          '<select class="form-input" id="rel-to" style="font-size:12px;margin-bottom:4px"><option value="">To...</option>' + charOpts + '</select>' +
           '<select class="form-input" id="rel-type" style="font-size:12px;margin-bottom:4px">' + typeOpts + '</select>' +
-          '<input type="text" class="form-input" id="rel-desc" placeholder="Description (optional)" style="font-size:12px;margin-bottom:6px">' +
+          '<select class="form-input" id="rel-strength" style="font-size:12px;margin-bottom:4px;width:80px" title="Intensity 1-5">' + strengthOpts + '</select>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:4px">' + tagChecks + '</div>' +
+          '<input type="text" class="form-input" id="rel-desc" placeholder="Description (optional)" style="font-size:12px;margin-bottom:4px">' +
+          '<label style="font-size:11px;display:block;margin-bottom:6px;cursor:pointer"><input type="checkbox" id="rel-scenario-override"> Save as scenario override</label>' +
           '<div style="display:flex;gap:6px">' +
             '<button class="btn btn-ghost btn-xs" id="rel-form-cancel">Cancel</button>' +
             '<button class="btn btn-primary btn-xs" id="rel-form-save">Save</button>' +
           '</div>' +
         '</div>' +
-
         '<div class="rel-list">' +
           (rels.length
             ? rels.map(function (r) {
-                return '<div class="rel-entry" data-rel-id="' + r.id + '" ' +
+                var tagStr = (r.tags && r.tags.length) ? r.tags.join(', ') : '';
+                var badge = r._source === 'scenario' ? 'scenario' : 'global';
+                return '<div class="rel-entry" data-rel-id="' + r.id + '" data-rel-source="' + badge + '" ' +
                   'style="display:flex;flex-direction:column;padding:6px 0;border-bottom:1px solid var(--border)">' +
                   '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">' +
                     '<strong style="font-size:12px">' + escapeHtml(r.from_name) + '</strong>' +
                     '<span style="font-size:10px;padding:1px 5px;border-radius:8px;background:var(--bg-secondary);color:var(--text-muted)">' + escapeHtml(r.relationship_type) + '</span>' +
                     '<strong style="font-size:12px">' + escapeHtml(r.to_name) + '</strong>' +
-                    '<button class="btn-rel-delete" data-rel-id="' + r.id + '" ' +
-                      'style="margin-left:auto;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1;padding:0 2px" title="Delete">&#215;</button>' +
+                    '<span class="badge badge-xs ' + (badge === 'scenario' ? 'badge-accent' : 'badge-muted') + '">' + badge + '</span>' +
+                    '<span style="font-size:10px;color:var(--text-muted)">[' + (r.strength || 3) + '/5]</span>' +
+                    (tagStr ? '<span style="font-size:10px;color:var(--text-muted)">(' + escapeHtml(tagStr) + ')</span>' : '') +
+                    '<button class="btn-rel-edit" data-rel-id="' + r.id + '" data-rel-source="' + badge + '" style="margin-left:auto;background:none;border:none;color:var(--accent);cursor:pointer;font-size:11px">Edit</button>' +
+                    '<button class="btn-rel-delete" data-rel-id="' + r.id + '" data-rel-source="' + badge + '" ' +
+                      'style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1;padding:0 2px" title="Delete">&#215;</button>' +
                   '</div>' +
                   (r.description ? '<span style="font-size:11px;color:var(--text-muted);margin-top:2px">' + escapeHtml(r.description) + '</span>' : '') +
                 '</div>';
@@ -2754,39 +2351,79 @@ function renderRelationshipsTab(container, scenarioId) {
         '</div>' +
       '</div>';
 
-    var addBtn  = container.querySelector('#btn-add-rel');
+    function _getRelTags() {
+      var tags = [];
+      container.querySelectorAll('.rel-tag-cb:checked').forEach(function (cb) { tags.push(cb.value); });
+      return tags;
+    }
+    function _setRelTags(tags) {
+      var set = {};
+      (tags || []).forEach(function (t) { set[String(t).toLowerCase()] = true; });
+      container.querySelectorAll('.rel-tag-cb').forEach(function (cb) { cb.checked = !!set[cb.value]; });
+    }
+    function _clearRelForm() {
+      var editId = container.querySelector('#rel-edit-id');
+      var editSrc = container.querySelector('#rel-edit-source');
+      if (editId) editId.value = '';
+      if (editSrc) editSrc.value = '';
+      var saveBtn = container.querySelector('#rel-form-save');
+      if (saveBtn) saveBtn.textContent = 'Save';
+    }
+
+    var addBtn = container.querySelector('#btn-add-rel');
     var addForm = container.querySelector('#rel-add-form');
     if (addBtn && addForm) {
       addBtn.onclick = function () {
         var open = addForm.style.display !== 'none';
-        addForm.style.display = open ? 'none' : '';
+        if (open) { addForm.style.display = 'none'; _clearRelForm(); }
+        else { addForm.style.display = ''; _clearRelForm(); _setRelTags([]); }
       };
     }
-
     var cancelBtn = container.querySelector('#rel-form-cancel');
     if (cancelBtn) {
-      cancelBtn.onclick = function () { if (addForm) addForm.style.display = 'none'; };
+      cancelBtn.onclick = function () { if (addForm) addForm.style.display = 'none'; _clearRelForm(); };
     }
 
     var saveBtn = container.querySelector('#rel-form-save');
     if (saveBtn) {
       saveBtn.onclick = function () {
         var fromEl = container.querySelector('#rel-from');
-        var toEl   = container.querySelector('#rel-to');
+        var toEl = container.querySelector('#rel-to');
         var typeEl = container.querySelector('#rel-type');
+        var strEl = container.querySelector('#rel-strength');
         var descEl = container.querySelector('#rel-desc');
-        var from   = fromEl ? fromEl.value : '';
-        var to     = toEl   ? toEl.value   : '';
-        if (!from || !to)  { showToast('Select both characters.', 'error'); return; }
-        if (from === to)   { showToast('A character cannot have a relationship with themselves.', 'error'); return; }
-        saveBtn.disabled = true;
-        API.createRelationship({
-          from_character_id: Number(from),
-          to_character_id:   Number(to),
+        var overrideEl = container.querySelector('#rel-scenario-override');
+        var editIdEl = container.querySelector('#rel-edit-id');
+        var editSrcEl = container.querySelector('#rel-edit-source');
+        var from = fromEl ? Number(fromEl.value) : 0;
+        var to = toEl ? Number(toEl.value) : 0;
+        if (!from || !to) { showToast('Select both characters.', 'error'); return; }
+        if (from === to) { showToast('A character cannot have a relationship with themselves.', 'error'); return; }
+        var payload = {
+          from_character_id: from,
+          to_character_id: to,
           relationship_type: typeEl ? typeEl.value : 'friend',
-          description:       descEl ? descEl.value.trim() : '',
-        }).then(function () {
-          showToast('Relationship added!', 'success');
+          description: descEl ? descEl.value.trim() : '',
+          strength: strEl ? Number(strEl.value) : 3,
+          tags: _getRelTags(),
+        };
+        var editId = editIdEl ? Number(editIdEl.value) : 0;
+        var editSource = editSrcEl ? editSrcEl.value : '';
+        var asScenario = overrideEl && overrideEl.checked;
+        var useScenarioApi = asScenario || editSource === 'scenario';
+        saveBtn.disabled = true;
+        var req;
+        if (editId) {
+          req = useScenarioApi
+            ? API.updateScenarioRelationship(scenarioId, editId, payload)
+            : API.updateRelationship(editId, payload);
+        } else {
+          req = useScenarioApi
+            ? API.createScenarioRelationship(scenarioId, payload)
+            : API.createRelationship(payload);
+        }
+        req.then(function () {
+          showToast(editId ? 'Relationship updated.' : 'Relationship added!', 'success');
           renderRelationshipsTab(container, scenarioId);
         }).catch(function (err) {
           saveBtn.disabled = false;
@@ -2795,21 +2432,47 @@ function renderRelationshipsTab(container, scenarioId) {
       };
     }
 
+    container.querySelectorAll('.btn-rel-edit').forEach(function (btn) {
+      btn.onclick = function () {
+        var rid = Number(btn.dataset.relId);
+        var rel = rels.find(function (r) { return Number(r.id) === rid; });
+        if (!rel || !addForm) return;
+        addForm.style.display = '';
+        var editId = container.querySelector('#rel-edit-id');
+        var editSrc = container.querySelector('#rel-edit-source');
+        if (editId) editId.value = String(rid);
+        if (editSrc) editSrc.value = rel._source || 'global';
+        var fromEl = container.querySelector('#rel-from');
+        var toEl = container.querySelector('#rel-to');
+        if (fromEl) fromEl.value = String(rel.from_character_id);
+        if (toEl) toEl.value = String(rel.to_character_id);
+        var typeEl = container.querySelector('#rel-type');
+        if (typeEl) typeEl.value = rel.relationship_type || 'friend';
+        var strEl = container.querySelector('#rel-strength');
+        if (strEl) strEl.value = String(rel.strength || 3);
+        _setRelTags(rel.tags || []);
+        var descEl = container.querySelector('#rel-desc');
+        if (descEl) descEl.value = rel.description || '';
+        var overrideEl = container.querySelector('#rel-scenario-override');
+        if (overrideEl) overrideEl.checked = rel._source === 'scenario';
+        var saveBtn2 = container.querySelector('#rel-form-save');
+        if (saveBtn2) saveBtn2.textContent = 'Update';
+      };
+    });
+
     container.querySelectorAll('.btn-rel-delete').forEach(function (btn) {
       btn.onclick = function () {
         if (!confirm('Delete this relationship?')) return;
         btn.disabled = true;
-        API.deleteRelationship(Number(btn.dataset.relId))
-          .then(function () {
-            var entry = btn.closest('.rel-entry');
-            if (entry) entry.parentNode.removeChild(entry);
-            showToast('Relationship removed.', 'info');
-            var list = container.querySelector('.rel-list');
-            if (list && !list.querySelectorAll('.rel-entry').length) {
-              list.innerHTML = '<div class="empty-state small">No relationships defined yet.</div>';
-            }
-          })
-          .catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
+        var rid = Number(btn.dataset.relId);
+        var src = btn.dataset.relSource;
+        var delReq = src === 'scenario'
+          ? API.deleteScenarioRelationship(scenarioId, rid)
+          : API.deleteRelationship(rid);
+        delReq.then(function () {
+          showToast('Relationship removed.', 'info');
+          renderRelationshipsTab(container, scenarioId);
+        }).catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
       };
     });
 
@@ -2817,7 +2480,6 @@ function renderRelationshipsTab(container, scenarioId) {
     container.innerHTML = '<div class="error-state">Failed: ' + escapeHtml(e.message) + '</div>';
   });
 }
-
 
 /* ============================================================
    LOCATION SIDEBAR TAB
@@ -2859,7 +2521,7 @@ function renderLocationTab(container, scenarioId) {
   container.innerHTML =
     '<div style="padding:4px 0">' +
       '<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">' +
-        'Set the active location to use its background images during generation.' +
+        'Set the active location for narrator context.' +
       '</div>' +
       buildItems() +
     '</div>';
@@ -3067,186 +2729,25 @@ function handleMoodUpdate(data) {
     if (!state.characterStates[c.characterId]) state.characterStates[c.characterId] = {};
     state.characterStates[c.characterId].moodcurrent    = c.moodcurrent;
     state.characterStates[c.characterId].arousalcurrent = c.arousalcurrent;
-    // Update existing mood bars in DOM without full re-render
     var containers = document.querySelectorAll('.mood-bars[data-char-id="' + c.characterId + '"]');
     containers.forEach(function (el) {
       el.outerHTML = _buildMoodBarsHtml(c.characterId);
     });
   });
+  if (data.gates && _playConfigEnabled('mood_gate_toasts_enabled', true)) {
+    var gates = Array.isArray(data.gates) ? data.gates : [data.gates];
+    gates.forEach(function (g) {
+      var msg = typeof g === 'string' ? g : (g && (g.message || g.text || g.reason));
+      if (msg) showToast(String(msg), 'info');
+    });
+  }
+  refreshSceneHeatReadout();
 }
 
 /* ============================================================
-   WEBSOCKET — live push from server (image_ready events etc.)
+   WEBSOCKET — live push from server
    ============================================================ */
 
-function handleImageReady(data) {
-  var turnId        = data.turnId;
-  var scenarioId    = data.scenarioId;
-  var imageFilename = data.filename || data.imageFilename;
-  var imageId       = data.imageId || null;
-  if (!imageFilename) return;
-
-  if (!state.currentScenario || state.currentScenario.id !== scenarioId) return;
-
-  if (!turnId) {
-    setImgStatus(null);
-    showToast('Image generated.', 'success');
-    return;
-  }
-
-  var turn = state.turns.find(function (t) { return String(t.id) === String(turnId); });
-  if (!turn) { console.warn('handleImageReady: turn not found in state', turnId); return; }
-  turn.image_filename      = imageFilename;
-  turn.image_visual_prompt = data.visualPrompt || '';
-  if (imageId) turn.image_id = imageId;
-
-  var el   = document.querySelector('[data-turn-id="' + turnId + '"]');
-  var slot = el ? el.querySelector('.turn-image-slot') : null;
-  if (slot) {
-    // Clear pending indicator from turn footer if present
-    var pending = el.querySelector('.turn-img-pending');
-    if (pending) pending.parentNode.removeChild(pending);
-    // Prepend the new image card — never replace existing images.
-    // Each generation adds a new card; the delete button on old cards lets users clean up.
-    var newCard = document.createElement('div');
-    newCard.innerHTML = buildTurnImageHtml({
-      filename:          turn.image_filename,
-      imageId:           turn.image_id           || null,
-      visualPrompt:      turn.image_visual_prompt || '',
-      videostatus:       turn.image_videostatus   || '',
-      videoclipfilename: turn.image_videoclipfilename || ''
-    });
-    slot.insertBefore(newCard.firstChild, slot.firstChild);
-  } else {
-    renderAllTurns();
-  }
-
-  setImgStatus(null);
-  onPromptPanelImageReady({ turnId: turnId, imageId: imageId, filename: imageFilename, scenarioId: scenarioId });
-  scrollThreadToBottom();
-}
-
-function handleSceneImageReady(data) {
-  var turnId       = data.turnId;
-  var filename     = data.filename;
-  var imageId      = data.imageId      || null;
-  var visualPrompt = data.visualPrompt || '';
-  if (!turnId || !filename) return;
-
-  if (!state.currentScenario) return;
-
-  var turn = state.turns.find(function (t) { return String(t.id) === String(turnId); });
-  if (!turn) { console.warn('handleSceneImageReady: turn not found in state', turnId); return; }
-  turn.image_filename      = filename;
-  turn.image_id            = imageId;
-  turn.image_visual_prompt = visualPrompt;
-
-  var el   = document.querySelector('[data-turn-id="' + turnId + '"]');
-  var slot = el ? el.querySelector('.turn-image-slot') : null;
-  if (slot) {
-    // Clear pending indicator from turn footer if present
-    var pending = el.querySelector('.turn-img-pending');
-    if (pending) pending.parentNode.removeChild(pending);
-    // Prepend the new image card
-    var newCard = document.createElement('div');
-    newCard.innerHTML = buildTurnImageHtml({
-      filename:          turn.image_filename,
-      imageId:           turn.image_id           || null,
-      visualPrompt:      turn.image_visual_prompt || '',
-      videostatus:       '',
-      videoclipfilename: ''
-    });
-    slot.insertBefore(newCard.firstChild, slot.firstChild);
-  } else {
-    renderAllTurns();
-  }
-
-  setImgStatus(null);
-  if (imageId) {
-    onPromptPanelImageReady({ turnId: turnId, imageId: imageId, filename: filename, scenarioId: state.currentScenario.id });
-  }
-  scrollThreadToBottom();
-}
-
-function handleVideoStatus(data) {
-  var imgId = data.imageId;
-  if (!imgId) return;
-  // Right-side panel
-  var cached = state._sceneImageCache[imgId];
-  if (cached) {
-    cached.videostatus = data.status;
-    state._sceneImageCache[imgId] = cached;
-    if (state.currentImageId === imgId) {
-      state.currentImageData = cached;
-      refreshAnimatePanel();
-    }
-  }
-  // Thread card
-  var threadCard = document.querySelector('.turn-image[data-image-id="' + imgId + '"]');
-  _updateThreadImageVideoUi(threadCard, { videostatus: data.status });
-}
-
-function handleVideoReady(data) {
-  var imgId = data.imageId;
-  if (!imgId) return;
-  // Right-side panel
-  var cached = Object.assign({}, state._sceneImageCache[imgId] || {});
-  cached.videostatus       = 'ready';
-  cached.videoclipfilename = data.videoFilename;
-  cached.videomodel        = data.videomodel;
-  state._sceneImageCache[imgId] = cached;
-  if (state.currentImageId === imgId) {
-    state.currentImageData = cached;
-    displayImage(cached);
-  }
-  // Thread card
-  var threadCard = document.querySelector('.turn-image[data-image-id="' + imgId + '"]');
-  _updateThreadImageVideoUi(threadCard, { videostatus: 'ready', videoclipfilename: data.videoFilename });
-  showToast('Clip ready!', 'success');
-}
-
-function handleVideoError(data) {
-  var imgId = data.imageId;
-  if (!imgId) return;
-  // Right-side panel
-  var cached = Object.assign({}, state._sceneImageCache[imgId] || {});
-  cached.videostatus = 'error';
-  state._sceneImageCache[imgId] = cached;
-  if (state.currentImageId === imgId) {
-    state.currentImageData = cached;
-    refreshAnimatePanel();
-  }
-  // Thread card
-  var threadCard = document.querySelector('.turn-image[data-image-id="' + imgId + '"]');
-  _updateThreadImageVideoUi(threadCard, { videostatus: 'error' });
-  showToast('Clip generation failed.', 'error');
-}
-
-function handleImageError(data) {
-  setImgStatus(null);
-  var message = data.message || 'unknown error';
-
-  // Show inline error on the latest narrator turn card.
-  var allNarrTurns = document.querySelectorAll('.turn-narrator[data-turn-id]');
-  var target = allNarrTurns.length ? allNarrTurns[allNarrTurns.length - 1] : null;
-  if (target) {
-    var pending = target.querySelector('.turn-img-pending');
-    if (pending) {
-      pending.className = 'turn-img-error';
-      pending.textContent = 'Image failed: ' + message;
-    } else {
-      var errFooter = target.querySelector('.turn-footer');
-      if (errFooter) {
-        var errEl = document.createElement('span');
-        errEl.className = 'turn-img-error';
-        errEl.textContent = 'Image failed: ' + message;
-        errFooter.appendChild(errEl);
-      }
-    }
-  }
-
-  showToast('Image generation failed: ' + message, 'error');
-}
 // === WS CONNECTION (merged from play-ws-patch.js -- May 12 2026) ===
 
 // ---------------------------------------------------------------------------
@@ -3285,15 +2786,6 @@ export function connectWs() {
 
     switch (data.type) {
 
-      case 'image_status':
-        setImgStatus((data.payload && data.payload.message) || data.message || null);
-        break;
-
-      case 'image_ready':
-        // broadcast wraps the payload as data.payload; support both shapes
-        handleImageReady(data.payload ? Object.assign({}, data.payload, data) : data);
-        break;
-
       case 'turn_complete': {
         var tcPayload = data.payload || data;
         if (tcPayload.clothing_updates && tcPayload.clothing_updates.length) {
@@ -3303,32 +2795,18 @@ export function connectWs() {
         break;
       }
 
-      case 'scene_summary_ready': {
-        var ssPayload = data.payload || data;
-        if (ssPayload.turn && state.currentScenario && ssPayload.scenarioId === state.currentScenario.id) {
-          refreshPromptPreview();
+      case 'turn_regenerated': {
+        var trPayload = data.payload || data;
+        if (!trPayload.turn || !state.currentScenario) break;
+        if (Number(trPayload.scenarioId) !== Number(state.currentScenario.id)) break;
+        if (trPayload.clothing_updates && trPayload.clothing_updates.length) {
+          handleClothingUpdate({ scenarioId: trPayload.scenarioId, characters: trPayload.clothing_updates });
         }
-        break;
-      }
-
-      // Alternate event shape from some backend paths
-      case 'sceneimage':
-        handleImageReady({
-          turnId:        data.turnId,
-          imageFilename: data.filename || data.imageFilename,
-          imageId:       data.imageId,
-          visualPrompt:  data.visualPrompt
-        });
-        break;
-
-      case 'image_error': {
-        var errMsg = (data.payload && data.payload.error) || data.message || 'Image generation failed';
-        setImgStatus(null);
-        showToast(errMsg, 'error');
-        document.querySelectorAll('.turn-img-pending').forEach(function (el) {
-          el.className = 'turn-img-error';
-          el.textContent = 'Image failed: ' + errMsg;
-        });
+        var trMapped = Object.assign({ speaker: trPayload.turn.role || 'narrator' }, trPayload.turn);
+        _upsertTurnInState(trMapped);
+        replaceOrAppendTurnElement(trMapped);
+        _lastIngestedNarratorId = trPayload.turn.id;
+        removeTypingIndicator();
         break;
       }
 
@@ -3340,46 +2818,13 @@ export function connectWs() {
         break;
       }
 
-      case 'videostatus': {
-        var vsId = data.imageId;
-        if (!vsId) break;
-        var vsCard = document.querySelector('.turn-image[data-image-id="' + vsId + '"]');
-        if (vsCard) _updateThreadImageVideoUi(vsCard, { videostatus: data.status });
-        if (state._sceneImageCache && state._sceneImageCache[vsId]) state._sceneImageCache[vsId].videostatus = data.status;
-        if (state.currentImageData && state.currentImageData.id === vsId) {
-          state.currentImageData.videostatus = data.status;
-          if (window._refreshAnimatePanel) window._refreshAnimatePanel();
-        }
-        break;
-      }
-
-      case 'videoready': {
-        var vrId = data.imageId;
-        var vrFn = data.videoFilename || data.videoclipfilename || '';
-        if (!vrId) break;
-        var vrCard = document.querySelector('.turn-image[data-image-id="' + vrId + '"]');
-        if (vrCard) _updateThreadImageVideoUi(vrCard, { videostatus: 'ready', videoclipfilename: vrFn });
-        if (state._sceneImageCache && state._sceneImageCache[vrId]) {
-          state._sceneImageCache[vrId].videostatus = 'ready';
-          state._sceneImageCache[vrId].videoclipfilename = vrFn;
-        }
-        if (state.currentImageData && state.currentImageData.id === vrId) {
-          state.currentImageData.videostatus = 'ready';
-          state.currentImageData.videoclipfilename = vrFn;
-          if (window._refreshAnimatePanel) window._refreshAnimatePanel();
-        }
-        break;
-      }
-
-      case 'videoerror': {
-        var veId = data.imageId;
-        if (!veId) break;
-        var veCard = document.querySelector('.turn-image[data-image-id="' + veId + '"]');
-        if (veCard) _updateThreadImageVideoUi(veCard, { videostatus: 'error' });
-        if (state._sceneImageCache && state._sceneImageCache[veId]) state._sceneImageCache[veId].videostatus = 'error';
-        if (state.currentImageData && state.currentImageData.id === veId) {
-          state.currentImageData.videostatus = 'error';
-          if (window._refreshAnimatePanel) window._refreshAnimatePanel();
+      case 'relationshipupdate': {
+        var ruPayload = data.payload || data;
+        if (state.currentScenario && Number(ruPayload.scenarioId) === Number(state.currentScenario.id)) {
+          if (state.currentSidebarTab === 'rel' || state.currentSidebarTab === 'cast') {
+            var sidebar = document.getElementById('sidebar-content');
+            if (sidebar) loadSidebarTab(state.currentSidebarTab, state.currentScenario.id);
+          }
         }
         break;
       }
@@ -3392,10 +2837,28 @@ export function connectWs() {
         break;
       }
 
+      // Image generation always completes over WS, even if the requesting
+      // browser tab moved on — insert into the originating turn's panel if
+      // it's still on screen (harmless no-op otherwise).
+      case 'imageready': {
+        var irPayload = data.payload || data;
+        if (state.currentScenario && Number(irPayload.scenarioId) === Number(state.currentScenario.id) && irPayload.image) {
+          var irTurnId = irPayload.turnId;
+          // Prefer the page-level image sidebar when it is open on this turn
+          var irResultEl = null;
+          if (state.imageGen && state.imageGen.open && Number(state.imageGen.turnId) === Number(irTurnId)) {
+            irResultEl = document.getElementById('img-sidebar-result');
+          }
+          if (irResultEl && !irResultEl.querySelector('[data-image-id="' + irPayload.image.id + '"]')) {
+            irResultEl.insertAdjacentHTML('afterbegin', _buildTurnImageCardHtml(irPayload.scenarioId, irPayload.image));
+          }
+        }
+        break;
+      }
+
       case 'presencechange':
         if (state.currentScenario && data.scenarioId === state.currentScenario.id) {
           if (_updateScenePresent) _updateScenePresent(data.added, data.removed);
-          if (_reloadPortraitPanel) reloadPromptPanelTargets(); refreshPromptPreview();
           renderCharacterFocusButtons();
           if (data.added && data.added.length) {
             data.added.forEach(function (c) { showToast(c.name + ' has entered the scene.', 'info'); });
@@ -3428,56 +2891,8 @@ export function connectWs() {
         if (window._debugConsole && typeof window._debugConsole.push === 'function') window._debugConsole.push(data.payload || data);
         break;
 
-      case 'image_prompt':
-        if (state.currentScenario && data.scenarioId === state.currentScenario.id) {
-          _showImagePromptToast(data.scenarioId, data.turnId, data.reason);
-        }
-        break;
-
-
       default:
         break;
     }
   };
-}
-
-function _showImagePromptToast(scenarioId, turnId, reason) {
-  var existing = document.getElementById('image-prompt-toast');
-  if (existing) existing.remove();
-
-  var toast = document.createElement('div');
-  toast.id = 'image-prompt-toast';
-  toast.className = 'image-prompt-toast';
-
-  var reasonSpan = document.createElement('span');
-  reasonSpan.className = 'ipt-reason';
-  reasonSpan.textContent = 'Memorable moment: ' + (reason || '');
-  toast.appendChild(reasonSpan);
-
-  var yesBtn = document.createElement('button');
-  yesBtn.className = 'btn btn-primary btn-sm ipt-yes';
-  yesBtn.textContent = 'Generate Image';
-  toast.appendChild(yesBtn);
-
-  var noBtn = document.createElement('button');
-  noBtn.className = 'btn btn-secondary btn-sm ipt-no';
-  noBtn.textContent = 'X';
-  toast.appendChild(noBtn);
-
-  document.body.appendChild(toast);
-
-  var timer = setTimeout(function () { toast.remove(); }, 30000);
-
-  yesBtn.addEventListener('click', function () {
-    clearTimeout(timer);
-    toast.remove();
-    API.generateSceneImage(scenarioId, turnId).catch(function (e) {
-      showToast('Image generation failed: ' + (e && e.message ? e.message : 'unknown error'), 'error');
-    });
-  });
-
-  noBtn.addEventListener('click', function () {
-    clearTimeout(timer);
-    toast.remove();
-  });
 }

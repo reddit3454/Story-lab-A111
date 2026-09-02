@@ -112,7 +112,7 @@
     if (!l) { preview.textContent = ''; return; }
     var parts = [];
     if (l.time_of_day) parts.push('Time: ' + l.time_of_day);
-    if (l.image_tags)  parts.push('Tags: ' + l.image_tags);
+    if (l.tags)        parts.push('Tags: ' + l.tags);
     preview.innerHTML = '<strong>Location Preview:</strong> ' + parts.map(esc).join(' &middot; ');
   }
 

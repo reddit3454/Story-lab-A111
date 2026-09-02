@@ -1,5 +1,5 @@
 import { state } from '../state.js';
-import { escapeHtml, imageSrc } from '../utils.js';
+import { escapeHtml } from '../utils.js';
 import { showToast, showConfirm, setLoading, statusDotsHtml } from '../ui.js';
 import {
   HAIR_COLOR_OPTS, HAIR_STYLE_OPTS, BODY_TYPE_OPTS, BREAST_SIZE_OPTS,
@@ -60,7 +60,6 @@ export function initScenarioSetup(editId) {
 
   var loadPromises = [
     API.getCharacters().catch(function () { return []; }),
-    API.getA1111Loras().catch(function () { return { loras: [] }; }),
     API.getLocations().catch(function () { return []; }),
   ];
   if (editId) {
@@ -70,10 +69,9 @@ export function initScenarioSetup(editId) {
 
   Promise.all(loadPromises).then(function (results) {
     state.allCharacters = Array.isArray(results[0]) ? results[0] : [];
-    state.availableLoRAs = (results[1].loras || []);
-    state.allLocations   = Array.isArray(results[2]) ? results[2] : [];
-    if (editId && results[3]) {
-      var s = results[3].scenario || results[3];
+    state.allLocations   = Array.isArray(results[1]) ? results[1] : [];
+    if (editId && results[2]) {
+      var s = results[2].scenario || results[2];
       Object.assign(state.wizardData, {
         id: s.id,
         title: s.title || '',
@@ -96,8 +94,8 @@ export function initScenarioSetup(editId) {
         narrator_presence_config: s.narrator_presence_config || null,
       });
     }
-    if (editId && results[4]) {
-      state.wizardCast = Array.isArray(results[4]) ? results[4].slice() : [];
+    if (editId && results[3]) {
+      state.wizardCast = Array.isArray(results[3]) ? results[3].slice() : [];
     }
     renderWizardStep();
   }).catch(function (e) {
@@ -536,9 +534,6 @@ function renderStep3(container) {
         '</label>' +
       '</div>' +
 
-      /* Link to styles page (if editing) */
-      (d.id ? '<div class="form-group"><a class="btn btn-ghost btn-sm" href="#styles?scenario=' + d.id + '">Manage Image Styles for this Scenario</a></div>' : '') +
-
       /* Narrator Character Control */
       renderNarratorPresenceSection(d) +
 
@@ -555,46 +550,12 @@ function renderStep3(container) {
     };
   }
 
-  // LoRA strength sliders
-  ['1','2'].forEach(function(n) {
-    var slider = document.getElementById('w-lora' + n + '-strength');
-    var label  = document.getElementById('w-lora' + n + '-strength-label');
-    if (slider && label) {
-      slider.oninput = function() { label.textContent = Number(slider.value).toFixed(2); };
-    }
-  });
-
-  // Theme preset apply button
-  var applyThemeBtn = document.getElementById('btn-apply-theme');
-  if (applyThemeBtn && typeof THEME_PRESETS !== 'undefined') {
-    applyThemeBtn.onclick = function() {
-      var sel = document.getElementById('w-theme-preset');
-      var prefix = document.getElementById('w-image-prefix');
-      if (!sel || !prefix) return;
-      var themeId = sel.value;
-      if (!themeId) { prefix.value = ''; return; }
-      var theme = THEME_PRESETS.find(function(t) { return t.id === themeId; });
-      if (theme) prefix.value = theme.tags.join(', ');
-    };
-  }
 }
 
 function receptivityLabel(val) {
   var m = {1:'Hard to Get', 2:'Cautious', 3:'Receptive', 4:'Eager', 5:'Insatiable'};
   return m[val] || '';
 }
-
-function buildLoraOptions(selected) {
-  var loras = state.availableLoRAs || [];
-  var opts = '<option value=""' + (!selected ? ' selected' : '') + '>-- None --</option>';
-  opts += loras.map(function (l) {
-    var f = typeof l === 'string' ? l : (l.filename || l.name || '');
-    var label = typeof l === 'string' ? l : (l.label || l.display_name || f);
-    return '<option value="' + escapeHtml(f) + '"' + (f === selected ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
-  }).join('');
-  return opts;
-}
-
 
 function renderSegmented(id, options, selected) {
   return '<div class="segmented-btn" id="' + id + '">' +

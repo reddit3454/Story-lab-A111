@@ -1,70 +1,23 @@
 import { state } from './state.js';
-import { escapeHtml, imageSrc } from './utils.js';
-
-export function openLightbox(src) {
-  var lb = document.getElementById('story-lightbox');
-  if (!lb) return;
-  lb.querySelector('img').src = src;
-  lb.style.display = 'flex';
-}
-
-export function closeLightbox() {
-  var lb = document.getElementById('story-lightbox');
-  if (lb) lb.style.display = 'none';
-}
-
-var _IMG_STAGE_PCT = {
-  'Preparing image...':           10,
-  'Analyzing scene...':           25,
-  'Enhancing prompt...':          50,
-  'Sending to image generator...': 70
-};
-
-export function setImgStatus(msg) {
-  var panel = document.getElementById('img-status-panel');
-  if (!panel) return;
-  var text = document.getElementById('img-status-text');
-  var fill = document.getElementById('img-status-bar-fill');
-  if (!msg) {
-    if (fill) { fill.classList.remove('img-bar-pulse'); fill.style.width = '100%'; }
-    setTimeout(function () { panel.style.display = 'none'; }, 350);
-    return;
-  }
-  panel.style.display = 'block';
-  if (text) text.textContent = msg;
-  if (fill) {
-    var pct = _IMG_STAGE_PCT[msg];
-    if (!pct) {
-      if (msg.indexOf('Building image') !== -1) pct = 50;
-      else pct = 20;
-    }
-    fill.classList.remove('img-bar-pulse');
-    if (pct >= 70) {
-      fill.classList.add('img-bar-pulse');
-      fill.style.width = '';
-    } else {
-      fill.style.width = pct + '%';
-    }
-  }
-}
+import { escapeHtml } from './utils.js';
 
 /* ============================================================
    SERVICE STATUS DOTS
    ============================================================ */
 export function statusDotsHtml() {
-  var a1Cls = state.a1111Ok  === true ? ' ok' : state.a1111Ok  === false ? ' down' : '';
   var olCls = state.ollamaOk === true ? ' ok' : state.ollamaOk === false ? ' down' : '';
+  var a1Cls = state.a1111Ok === true ? ' ok' : state.a1111Ok === false ? ' down' : '';
   return '<span class="service-status">' +
-    '<span class="status-dot' + a1Cls + '" data-svc="a1111"></span>' +
-    '<span class="status-lbl">A1111</span>' +
-    '<span class="status-dot' + olCls + '" data-svc="ollama" style="margin-left:10px"></span>' +
+    '<span class="status-dot' + olCls + '" data-svc="ollama"></span>' +
     '<span class="status-lbl">Ollama</span>' +
+    '<span class="status-dot' + a1Cls + '" data-svc="a1111" style="margin-left:8px"></span>' +
+    '<span class="status-lbl">A1111</span>' +
   '</span>';
 }
 
 export function updateStatusDots(svc, ok) {
-  if      (svc === 'a1111')  state.a1111Ok  = ok;
-  else if (svc === 'ollama') state.ollamaOk = ok;
+  if (svc === 'ollama') state.ollamaOk = ok;
+  if (svc === 'a1111')  state.a1111Ok = ok;
   document.querySelectorAll('.status-dot[data-svc="' + svc + '"]').forEach(function (d) {
     d.classList.toggle('ok',   ok === true);
     d.classList.toggle('down', ok === false);
@@ -72,20 +25,20 @@ export function updateStatusDots(svc, ok) {
 }
 
 export function startStatusPolling() {
-  function checkA1111() {
-    API.getHealthA1111()
-      .then(function (d) { updateStatusDots('a1111', !!d.ok); })
-      .catch(function ()  { updateStatusDots('a1111', false); });
-  }
   function checkOllama() {
     API.getHealthOllama()
       .then(function (d) { updateStatusDots('ollama', !!d.ok); })
       .catch(function ()  { updateStatusDots('ollama', false); });
   }
-  checkA1111();
+  function checkA1111() {
+    API.getHealthA1111()
+      .then(function (d) { updateStatusDots('a1111', !!d.ok); })
+      .catch(function ()  { updateStatusDots('a1111', false); });
+  }
   checkOllama();
-  setInterval(checkA1111,  15000);
+  checkA1111();
   setInterval(checkOllama, 30000);
+  setInterval(checkA1111, 30000);
 }
 
 /* ============================================================

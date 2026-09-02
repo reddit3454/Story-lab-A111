@@ -3,7 +3,6 @@ import { AUDIT_LOG_PATH } from './paths.js';
 import broadcast from './broadcast.js';
 
 const _CAT = {
-  'image-pipeline': 'IMAGE', 'a1111': 'IMAGE', 'prompt-builder': 'IMAGE',
   'narrator': 'CHAT', 'ollama': 'CHAT', 'llamacpp': 'CHAT', 'memory': 'CHAT',
   'model-resolver': 'MODEL', 'config-resolver': 'MODEL',
   'audit': 'DB',

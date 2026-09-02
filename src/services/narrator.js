@@ -5,6 +5,7 @@ import { resolveNarratorModel } from './model-resolver.js';
 import { parseNarratorResponse } from '../input-parser.js';
 import { log, logError } from '../logger.js';
 import { ensureScenarioCharacterState, buildEmotionalDirective, buildCastBehaviorBlock } from './character-state.js';
+import { resolveRelationshipsForScenario, formatRelationshipLine } from './relationship-resolve.js';
 import { getScenarioClothing } from './clothing.js';
 import {
   estimateTokenCount,
@@ -23,69 +24,9 @@ const _getLocation       = db.prepare('SELECT * FROM locations WHERE id = ?');
 const _getRules          = db.prepare('SELECT * FROM rules WHERE scenario_id = ? ORDER BY priority DESC');
 const _getWorldEntries   = db.prepare('SELECT * FROM world_entries WHERE scenario_id = ?');
 const _getMemories       = db.prepare('SELECT * FROM memories WHERE scenario_id = ? ORDER BY created_at DESC LIMIT 10');
-const _getRelationships  = db.prepare(`
-  SELECT cr.*, cf.name AS from_name, ct.name AS to_name
-  FROM character_relationships cr
-  JOIN characters cf ON cf.id = cr.from_character_id
-  JOIN characters ct ON ct.id = cr.to_character_id
-  JOIN scenario_characters sc1 ON sc1.character_id = cr.from_character_id AND sc1.scenario_id = ?
-  JOIN scenario_characters sc2 ON sc2.character_id = cr.to_character_id   AND sc2.scenario_id = ?
-  ORDER BY cf.name
-`);
+
 const _getLastTurnCard   = db.prepare('SELECT scene_card_json FROM turns WHERE scenario_id = ? ORDER BY turn_number DESC LIMIT 1');
 const _getLlamaCppConfig = db.prepare('SELECT value FROM global_config WHERE key = ?');
-
-function buildSceneCardInstruction(nsfwEnabled) {
-  const baseFields = [
-    '  "image_prompt": "<40-60 words. Camera-visible only: who, action/pose, clothing or nudity, place, lighting. Lead with the most visually important fact. No emotions, thoughts, or plot summary.>",',
-    '  "mood": "<contemplative|tense|romantic|action|melancholy|joyful|mysterious|neutral>",',
-    '  "arousal_level": <1-10 integer>,',
-    '  "nsfw_elements": <true|false>,',
-  ];
-  const nsfwFields = [
-    '  "explicit_act": <null or short named act if occurring NOW>,',
-    '  "nudity_state": <null or short nudity phrase>,',
-    '  "body_positions": <null or short pose phrase>,',
-  ];
-  const sfwNullFields = [
-    '  "explicit_act": null,',
-    '  "nudity_state": null,',
-    '  "body_positions": null,',
-  ];
-  const fields = [
-    ...baseFields,
-    ...(nsfwEnabled ? nsfwFields : sfwNullFields),
-    '  "clothing_changes": []',
-  ];
-  const rules = [
-    'SCENE CARD RULES:',
-    '- Append after the story text. No markdown outside the delimiters.',
-    '- clothing_changes: [{ "character_name": "...", "new_clothing": "..." }] ONLY when clothing actually changed; else [].',
-  ];
-  if (nsfwEnabled) {
-    rules.push(
-      '- NPC physical actions in image_prompt must reflect current arousal when present.',
-      '- explicit_act / nudity_state / body_positions: null unless clearly visible now. Do not invent.',
-      '- When explicit content is present, name the act and nudity early in image_prompt.',
-    );
-  } else {
-    rules.push(
-      '- Keep image_prompt SFW. Leave explicit_act, nudity_state, and body_positions as null.',
-      '- nsfw_elements must be false.',
-    );
-  }
-  return [
-    'After every story segment, append this block exactly:',
-    '---SCENE---',
-    '{',
-    ...fields,
-    '}',
-    '---END---',
-    '',
-    ...rules,
-  ].join('\n');
-}
-
 
 // Internal use only — called by runNarratorTurn below. Not exported to other modules.
 export function buildSystemPrompt({ scenario, characters, location, rules, worldEntries, memories, relationships = [], lastArousal = 1, characterStates = {}, config = {} }) {
@@ -121,8 +62,12 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
   const effectiveNsfw = masterNsfw && scenarioNsfw;
   const effectiveExplicit = effectiveNsfw && config.explicit_mode === true;
 
-  if (effectiveNsfw) {
-    const behaviorBlock = buildCastBehaviorBlock(characters, characterStates);
+  {
+    const behaviorBlock = buildCastBehaviorBlock(characters, characterStates, {
+      nsfwEnabled: effectiveNsfw,
+      explicitMode: effectiveExplicit,
+      sfwArousalCeiling: config.sfw_arousal_ceiling,
+    });
     if (behaviorBlock) parts.push(behaviorBlock);
   }
 
@@ -132,19 +77,22 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
     if (location.description) locBlock += `\nVisual: ${location.description}`;
     else if (location.short_desc) locBlock += `\nVisual: ${location.short_desc}`;
     if (location.full_desc) locBlock += `\nBackground info: ${location.full_desc}`;
-    if (location.image_tags) locBlock += `\nVisual tags: ${location.image_tags}`;
     parts.push(locBlock);
   }
 
   // 5. Character relationships
   if (relationships.length > 0) {
     const block = relationships.map(function (r) {
-      let line = `${r.from_name} → ${r.to_name}: ${r.relationship_type}`;
-      if (r.description) line += ` (${r.description})`;
-      if (r.strength != null) line += ` [intensity ${r.strength}/5]`;
-      return line;
+      return formatRelationshipLine(r);
     }).join('\n');
     parts.push(`Character Relationships:\n${block}`);
+    const hasTaboo = relationships.some(function (r) {
+      const tags = r.tags || [];
+      return tags.includes('taboo');
+    });
+    if (hasTaboo) {
+      parts.push('Do not force sexual escalation across taboo edges.');
+    }
   }
 
   // 6. Rules (priority-ordered, descending)
@@ -214,8 +162,9 @@ export function buildSystemPrompt({ scenario, characters, location, rules, world
     parts.push(`Additional tone instruction: ${scenario.tone_modifier.trim()}`);
   }
 
-  // 14. Scene card instruction
-  parts.push(buildSceneCardInstruction(effectiveNsfw));
+  // Scene state (mood / arousal / clothing) is extracted from the finished
+  // prose by src/services/scene-state.js, NOT self-reported by the narrator -
+  // RP-tuned models reliably drop an appended JSON block once the context fills.
 
   return parts.join('\n\n---\n\n');
 }
@@ -302,7 +251,7 @@ export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
   const rules        = _getRules.all(scenario.id);
   const worldEntries = _getWorldEntries.all(scenario.id);
   const memories     = _getMemories.all(scenario.id);
-  const relationships = _getRelationships.all(scenario.id, scenario.id);
+  const relationships = resolveRelationshipsForScenario(db, scenario.id);
   let lastArousal = 1;
   const lastTurnRow = _getLastTurnCard.get(scenario.id);
   if (lastTurnRow?.scene_card_json) {

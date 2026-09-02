@@ -3,12 +3,11 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import { join } from 'path';
 import db from './db.js';
-import { PUBLIC_DIR } from './paths.js';
+import { PUBLIC_DIR, IMAGES_DIR } from './paths.js';
 import broadcast from './broadcast.js';
 import { log } from './logger.js';
 import healthRouter     from './routes/health.js';
 import configRouter     from './routes/config.js';
-import profilesRouter   from './routes/profiles.js';
 import scenariosRouter  from './routes/scenarios.js';
 import turnsRouter      from './routes/turns.js';
 import charactersRouter         from './routes/characters.js';
@@ -19,18 +18,21 @@ import locationsRouter  from './routes/locations.js';
 import memoriesRouter   from './routes/memories.js';
 import worldRouter      from './routes/world.js';
 import rulesRouter      from './routes/rules.js';
-import imagesRouter     from './routes/images.js';
-import a1111Router      from './routes/a1111.js';
 import auditRouter             from './routes/audit.js';
-import learningRouter           from './routes/learning.js';
 import relationshipsRouter    from './routes/character-relationships.js';
 import characterStatesRouter    from './routes/character-states.js';
+import a1111Router      from './routes/a1111.js';
+import looksRouter      from './routes/looks.js';
+import imagesRouter     from './routes/images.js';
 
 const PORT = process.env.PORT || 4090;
 
 const app = express();
-app.use(express.json());
+// Higher limit than the 100kb default so base64-encoded reference images
+// (FaceID uploads) can be POSTed as plain JSON — no multer/new dependency needed.
+app.use(express.json({ limit: '20mb' }));
 app.use(express.static(PUBLIC_DIR));
+app.use('/story-images', express.static(IMAGES_DIR));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
@@ -46,10 +48,8 @@ wss.on('connection', function (ws, req) {
 
 /* ── Phase 2 routes ──────────────────────────────────────────────────── */
 
-app.use('/api/learning', learningRouter);
 app.use('/api/health',   healthRouter);
 app.use('/api/config',   configRouter);
-app.use('/api/profiles', profilesRouter);
 
 /* ── Phase 3 scenario routes ─────────────────────────────────────────── */
 
@@ -74,17 +74,11 @@ app.use('/api/scenarios/:scenarioId/world',      worldRouter);
 app.use('/api/scenarios/:scenarioId/rules',         rulesRouter);
 app.use('/api/scenarios/:scenarioId/relationships', relationshipsRouter);
 app.use('/api/scenarios/:scenarioId/character-states', characterStatesRouter);
-
-/* ── Phase 4 image pipeline routes ──────────────────────────────────── */
-
 app.use('/api/scenarios/:scenarioId/images', imagesRouter);
-app.use('/api/a1111',  a1111Router);
+
 app.use('/api/audit',  auditRouter);
-
-/* ── Static image serving ────────────────────────────────────────────── */
-
-app.use('/story-images', express.static('H:\\MEDIA\\Story_Lab\\images'));
-app.use('/story-backgrounds', express.static('H:\\MEDIA\\Story_Lab\\backgrounds'));
+app.use('/api/a1111',  a1111Router);
+app.use('/api/looks',  looksRouter);
 
 /* ── SPA fallback ────────────────────────────────────────────────────── */
 

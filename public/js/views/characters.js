@@ -1,7 +1,9 @@
 import { state } from '../state.js';
-import { escapeHtml, avatarHtml, traitSelect, imageSrc } from '../utils.js';
-import { showToast, showConfirm, setLoading, openLightbox } from '../ui.js';
+import { escapeHtml, traitSelect } from '../utils.js';
+import { showToast, showConfirm, setLoading } from '../ui.js';
 import { resolveOutfitSetsForSave } from '../outfit-sets-validation.js';
+
+var BOND_TAGS = ['attraction', 'trust', 'tension', 'history', 'taboo'];
 
 var RELATIONSHIP_TYPES = [
   'friend', 'romantic partner', 'rival', 'enemy', 'colleague',
@@ -14,6 +16,37 @@ import {
   NOSE_SHAPE_OPTS, LIP_SHAPE_OPTS, FACE_SHAPE_OPTS, HAIR_COLOR_OPTS, HAIR_STYLE_OPTS,
   OUTFIT_STYLE_OPTS
 } from '../constants.js';
+
+
+function _arousalmaxSelected(char, val) {
+  var am = char && char.arousalmax != null ? Number(char.arousalmax) : 10;
+  if (am === 5 && val === 10) return ' selected';
+  return am === val ? ' selected' : '';
+}
+
+function _getBondTagsFromForm() {
+  var tags = [];
+  document.querySelectorAll('.bond-tag-cb:checked').forEach(function (cb) { tags.push(cb.value); });
+  return tags;
+}
+
+function _setBondTagsOnForm(tags) {
+  var set = {};
+  (tags || []).forEach(function (t) { set[String(t).toLowerCase()] = true; });
+  document.querySelectorAll('.bond-tag-cb').forEach(function (cb) {
+    cb.checked = !!set[cb.value];
+  });
+}
+
+function _clearBondEditForm() {
+  var editEl = document.getElementById('bond-edit-id');
+  if (editEl) editEl.value = '';
+  var saveBtn = document.getElementById('btn-bond-save');
+  if (saveBtn) saveBtn.textContent = 'Save';
+  var rev = document.getElementById('bond-reverse');
+  if (rev) { rev.checked = false; rev.disabled = false; }
+}
+
 
 export function initCharacters() {
   var el = document.getElementById('view-characters');
@@ -70,12 +103,7 @@ function renderCharacterList(characters) {
   list.innerHTML = characters.map(function (c) {
     var active = state.currentCharacter && state.currentCharacter.id === c.id ? ' active' : '';
     var initial = escapeHtml((c.name || '?')[0].toUpperCase());
-    var charAvatarHtml = c.reference_image_path
-      ? '<div class="char-avatar char-avatar-img">' +
-          '<img src="' + imageSrc(c.reference_image_path) + '" alt="" loading="lazy" ' +
-            'onerror="this.parentElement.classList.remove(\'char-avatar-img\');this.parentElement.textContent=\'' + initial + '\'">' +
-        '</div>'
-      : '<div class="char-avatar">' + initial + '</div>';
+    var charAvatarHtml = '<div class="char-avatar">' + initial + '</div>';
     return '<div class="char-list-item' + active + '" data-id="' + c.id + '">' +
       charAvatarHtml +
       '<div class="char-info">' +
@@ -142,7 +170,6 @@ function renderCharacterForm(char) {
   var skinExtrasVal = char ? (char.skin_extras || '')  : '';
   var outfitVal     = char ? (char.default_outfit || '') : '';
   var outfitStyleVal= char ? (char.outfit_style || '') : '';
-  var imageDescriptionVal = char ? (char.image_description || '') : '';
   // Outfit sets — initialized from persisted character data, saved on form submit
   var _outfitSets = [];
   try {
@@ -156,98 +183,6 @@ function renderCharacterForm(char) {
   var gvLower = genderVal.toLowerCase();
   var showBreast = (gvLower === 'female' || gvLower === 'non-binary');
   var showPenis  = (gvLower === 'male');
-
-  var faceIdThumb = char && char.reference_image_path
-    ? '<img src="' + imageSrc(char.reference_image_path) + '" alt="FaceID reference" class="faceid-thumb" ' +
-        'onerror="this.style.display=\'none\'" id="faceid-thumb-img">'
-    : '<div class="empty-state small" style="padding:12px 0;text-align:left">No FaceID reference set. Accept a reference image below to activate IP-Adapter face consistency for this character.</div>';
-
-  var refsHtml = !isNew ? (
-    '<div class="section-divider"></div>' +
-    '<div class="faceid-section">' +
-      '<div class="references-header">' +
-        '<div>' +
-          '<h3 class="section-title" style="margin-bottom:2px">FaceID Reference</h3>' +
-          '<p class="form-hint" style="margin:0">Active reference used for IP-Adapter face consistency in scene images.</p>' +
-        '</div>' +
-        '<div class="references-actions">' +
-          (char && char.reference_image_path ? '<button class="btn btn-danger btn-sm" id="btn-faceid-remove">Remove</button>' : '') +
-          '<button class="btn btn-secondary btn-sm" id="btn-faceid-upload">Upload New</button>' +
-          '<input type="file" id="faceid-upload-input" accept=".jpg,.jpeg,.png,.webp" style="display:none">' +
-        '</div>' +
-      '</div>' +
-      '<div id="faceid-display" style="margin-top:10px">' + faceIdThumb + '</div>' +
-    '</div>' +
-    '<div class="section-divider"></div>' +
-    '<div class="ipadapter-section">' +
-      '<div class="references-header">' +
-        '<div>' +
-          '<h3 class="section-title" style="margin-bottom:2px">IP-Adapter Reference</h3>' +
-          '<p class="form-hint" style="margin:0">Image used for IP-Adapter face consistency. Click the menu on any image below to set.</p>' +
-        '</div>' +
-        '<div class="references-actions">' +
-          (char && char.reference_image ? '<button class="btn btn-danger btn-sm" id="btn-ipadapter-clear">Clear</button>' : '') +
-        '</div>' +
-      '</div>' +
-      '<div id="ipadapter-display" style="margin-top:8px;font-size:13px">' +
-        (char && char.reference_image
-          ? '<span style="color:var(--color-success,#22c55e)">&#9733; <code style="font-size:11px">' + escapeHtml(char.reference_image) + '</code></span>'
-          : '<span style="color:var(--text-muted)">Not set. Click &#x22EE; on any generated image to set.</span>') +
-      '</div>' +
-    '</div>' +
-    '<div class="section-divider"></div>' +
-    '<div class="references-section">' +
-      '<div class="references-header">' +
-        '<h3 class="section-title">Reference Images</h3>' +
-        (char && char.storymaker_ready ? '<span class="badge badge-success" style="font-size:11px;margin-left:8px">StoryMaker Ready</span>' : '') +
-        '<div class="references-actions">' +
-          '<button class="btn btn-secondary btn-sm" id="btn-iterate-ref">Edit Prompt</button>' +
-          '<button class="btn btn-secondary btn-sm" id="btn-upload-ref">Upload</button>' +
-          '<input type="file" id="ref-upload-input" accept=".jpg,.jpeg,.png,.webp" style="display:none">' +
-          '<button class="btn btn-primary btn-sm" id="btn-gen-ref">Generate Reference</button>' +
-        '</div>' +
-      '</div>' +
-      '<div id="iterate-form" class="iterate-form hidden">' +
-        '<textarea class="form-input" id="iterate-prompt" rows="3" placeholder="Edit generation prompt..."></textarea>' +
-        '<div class="form-actions">' +
-          '<button class="btn btn-ghost btn-sm" id="btn-iterate-cancel">Cancel</button>' +
-          '<button class="btn btn-primary btn-sm" id="btn-iterate-submit">Generate with Prompt</button>' +
-        '</div>' +
-      '</div>' +
-      '<div id="ref-grid" class="ref-grid"><div class="loading-state small">Loading...</div></div>' +
-    '</div>' +
-    '<div class="section-divider"></div>' +
-    '<div class="fullbody-section">' +
-      '<div class="fullbody-section-header">' +
-        '<h3 class="section-title">Full Body Images</h3>' +
-        '<span id="fullbody-counter" class="fullbody-counter" style="font-size:12px;color:var(--text-muted);margin-left:8px">-- / 5</span>' +
-      '</div>' +
-      '<div id="fullbody-grid" class="ref-grid"><div class="loading-state small">Loading...</div></div>' +
-      '<div class="fullbody-generate-form">' +
-        '<div class="trait-row" style="margin-bottom:8px">' +
-          '<span class="trait-label">Image Style</span>' +
-          '<select class="form-input trait-select" id="fullbody-style-select">' +
-            '<option value="">-- None (default) --</option>' +
-          '</select>' +
-        '</div>' +
-        '<textarea class="form-input" id="fullbody-prompt" rows="3" placeholder="Describe the character\'s appearance, outfit, style..."></textarea>' +
-        '<div class="form-actions">' +
-          '<button class="btn btn-primary btn-sm" id="btn-gen-fullbody">Generate Full Body</button>' +
-        '</div>' +
-      '</div>' +
-    '</div>'+
-    '<div class="section-divider"></div>' +
-    '<div class="form-section" id="image-prompt-section">' +
-      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">' +
-        '<h3 class="section-title" style="margin:0">Image Prompt</h3>' +
-        '<button type="button" class="btn btn-ghost btn-sm" id="btn-assemble-prompt">Assemble from Traits</button>' +
-      '</div>' +
-      '<p class="form-hint" style="margin-bottom:8px">Permanent physical description sent to the image generator. Edit freely — this overrides the auto-assembled version.</p>' +
-      '<textarea class="form-input" id="char-image-prompt-override" rows="4" placeholder="Leave blank to auto-assemble from traits each time...">' +
-        escapeHtml(char ? (char.image_prompt_override || '') : '') +
-      '</textarea>' +
-    '</div>'
-  ) : '';
 
   panel.innerHTML =
     '<div class="char-editor">' +
@@ -429,11 +364,7 @@ function renderCharacterForm(char) {
             '<textarea class="form-input" id="char-description" rows="3" placeholder="Who is this character?">' + escapeHtml(char ? (char.description || '') : '') + '</textarea>' +
           '</div>' +
           '<div class="form-group">' +
-            '<label class="form-label">Image Description <span class="form-hint">diffusion-facing physical description (preferred for image generation)</span></label>' +
-            '<textarea class="form-input" id="char-image-description" rows="3" placeholder="Describe appearance for image generation, e.g. tall woman, long auburn hair, green eyes, athletic build...">' + escapeHtml(imageDescriptionVal) + '</textarea>' +
-          '</div>' +
-          '<div class="form-group">' +
-            '<label class="form-label">Appearance Notes <span class="form-hint">general appearance notes; fallback when Image Description is empty</span></label>' +
+            '<label class="form-label">Appearance Notes</label>' +
             '<textarea class="form-input" id="char-appearance-notes" rows="3" placeholder="Physical appearance details...">' + escapeHtml(char ? (char.appearance_notes || '') : '') + '</textarea>' +
           '</div>' +
         '</div>' +
@@ -531,8 +462,20 @@ function renderCharacterForm(char) {
           '<button type="submit" class="btn btn-primary" id="btn-save-char">' + (isNew ? 'Create Character' : 'Save Changes') + '</button>' +
         '</div>' +
       '</form>' +
-      refsHtml +
       (!isNew ?
+        '<div class="section-divider"></div>' +
+        '<div class="form-section" id="char-faceid-section">' +
+          '<h3 class="section-title" style="margin-bottom:8px">FaceID Reference Image</h3>' +
+          '<p class="form-hint" style="margin-bottom:8px">Used for face-consistent image generation (requires the ControlNet FaceID model to be configured in Settings &gt; Image Generation). One reference image per character.</p>' +
+          '<div id="faceid-preview" style="margin-bottom:8px">' +
+            (char.reference_image_path
+              ? '<img src="/story-images/' + escapeHtml(char.reference_image_path) + '" alt="Reference" style="max-width:140px;max-height:140px;border-radius:8px;border:1px solid var(--border);display:block">'
+              : '<p class="text-muted" style="font-size:12px;margin:0">No reference image set.</p>') +
+          '</div>' +
+          '<input type="file" id="faceid-file-input" accept="image/png,image/jpeg,image/webp" style="display:none">' +
+          '<button type="button" class="btn btn-secondary btn-sm" id="btn-faceid-upload">' + (char.reference_image_path ? 'Replace' : 'Upload') + ' Reference</button>' +
+          (char.reference_image_path ? ' <button type="button" class="btn btn-ghost btn-sm" id="btn-faceid-clear">Clear</button>' : '') +
+        '</div>' +
         '<div class="section-divider"></div>' +
         '<div class="form-section" id="char-bonds-section">' +
           '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">' +
@@ -541,13 +484,23 @@ function renderCharacterForm(char) {
           '</div>' +
           '<p class="form-hint" style="margin-bottom:8px">Describe how this character relates to others. The narrator uses these in every scenario both characters appear in.</p>' +
           '<div id="bond-add-form" style="display:none;margin-bottom:10px">' +
-            '<div style="display:flex;gap:6px;margin-bottom:6px">' +
-              '<select class="form-select" id="bond-related-char" style="flex:1"><option value="">Select character...</option></select>' +
-              '<select class="form-select" id="bond-rel-type" style="flex:1">' +
+            '<input type="hidden" id="bond-edit-id" value="">' +
+            '<div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">' +
+              '<select class="form-select" id="bond-related-char" style="flex:1;min-width:120px"><option value="">Select character...</option></select>' +
+              '<select class="form-select" id="bond-rel-type" style="flex:1;min-width:120px">' +
                 RELATIONSHIP_TYPES.map(function (t) { return '<option value="' + t + '">' + t + '</option>'; }).join('') +
               '</select>' +
+              '<select class="form-select" id="bond-strength" style="width:72px" title="Intensity 1-5">' +
+                [1,2,3,4,5].map(function (s) { return '<option value="' + s + '"' + (s === 3 ? ' selected' : '') + '>' + s + '</option>'; }).join('') +
+              '</select>' +
+            '</div>' +
+            '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:6px">' +
+              BOND_TAGS.map(function (t) {
+                return '<label style="font-size:12px;cursor:pointer"><input type="checkbox" class="bond-tag-cb" value="' + t + '"> ' + t + '</label>';
+              }).join('') +
             '</div>' +
             '<textarea class="form-input" id="bond-description" rows="2" placeholder="Optional notes (e.g. estranged for years, secretly in love)..." style="width:100%;margin-bottom:6px"></textarea>' +
+            '<label style="font-size:12px;display:block;margin-bottom:6px;cursor:pointer"><input type="checkbox" id="bond-reverse"> Also create reverse</label>' +
             '<div style="display:flex;gap:6px">' +
               '<button type="button" class="btn btn-primary btn-sm" id="btn-bond-save">Save</button>' +
               '<button type="button" class="btn btn-ghost btn-sm" id="btn-bond-cancel">Cancel</button>' +
@@ -879,11 +832,8 @@ function renderCharacterForm(char) {
     var data = {
       name:                 document.getElementById('char-name').value.trim(),
       description:          document.getElementById('char-description').value.trim(),
-      image_description:    document.getElementById('char-image-description').value.trim() || null,
       appearance_notes:     document.getElementById('char-appearance-notes').value.trim(),
       is_user_character:    document.getElementById('char-is-user').classList.contains('active') ? 1 : 0,
-      reference_image_path: char ? (char.reference_image_path || null) : null,
-      reference_image:      char ? (char.reference_image || '') : '',
       gender:               document.getElementById('char-gender').value || '',
       age_range:            document.getElementById('char-age-range').value || 'adult',
       hair_color:           document.getElementById('char-hair-color').value  || '',
@@ -912,11 +862,10 @@ function renderCharacterForm(char) {
       moodbaseline:         Number(document.getElementById('char-moodbaseline').value)       || 3,
       arousalthreshold:     document.getElementById('char-arousalthreshold').value           || 'medium',
       arousallockeduntil:   Number(document.getElementById('char-arousallockeduntil').value) || 2,
-      arousalmax:           Number(document.getElementById('char-arousalmax').value)         || 5,
+      arousalmax:           Number(document.getElementById('char-arousalmax').value)         || 10,
       moodtriggerspos:      document.getElementById('char-moodtriggerspos').value.trim()     || null,
       moodtriggersneg:      document.getElementById('char-moodtriggersneg').value.trim()     || null,
       arousaltriggers:      document.getElementById('char-arousaltriggers').value.trim()     || null,
-      image_prompt_override: (function () { var el = document.getElementById('char-image-prompt-override'); return el ? el.value.trim() || null : null; }()),
       personality: [
         'PERSONALITY: '  + ((document.getElementById('char-personality-traits')       || {}).value || '').trim(),
         'MOTIVATIONS: '  + ((document.getElementById('char-personality-motivations')  || {}).value || '').trim(),
@@ -969,264 +918,50 @@ function renderCharacterForm(char) {
       };
     }
 
-    var genBtn = document.getElementById('btn-gen-ref');
-    if (genBtn) {
-      genBtn.onclick = function () {
-        setLoading(genBtn, true, 'Generating...');
-        API.generateReference(char.id, {}).then(function () {
-          showToast('Reference generated!', 'success');
-          loadReferences(char.id);
-        }).catch(function (err) {
-          showToast('Generation failed: ' + err.message, 'error');
-        }).finally(function () {
-          var b = document.getElementById('btn-gen-ref');
-          if (b) setLoading(b, false);
-        });
-      };
-    }
+    // --- FaceID reference image ---
+    var faceidFileInput = document.getElementById('faceid-file-input');
+    var faceidUploadBtn = document.getElementById('btn-faceid-upload');
+    var faceidClearBtn  = document.getElementById('btn-faceid-clear');
 
-    // Style picker removed — styles endpoint not available in A1111 version
-
-    var fullbodyBtn = document.getElementById('btn-gen-fullbody');
-    if (fullbodyBtn) {
-      fullbodyBtn.onclick = function () {
-        var promptInput = document.getElementById('fullbody-prompt');
-        var promptVal = promptInput ? promptInput.value.trim() : '';
-        var styleSel = document.getElementById('fullbody-style-select');
-        var styleId = styleSel && styleSel.value ? Number(styleSel.value) : null;
-        var genBody = {};
-        if (promptVal) genBody.prompt_override = promptVal;
-        if (styleId)   genBody.style_id = styleId;
-        setLoading(fullbodyBtn, true, 'Generating...');
-        API.generateFullbody(char.id, genBody).then(function (result) {
-          showToast('Full body image generated!', 'success');
-          renderFullbodyGrid(char.id, result.fullbodies || []);
-        }).catch(function (err) {
-          showToast('Full body generation failed: ' + err.message, 'error');
-        }).finally(function () {
-          var b = document.getElementById('btn-gen-fullbody');
-          if (b) setLoading(b, false);
-        });
-      };
-    }
-
-    var iterBtn = document.getElementById('btn-iterate-ref');
-    if (iterBtn) {
-      iterBtn.onclick = function () {
-        var form = document.getElementById('iterate-form');
-        form.classList.toggle('hidden');
-        if (!form.classList.contains('hidden')) {
-          API.getReferences(char.id).then(function (data) {
-            var refs = data.references || [];
-            var accepted = refs.find(function (r) { return r.accepted; });
-            var last = refs.slice(-1)[0];
-            var p = document.getElementById('iterate-prompt');
-            if (p) p.value = (accepted || last || {}).prompt_used || '';
-          }).catch(function () {});
-        }
-      };
-    }
-
-    var iterCancel = document.getElementById('btn-iterate-cancel');
-    if (iterCancel) {
-      iterCancel.onclick = function () {
-        document.getElementById('iterate-form').classList.add('hidden');
-      };
-    }
-
-    var iterSubmit = document.getElementById('btn-iterate-submit');
-    if (iterSubmit) {
-      iterSubmit.onclick = function () {
-        var prompt = document.getElementById('iterate-prompt').value.trim();
-        setLoading(iterSubmit, true, 'Generating...');
-        API.generateReference(char.id, { prompt_override: prompt }).then(function () {
-          showToast('Reference generated!', 'success');
-          document.getElementById('iterate-form').classList.add('hidden');
-          loadReferences(char.id);
-        }).catch(function (err) {
-          showToast('Generation failed: ' + err.message, 'error');
-        }).finally(function () {
-          var b = document.getElementById('btn-iterate-submit');
-          if (b) setLoading(b, false);
-        });
-      };
-    }
-
-    var uploadBtn = document.getElementById('btn-upload-ref');
-    var uploadInput = document.getElementById('ref-upload-input');
-    if (uploadBtn && uploadInput) {
-      function doUploadRef(file) {
-        setLoading(uploadBtn, true, 'Uploading...');
-        API.uploadReference(char.id, file).then(function () {
-          showToast('Reference uploaded!', 'success');
-          uploadInput.value = '';
-          loadReferences(char.id);
-        }).catch(function (err) {
-          showToast('Upload failed: ' + err.message, 'error');
-        }).finally(function () {
-          var b = document.getElementById('btn-upload-ref');
-          if (b) setLoading(b, false);
-          uploadInput.value = '';
-        });
-      }
-      uploadBtn.onclick = function (e) {
-        if (e.ctrlKey || !window.AssetLibrary) { uploadInput.click(); return; }
-        window.AssetLibrary.openPicker({ type: 'image' }).then(function (result) {
-          if (!result || !result.mediaUrl) return;
-          return fetch(result.mediaUrl).then(function (r) { return r.blob(); }).then(function (blob) {
-            var file = new File([blob], result.basename || 'picked.jpg', { type: blob.type || 'image/jpeg' });
-            doUploadRef(file);
-          });
-        }).catch(function () { uploadInput.click(); });
-      };
-      uploadInput.onchange = function () {
-        var file = uploadInput.files && uploadInput.files[0];
+    if (faceidUploadBtn && faceidFileInput) {
+      faceidUploadBtn.onclick = function () { faceidFileInput.click(); };
+      faceidFileInput.onchange = function () {
+        var file = faceidFileInput.files && faceidFileInput.files[0];
         if (!file) return;
-        doUploadRef(file);
+        setLoading(faceidUploadBtn, true, 'Uploading...');
+        var reader = new FileReader();
+        reader.onload = function () {
+          var dataUrl = reader.result || '';
+          var base64 = dataUrl.indexOf(',') >= 0 ? dataUrl.split(',')[1] : dataUrl;
+          API.setCharacterFaceRef(char.id, base64, file.type)
+            .then(function (updated) {
+              showToast('Reference image saved.', 'success');
+              state.currentCharacter = updated;
+              renderCharacterForm(updated);
+            })
+            .catch(function (err) {
+              showToast('Upload failed: ' + err.message, 'error');
+              setLoading(faceidUploadBtn, false);
+            });
+        };
+        reader.onerror = function () {
+          showToast('Could not read the selected file.', 'error');
+          setLoading(faceidUploadBtn, false);
+        };
+        reader.readAsDataURL(file);
       };
     }
-
-    loadReferences(char.id);
-    loadFullbodies(char.id);
-
-    var faceIdRemoveBtn = document.getElementById('btn-faceid-remove');
-    if (faceIdRemoveBtn) {
-      faceIdRemoveBtn.onclick = function () {
-        showConfirm('Remove FaceID Reference', 'Clear the active FaceID reference for "' + char.name + '"? IP-Adapter face consistency will be disabled for this character until a new reference is set.', function () {
-          setLoading(faceIdRemoveBtn, true, 'Removing...');
-          API.clearFaceId(char.id).then(function (result) {
-            showToast('FaceID reference removed.', 'success');
-            state.currentCharacter = result.character;
-            renderCharacterForm(result.character);
-            return API.getCharacters().then(function (d) { renderCharacterList(Array.isArray(d) ? d : []); });
-          }).catch(function (err) {
-            showToast('Remove failed: ' + err.message, 'error');
-            var b = document.getElementById('btn-faceid-remove');
-            if (b) setLoading(b, false);
-          });
+    if (faceidClearBtn) {
+      faceidClearBtn.onclick = function () {
+        showConfirm('Clear Reference Image', 'Remove the FaceID reference for "' + char.name + '"? The image file is kept on disk, only the character link is cleared.', function () {
+          API.clearCharacterFaceRef(char.id)
+            .then(function (updated) {
+              showToast('Reference cleared.', 'success');
+              state.currentCharacter = updated;
+              renderCharacterForm(updated);
+            })
+            .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
         });
-      };
-    }
-
-    var ipaClearBtn = document.getElementById('btn-ipadapter-clear');
-    if (ipaClearBtn) {
-      ipaClearBtn.onclick = function () {
-        showConfirm('Clear IP-Adapter Reference', 'Remove the IP-Adapter reference for "' + char.name + '"?', function () {
-          setLoading(ipaClearBtn, true, 'Clearing...');
-          var updateData = Object.assign({}, state.currentCharacter, { reference_image: '' });
-          API.updateCharacter(char.id, updateData).then(function (result) {
-            showToast('IP-Adapter reference cleared.', 'success');
-            state.currentCharacter = result;
-            renderCharacterForm(result);
-          }).catch(function (err) {
-            showToast('Clear failed: ' + err.message, 'error');
-            var b = document.getElementById('btn-ipadapter-clear');
-            if (b) setLoading(b, false);
-          });
-        });
-      };
-    }
-
-    var faceIdUploadBtn   = document.getElementById('btn-faceid-upload');
-    var faceIdUploadInput = document.getElementById('faceid-upload-input');
-    if (faceIdUploadBtn && faceIdUploadInput) {
-      function doUploadFaceId(file) {
-        setLoading(faceIdUploadBtn, true, 'Uploading...');
-        API.uploadReference(char.id, file).then(function (result) {
-          showToast('FaceID reference updated!', 'success');
-          faceIdUploadInput.value = '';
-          var newChar = Object.assign({}, char, { reference_image_path: result.filename });
-          state.currentCharacter = newChar;
-          renderCharacterForm(newChar);
-          return API.getCharacters().then(function (d) { renderCharacterList(Array.isArray(d) ? d : []); });
-        }).catch(function (err) {
-          showToast('Upload failed: ' + err.message, 'error');
-          var b = document.getElementById('btn-faceid-upload');
-          if (b) setLoading(b, false);
-          faceIdUploadInput.value = '';
-        });
-      }
-      faceIdUploadBtn.onclick = function (e) {
-        if (e.ctrlKey || !window.AssetLibrary) { faceIdUploadInput.click(); return; }
-        window.AssetLibrary.openPicker({ type: 'image' }).then(function (result) {
-          if (!result || !result.basename) return;
-          setLoading(faceIdUploadBtn, true, 'Setting...');
-          API.acceptReference(char.id, result.basename).then(function (res) {
-            showToast('FaceID reference set from library!', 'success');
-            var newChar = res && res.character ? res.character : Object.assign({}, char, { reference_image_path: result.basename });
-            state.currentCharacter = newChar;
-            renderCharacterForm(newChar);
-            return API.getCharacters().then(function (d) { renderCharacterList(Array.isArray(d) ? d : []); });
-          }).catch(function (err) {
-            showToast('Set failed: ' + err.message, 'error');
-          }).finally(function () {
-            setLoading(faceIdUploadBtn, false);
-          });
-        }).catch(function () { /* picker closed without selection */ });
-      };
-      faceIdUploadInput.onchange = function () {
-        var file = faceIdUploadInput.files && faceIdUploadInput.files[0];
-        if (!file) return;
-        doUploadFaceId(file);
-      };
-    }
-
-    var assembleBtn = document.getElementById('btn-assemble-prompt');
-    if (assembleBtn) {
-      assembleBtn.onclick = function () {
-        var gender     = (document.getElementById('char-gender')     || {}).value || '';
-        var ageRange   = (document.getElementById('char-age-range')  || {}).value || '';        var height     = (document.getElementById('char-height')     || {}).value || '';
-        var bodyType   = (document.getElementById('char-body-type')  || {}).value || '';
-        var hairColor  = (document.getElementById('char-hair-color') || {}).value || '';
-        var hairStyle  = (document.getElementById('char-hair-style') || {}).value || '';
-        var hairExtras = (document.getElementById('char-hair-extras')|| {}).value || '';
-        var eyeColor   = (document.getElementById('char-eye-color')  || {}).value || '';
-        var eyeShape   = (document.getElementById('char-eye-shape')  || {}).value || '';
-        var skinTone   = (document.getElementById('char-skin-tone')  || {}).value || '';
-        var skinExtras = (document.getElementById('char-skin-extras')|| {}).value || '';
-        var breastSize = (document.getElementById('char-breast-size')|| {}).value || '';
-        var buttSize   = (document.getElementById('char-butt-size')  || {}).value || '';
-        var noseShape  = (document.getElementById('char-nose-shape') || {}).value || '';
-        var lipShape   = (document.getElementById('char-lip-shape') || {}).value || '';
-        var faceShape  = (document.getElementById('char-face-shape') || {}).value || '';
-        var outfit     = (document.getElementById('char-default-outfit') || {}).value || '';
-        var appNotes   = (document.getElementById('char-appearance-notes') || {}).value || '';
-
-        var gLower = gender.toLowerCase();
-        var parts = [];
-
-        if (gender) parts.push(gender);
-        if (ageRange && ageRange !== 'adult') parts.push(ageRange);
-        if (height) parts.push(height);
-        if (bodyType) parts.push(bodyType + ' build');
-
-        var hairParts = [hairColor, hairStyle, hairExtras].filter(Boolean);
-        if (hairParts.length) parts.push(hairParts.join(' ') + ' hair');
-
-        var eyeParts = [eyeColor, eyeShape].filter(Boolean);
-        if (eyeParts.length) parts.push(eyeParts.join(' ') + ' eyes');
-
-        if (skinTone && skinExtras) parts.push(skinTone + ' skin with ' + skinExtras);
-        else if (skinTone) parts.push(skinTone + ' skin');
-        else if (skinExtras) parts.push(skinExtras);
-
-        if (faceShape) parts.push(faceShape);
-        if (noseShape) parts.push(noseShape + ' nose');
-        if (lipShape) parts.push(lipShape + ' lips');
-
-        if (breastSize && (gLower === 'female' || gLower === 'non-binary')) parts.push(breastSize + ' breasts');
-        if (buttSize) parts.push(buttSize + ' butt');
-        if (outfit) parts.push(outfit);
-
-        // Clip appearance notes to first phrase (SDXL-safe)
-        if (appNotes) {
-          var clipped = appNotes.split(/\.\s+[A-Z]/)[0].slice(0, 100).trim().replace(/[,\s]+$/, '');
-          if (clipped) parts.push(clipped);
-        }
-
-        var assembled = parts.filter(Boolean).join(', ');
-        var ta = document.getElementById('char-image-prompt-override');
-        if (ta) { ta.value = assembled; ta.focus(); }
       };
     }
 
@@ -1252,34 +987,63 @@ function renderCharacterForm(char) {
         var hidden = bondAddForm.style.display === 'none' || !bondAddForm.style.display;
         bondAddForm.style.display = hidden ? 'block' : 'none';
         if (hidden) {
+          _clearBondEditForm();
           var ta2 = document.getElementById('bond-description');
           if (ta2) { ta2.value = ''; ta2.focus(); }
           var sel2 = document.getElementById('bond-related-char');
           if (sel2) sel2.selectedIndex = 0;
+          var str2 = document.getElementById('bond-strength');
+          if (str2) str2.value = '3';
+          _setBondTagsOnForm([]);
         }
       };
     }
 
     if (bondCancel && bondAddForm) {
-      bondCancel.onclick = function () { bondAddForm.style.display = 'none'; };
+      bondCancel.onclick = function () { bondAddForm.style.display = 'none'; _clearBondEditForm(); };
     }
 
     if (bondSave) {
       bondSave.onclick = function () {
         var relCharSel  = document.getElementById('bond-related-char');
         var relTypeSel  = document.getElementById('bond-rel-type');
+        var strSel      = document.getElementById('bond-strength');
         var descEl      = document.getElementById('bond-description');
+        var editEl      = document.getElementById('bond-edit-id');
+        var revEl       = document.getElementById('bond-reverse');
         var relCharId   = relCharSel ? Number(relCharSel.value) : 0;
         var relType     = relTypeSel ? relTypeSel.value : 'friend';
         var description = descEl ? descEl.value.trim() : '';
+        var strength    = strSel ? Number(strSel.value) : 3;
+        var tags        = _getBondTagsFromForm();
+        var editId      = editEl ? Number(editEl.value) : 0;
         if (!relCharId) {
           showToast('Select a character.', 'error');
           return;
         }
-        setLoading(bondSave, true, 'Saving...');
-        API.createCharacterBond(char.id, { to_character_id: relCharId, relationship_type: relType, description: description }).then(function () {
-          showToast('Relationship saved.', 'success');
+        var payload = { to_character_id: relCharId, relationship_type: relType, description: description, strength: strength, tags: tags };
+        setLoading(bondSave, true, editId ? 'Updating...' : 'Saving...');
+        var savePromise = editId
+          ? API.updateCharacterBond(char.id, editId, payload)
+          : API.createCharacterBond(char.id, payload);
+        savePromise.then(function () {
+          if (!editId && revEl && revEl.checked) {
+            return API.createRelationship({
+              from_character_id: relCharId,
+              to_character_id: char.id,
+              relationship_type: relType,
+              description: description,
+              strength: strength,
+              tags: tags,
+            }).catch(function (err) {
+              if (err && err.message && err.message.indexOf('already exists') >= 0) return;
+              throw err;
+            });
+          }
+        }).then(function () {
+          showToast(editId ? 'Relationship updated.' : 'Relationship saved.', 'success');
           if (bondAddForm) bondAddForm.style.display = 'none';
+          _clearBondEditForm();
           loadCharacterBonds(char.id);
         }).catch(function (err) {
           showToast('Save failed: ' + (err.message || 'Error'), 'error');
@@ -1303,15 +1067,46 @@ function loadCharacterBonds(charId) {
     }
     list.innerHTML = bonds.map(function (b) {
       var otherName = Number(b.from_character_id) === Number(charId) ? b.to_name : b.from_name;
+      var otherId = Number(b.from_character_id) === Number(charId) ? b.to_character_id : b.from_character_id;
+      var tagStr = (b.tags && b.tags.length) ? b.tags.join(', ') : '';
       return '<div class="bond-row" data-bond-id="' + b.id + '">' +
-        '<div class="bond-row-meta" style="display:flex;align-items:center;gap:6px;margin-bottom:2px">' +
+        '<div class="bond-row-meta" style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap">' +
           '<span class="bond-name" style="font-weight:600">' + escapeHtml(otherName || 'Unknown') + '</span>' +
           '<span style="font-size:11px;color:var(--text-muted);background:var(--bg-secondary);padding:1px 6px;border-radius:10px">' + escapeHtml(b.relationship_type || 'friend') + '</span>' +
+          '<span style="font-size:11px;color:var(--text-muted)">[' + (b.strength || 3) + '/5]</span>' +
+          (tagStr ? '<span style="font-size:10px;color:var(--text-muted)">(' + escapeHtml(tagStr) + ')</span>' : '') +
         '</div>' +
         (b.description ? '<div class="bond-row-desc" style="font-size:12px;color:var(--text-muted);margin-bottom:4px">' + escapeHtml(b.description) + '</div>' : '') +
-        '<button class="btn btn-danger btn-xs bond-delete-btn" data-bond-id="' + b.id + '">Remove</button>' +
+        '<div style="display:flex;gap:6px">' +
+          '<button class="btn btn-ghost btn-xs bond-edit-btn" data-bond-id="' + b.id + '" data-other-id="' + otherId + '">Edit</button>' +
+          '<button class="btn btn-danger btn-xs bond-delete-btn" data-bond-id="' + b.id + '">Remove</button>' +
+        '</div>' +
       '</div>';
     }).join('');
+    list.querySelectorAll('.bond-edit-btn').forEach(function (btn) {
+      btn.onclick = function () {
+        var bid = Number(btn.dataset.bondId);
+        var bond = bonds.find(function (x) { return Number(x.id) === bid; });
+        if (!bond) return;
+        var form = document.getElementById('bond-add-form');
+        if (form) form.style.display = 'block';
+        var editEl = document.getElementById('bond-edit-id');
+        if (editEl) editEl.value = String(bid);
+        var sel = document.getElementById('bond-related-char');
+        if (sel) sel.value = String(btn.dataset.otherId);
+        var typeSel = document.getElementById('bond-rel-type');
+        if (typeSel) typeSel.value = bond.relationship_type || 'friend';
+        var strSel = document.getElementById('bond-strength');
+        if (strSel) strSel.value = String(bond.strength || 3);
+        _setBondTagsOnForm(bond.tags || []);
+        var descEl = document.getElementById('bond-description');
+        if (descEl) descEl.value = bond.description || '';
+        var rev = document.getElementById('bond-reverse');
+        if (rev) { rev.checked = false; rev.disabled = true; }
+        var saveBtn = document.getElementById('btn-bond-save');
+        if (saveBtn) saveBtn.textContent = 'Update';
+      };
+    });
     list.querySelectorAll('.bond-delete-btn').forEach(function (btn) {
       btn.onclick = function () {
         var bid = Number(btn.dataset.bondId);
@@ -1325,175 +1120,6 @@ function loadCharacterBonds(charId) {
     });
   }).catch(function () {
     list.innerHTML = '<div class="empty-state small">Failed to load relationships.</div>';
-  });
-}
-
-function loadReferences(charId) {
-  var grid = document.getElementById('ref-grid');
-  if (!grid) return;
-  grid.innerHTML = '<div class="loading-state small">Loading...</div>';
-  API.getReferences(charId).then(function (data) {
-    var refs = data.references || [];
-    if (!refs.length) {
-      grid.innerHTML = '<div class="empty-state small">No reference images yet.</div>';
-      return;
-    }
-    var currentIpRef = state.currentCharacter ? (state.currentCharacter.reference_image || '') : '';
-    grid.innerHTML = refs.map(function (ref) {
-      var isIpRef = ref.filename === currentIpRef;
-      return '<div class="ref-thumb' + (ref.accepted ? ' accepted' : '') + '" data-ref-id="' + ref.id + '">' +
-        '<img src="' + imageSrc(ref.filename) + '" alt="Ref" loading="lazy" onerror="this.style.display=\'none\'">' +
-        (ref.accepted ? '<div class="ref-badge-accepted">Active</div>' : '') +
-        (isIpRef ? '<div class="ref-badge-accepted" style="bottom:22px;background:var(--color-success,#22c55e)">IP-Ref</div>' : '') +
-        '<div class="ref-hover">' +
-          (!ref.accepted ? '<button class="btn btn-success btn-xs ref-accept-btn" data-ref-id="' + ref.id + '">Accept</button>' : '') +
-          '<button class="btn ' + (isIpRef ? 'btn-warning' : 'btn-secondary') + ' btn-xs ip-ref-set-btn" data-filename="' + escapeHtml(ref.filename) + '">' +
-            (isIpRef ? '&#9733; IP-Ref' : 'Set IP-Ref') +
-          '</button>' +
-          '<button class="btn btn-danger btn-xs ref-delete-btn" data-ref-id="' + ref.id + '">Delete</button>' +
-          (ref.prompt_used ? '<div class="ref-prompt">' + escapeHtml(ref.prompt_used) + '</div>' : '') +
-        '</div>' +
-      '</div>';
-    }).join('');
-
-    grid.querySelectorAll('.ref-accept-btn').forEach(function (btn) {
-      btn.onclick = function (e) {
-        e.stopPropagation();
-        API.acceptReference(charId, btn.dataset.refId).then(function () {
-          showToast('Reference accepted!', 'success');
-          loadReferences(charId);
-        }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
-      };
-    });
-
-    grid.querySelectorAll('.ip-ref-set-btn').forEach(function (btn) {
-      btn.onclick = function (e) {
-        e.stopPropagation();
-        if (!state.currentCharacter) return;
-        var filename = btn.dataset.filename;
-        var updateData = Object.assign({}, state.currentCharacter, { reference_image: filename });
-        API.updateCharacter(charId, updateData).then(function (result) {
-          state.currentCharacter = result;
-          showToast('IP-Adapter reference set!', 'success');
-          var displayEl = document.getElementById('ipadapter-display');
-          if (displayEl) displayEl.innerHTML = '<span style="color:var(--color-success,#22c55e)">&#9733; <code style="font-size:11px">' + escapeHtml(filename) + '</code></span>';
-          loadReferences(charId);
-          loadFullbodies(charId);
-        }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
-      };
-    });
-
-    grid.querySelectorAll('.ref-delete-btn').forEach(function (btn) {
-      btn.onclick = function (e) {
-        e.stopPropagation();
-        API.deleteReference(charId, btn.dataset.refId).then(function () {
-          showToast('Reference deleted.', 'success');
-          loadReferences(charId);
-        }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
-      };
-    });
-  }).catch(function () {
-    if (grid) grid.innerHTML = '<div class="error-state">Failed to load references.</div>';
-  });
-}
-
-// Render the fullbody gallery from an already-fetched array, or fetch from API if not provided.
-function renderFullbodyGrid(charId, fbs) {
-  var grid    = document.getElementById('fullbody-grid');
-  var counter = document.getElementById('fullbody-counter');
-  var genBtn  = document.getElementById('btn-gen-fullbody');
-  if (!grid) return;
-  var count = fbs.length;
-  // Batch FaceID (story-sdxl-faceid-batch-control2) works best with 2+ reference images.
-  var counterColor = count === 0 ? 'var(--color-error)' : count === 1 ? 'var(--color-warning,#f59e0b)' : 'var(--text-muted)';
-  var counterTitle = count === 0 ? 'No reference images — generation will fail'
-                   : count === 1 ? 'Add at least one more image for best FaceID results'
-                   : '';
-  if (counter) {
-    counter.textContent = count + ' / 5';
-    counter.style.color = counterColor;
-    counter.title = counterTitle;
-  }
-  if (genBtn) {
-    genBtn.disabled = count >= 5;
-    genBtn.title    = count >= 5 ? 'Delete one to generate another (max 5)' : '';
-  }
-  if (!fbs.length) {
-    grid.innerHTML = '<div class="empty-state small" style="color:var(--color-error,#ef4444)">No full body images — add at least 2 for FaceID generation.</div>';
-    return;
-  }
-  var currentIpRefFb = state.currentCharacter ? (state.currentCharacter.reference_image || '') : '';
-  grid.innerHTML = fbs.map(function (fb) {
-    var canDelete = count > 1;
-    var isIpRef   = fb.filename === currentIpRefFb;
-    return '<div class="ref-thumb" data-fb-id="' + fb.id + '">' +
-      '<img src="' + imageSrc(fb.filename) + '" alt="Full body" loading="lazy" onerror="this.style.display=\'none\'">' +
-      (isIpRef ? '<div class="ref-badge-accepted" style="bottom:22px;background:var(--color-success,#22c55e)">IP-Ref</div>' : '') +
-      '<div class="ref-hover">' +
-        '<button class="btn btn-success btn-xs fb-use-ref-btn" data-fb-id="' + fb.id + '">Use as Ref</button>' +
-        '<button class="btn ' + (isIpRef ? 'btn-warning' : 'btn-secondary') + ' btn-xs fb-ip-ref-btn" data-filename="' + escapeHtml(fb.filename) + '">' +
-          (isIpRef ? '&#9733; IP-Ref' : 'Set IP-Ref') +
-        '</button>' +
-        (canDelete
-          ? '<button class="btn btn-danger btn-xs fb-delete-btn" data-fb-id="' + fb.id + '">Delete</button>'
-          : '<button class="btn btn-danger btn-xs" disabled style="cursor:not-allowed;opacity:0.5" ' +
-              'title="Keep at least 1 full body image">Delete</button>') +
-      '</div>' +
-    '</div>';
-  }).join('');
-
-  grid.querySelectorAll('.fb-use-ref-btn').forEach(function (btn) {
-    btn.onclick = function (e) {
-      e.stopPropagation();
-      API.useFullbodyAsRef(charId, btn.dataset.fbId).then(function (result) {
-        showToast('Set as FaceID reference!', 'success');
-        var thumbDisplay = document.getElementById('faceid-display');
-        if (thumbDisplay && result && result.character && result.character.reference_image_path) {
-          thumbDisplay.innerHTML =
-            '<img src="' + imageSrc(result.character.reference_image_path) + '" ' +
-            'alt="FaceID reference" class="faceid-thumb" id="faceid-thumb-img" ' +
-            'onerror="this.style.display=\'none\'">';
-        }
-      }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
-    };
-  });
-
-  grid.querySelectorAll('.fb-ip-ref-btn').forEach(function (btn) {
-    btn.onclick = function (e) {
-      e.stopPropagation();
-      if (!state.currentCharacter) return;
-      var filename = btn.dataset.filename;
-      var updateData = Object.assign({}, state.currentCharacter, { reference_image: filename });
-      API.updateCharacter(charId, updateData).then(function (result) {
-        state.currentCharacter = result;
-        showToast('IP-Adapter reference set!', 'success');
-        var displayEl = document.getElementById('ipadapter-display');
-        if (displayEl) displayEl.innerHTML = '<span style="color:var(--color-success,#22c55e)">&#9733; <code style="font-size:11px">' + escapeHtml(filename) + '</code></span>';
-        loadReferences(charId);
-        loadFullbodies(charId);
-      }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
-    };
-  });
-
-  grid.querySelectorAll('.fb-delete-btn').forEach(function (btn) {
-    btn.onclick = function (e) {
-      e.stopPropagation();
-      API.deleteFullbody(charId, btn.dataset.fbId).then(function () {
-        showToast('Full body image deleted.', 'success');
-        loadFullbodies(charId);
-      }).catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
-    };
-  });
-}
-
-function loadFullbodies(charId) {
-  var grid = document.getElementById('fullbody-grid');
-  if (!grid) return;
-  grid.innerHTML = '<div class="loading-state small">Loading...</div>';
-  API.getFullbodies(charId).then(function (data) {
-    renderFullbodyGrid(charId, data.fullbodies || []);
-  }).catch(function () {
-    grid.innerHTML = '<div class="error-state">Failed to load full body images.</div>';
   });
 }
 

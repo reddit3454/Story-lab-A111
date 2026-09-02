@@ -6,22 +6,27 @@ export var state = {
   turns:              [],
   playLayout:         localStorage.getItem('story-lab-layout') || 'split',
   sidebarOpen:        localStorage.getItem('story-lab-sidebar') !== 'false',
-  portraitPanelOpen:  localStorage.getItem('story-lab-portraits') !== 'false',
   currentSidebarTab:  'memory',
-  currentImageId:     null,
-  currentImageData:   null,   // full scene_image object for the currently displayed image
-  _sceneImageCache:   {},     // id -> scene_image object, for WS event lookup
   cleanupFns:         [],
   wizardStep:         1,
   wizardData:         {},
   wizardCast:         [],
   allCharacters:      [],
   editingScenarioId:  null,
-  a1111Ok:            null,
   ollamaOk:           null,
-  availableLoRAs:     [],
+  a1111Ok:            null,
   allLocations:       [],
   characterStates:    {},   // charId -> { moodcurrent, arousalcurrent } — live mood state
+  // Play image generator (right sidebar) - on-command only, never auto on turns
+  imageGen: {
+    open: false,
+    turnId: null,
+    scenarioId: null,
+    mode: 'scene',
+    lookId: null,
+    characterId: null,
+    actionText: '',
+  },
 };
 
 // Font preferences - persisted in localStorage

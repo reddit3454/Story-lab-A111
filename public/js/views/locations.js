@@ -123,12 +123,10 @@ function renderDetail(loc) {
         '<h2 class="panel-title">Edit: ' + escapeHtml(loc.name) + '</h2>' +
       '</div>' +
       _formHtml(loc) +
-      '<div id="loc-bg-section"></div>' +
       '<div id="loc-scenario-section"></div>' +
     '</div>';
 
   _wireForm(loc);
-  if (loc.background_folder) _loadBackgrounds(loc);
   if (_s.scenarioId) _renderScenarioSection(loc);
 }
 
@@ -145,7 +143,7 @@ function _formHtml(loc) {
     '</div>' +
     '<div class="form-group">' +
       '<label class="form-label">Visual description</label>' +
-      '<textarea class="form-input" id="lf-description" rows="3" placeholder="What it looks like for the narrator and images.">' +
+      '<textarea class="form-input" id="lf-description" rows="3" placeholder="What it looks like for the narrator.">' +
         escapeHtml(l.description || l.short_desc || '') +
       '</textarea>' +
     '</div>' +
@@ -154,13 +152,7 @@ function _formHtml(loc) {
       '<textarea class="form-input" id="lf-full_desc" rows="3" placeholder="e.g. the local park in the center of town, open 24 hours">' +
         escapeHtml(l.full_desc || '') +
       '</textarea>' +
-      '<div class="form-hint" style="font-size:11px;color:var(--text-muted);margin-top:4px">Story context for the narrator (not required for image tags).</div>' +
-    '</div>' +
-    '<div class="form-group">' +
-      '<label class="form-label">Location tags (for AI images)</label>' +
-      '<textarea class="form-input" id="lf-image_tags" rows="2" placeholder="e.g. apartment interior, city lights, warm lighting">' +
-        escapeHtml(l.image_tags || '') +
-      '</textarea>' +
+      '<div class="form-hint" style="font-size:11px;color:var(--text-muted);margin-top:4px">Story context for the narrator.</div>' +
     '</div>' +
     '<div class="form-group">' +
       '<label class="form-label">Time of Day</label>' +
@@ -169,14 +161,6 @@ function _formHtml(loc) {
           return '<option value="' + escapeHtml(v) + '"' + (tod === v ? ' selected' : '') + '>' + TOD_LABELS[i] + '</option>';
         }).join('') +
       '</select>' +
-    '</div>' +
-    '<div class="form-group">' +
-      '<label class="form-label">Background folder name <span class="form-hint">(subfolder of backgrounds/)</span></label>' +
-      '<div style="display:flex;gap:8px;align-items:center">' +
-        '<input type="text" class="form-input" id="lf-background_folder" value="' + escapeHtml(l.background_folder || '') + '" placeholder="e.g. Campsite" style="flex:1">' +
-        (loc ? '<button type="button" class="btn btn-secondary btn-sm" id="lf-scan-btn">Scan Folder</button>' : '') +
-      '</div>' +
-      '<div id="lf-scan-result" style="font-size:12px;margin-top:4px;color:var(--text-muted)"></div>' +
     '</div>' +
     '<div class="form-actions" style="margin-top:16px">' +
       '<button type="button" class="btn btn-primary" id="lf-save">' + (loc ? 'Save Changes' : 'Create Location') + '</button>' +
@@ -191,12 +175,10 @@ function _wireForm(loc) {
 
   saveBtn.onclick = function () {
     var data = {
-      name:              (document.getElementById('lf-name').value || '').trim(),
-      description:       (document.getElementById('lf-description').value || '').trim() || null,
-      full_desc:         (document.getElementById('lf-full_desc').value || '').trim() || null,
-      image_tags:        (document.getElementById('lf-image_tags').value || '').trim() || null,
-      time_of_day:       document.getElementById('lf-time_of_day').value || null,
-      background_folder: (document.getElementById('lf-background_folder').value || '').trim() || null,
+      name:        (document.getElementById('lf-name').value || '').trim(),
+      description: (document.getElementById('lf-description').value || '').trim() || null,
+      full_desc:   (document.getElementById('lf-full_desc').value || '').trim() || null,
+      time_of_day: document.getElementById('lf-time_of_day').value || null,
     };
     if (!data.name) { showToast('Name is required.', 'error'); return; }
     setLoading(saveBtn, true, 'Saving...');
@@ -242,115 +224,7 @@ function _wireForm(loc) {
         });
       };
     }
-
-    var scanBtn    = document.getElementById('lf-scan-btn');
-    var scanResult = document.getElementById('lf-scan-result');
-    if (scanBtn) {
-      scanBtn.onclick = function () {
-        var folder = (document.getElementById('lf-background_folder').value || '').trim();
-        if (!folder) {
-          if (scanResult) { scanResult.style.color = 'var(--color-danger,#ef4444)'; scanResult.textContent = 'Set a folder name first.'; }
-          return;
-        }
-        setLoading(scanBtn, true, 'Scanning...');
-        if (scanResult) { scanResult.style.color = 'var(--text-muted)'; scanResult.textContent = ''; }
-        fetch('/api/locations/' + loc.id + '/scan-backgrounds', { method: 'POST' })
-          .then(function (r) { return r.json(); })
-          .then(function (data) {
-            setLoading(scanBtn, false, 'Scan Folder');
-            if (data.error) {
-              if (scanResult) { scanResult.style.color = 'var(--color-danger,#ef4444)'; scanResult.textContent = data.error; }
-              return;
-            }
-            if (scanResult) {
-              scanResult.style.color = 'var(--color-success,#22c55e)';
-              scanResult.textContent = 'Found ' + data.scanned + ' image' + (data.scanned !== 1 ? 's' : '') + '.';
-            }
-            _renderBackgroundGrid(loc, Array.isArray(data.backgrounds) ? data.backgrounds : []);
-          })
-          .catch(function (err) {
-            setLoading(scanBtn, false, 'Scan Folder');
-            if (scanResult) { scanResult.style.color = 'var(--color-danger,#ef4444)'; scanResult.textContent = 'Error: ' + err.message; }
-          });
-      };
-    }
   }
-}
-
-function _loadBackgrounds(loc) {
-  var section = document.getElementById('loc-bg-section');
-  if (!section) return;
-  section.innerHTML =
-    '<div style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px">' +
-      '<div style="font-size:13px;color:var(--text-muted)">Loading backgrounds...</div>' +
-    '</div>';
-  API.getLocationBackgrounds(loc.id).then(function (rows) {
-    _renderBackgroundGrid(loc, Array.isArray(rows) ? rows : []);
-  }).catch(function () {
-    var s = document.getElementById('loc-bg-section');
-    if (s) s.innerHTML = '';
-  });
-}
-
-function _renderBackgroundGrid(loc, rows) {
-  var section = document.getElementById('loc-bg-section');
-  if (!section) return;
-  var folder = loc.background_folder || '';
-
-  if (!rows.length) {
-    section.innerHTML =
-      '<div style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px">' +
-        '<div class="form-label" style="margin-bottom:6px">Backgrounds</div>' +
-        '<div style="font-size:13px;color:var(--text-muted)">No backgrounds found. Use "Scan Folder" above to import images.</div>' +
-      '</div>';
-    return;
-  }
-
-  section.innerHTML =
-    '<div style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px">' +
-      '<div class="form-label" style="margin-bottom:10px">Backgrounds (' + rows.length + ')</div>' +
-      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">' +
-        rows.map(function (row) {
-          var thumb = '/story-backgrounds/' + encodeURIComponent(folder) + '/' + encodeURIComponent(row.filename);
-          var isDefault = row.is_default;
-          return '<div class="loc-bg-card" style="position:relative;border-radius:6px;overflow:hidden;' +
-              'border:2px solid ' + (isDefault ? 'var(--color-primary,#6366f1)' : 'var(--border)') + '">' +
-            '<img src="' + thumb + '" alt="" loading="lazy" ' +
-              'style="width:100%;aspect-ratio:16/9;object-fit:cover;display:block" ' +
-              'onerror="this.style.display=\'none\'">' +
-            '<div style="padding:4px 6px;font-size:10px;color:var(--text-muted);word-break:break-all;line-height:1.3">' +
-              escapeHtml(row.filename) +
-            '</div>' +
-            (isDefault
-              ? '<div style="position:absolute;top:4px;right:4px;background:var(--color-primary,#6366f1);' +
-                  'color:#fff;font-size:10px;padding:2px 6px;border-radius:3px;font-weight:600">Default</div>'
-              : '<button class="loc-bg-set-default btn btn-ghost btn-sm" data-bgid="' + row.id + '" ' +
-                  'style="position:absolute;top:4px;right:4px;font-size:10px;padding:2px 6px;' +
-                  'background:rgba(0,0,0,0.65);color:#fff;border:none;border-radius:3px;cursor:pointer">' +
-                  'Set Default' +
-                '</button>'
-            ) +
-          '</div>';
-        }).join('') +
-      '</div>' +
-    '</div>';
-
-  section.querySelectorAll('.loc-bg-set-default').forEach(function (btn) {
-    btn.onclick = function () {
-      var bgId = Number(btn.dataset.bgid);
-      setLoading(btn, true);
-      API.setDefaultLocationBackground(loc.id, bgId).then(function () {
-        showToast('Default set.', 'success');
-        var updated = rows.map(function (r) {
-          return Object.assign({}, r, { is_default: r.id === bgId ? 1 : 0 });
-        });
-        _renderBackgroundGrid(loc, updated);
-      }).catch(function (err) {
-        showToast('Failed: ' + err.message, 'error');
-        setLoading(btn, false);
-      });
-    };
-  });
 }
 
 function _renderScenarioSection(loc) {

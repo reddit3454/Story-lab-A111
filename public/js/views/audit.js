@@ -32,11 +32,8 @@ export function initAuditView(el) {
         '<select class="form-input audit-filter" id="af-service" style="min-width:140px">' +
           '<option value="">All</option>' +
           '<option value="narrator">narrator</option>' +
-          '<option value="prompt-builder">prompt-builder</option>' +
-          '<option value="a1111">a1111</option>' +
           '<option value="clothing">clothing</option>' +
           '<option value="memory">memory</option>' +
-          '<option value="image-pipeline">image-pipeline</option>' +
           '<option value="system">system</option>' +
         '</select>' +
       '</div>' +
@@ -155,9 +152,6 @@ function renderAuditEvents(container, events) {
           }).join('') +
           '</tbody>' +
         '</table>' +
-        '<div style="padding:10px 14px;border-top:1px solid var(--border)">' +
-          '<button class="btn btn-ghost btn-xs" onclick="_auditCopyPrompt(' + escapeHtml("'" + rid + "'") + ')">Copy Final Prompt</button>' +
-        '</div>' +
       '</div>' +
     '</div>';
   }).join('');
@@ -181,21 +175,3 @@ window._auditShowJson = function (jsonStr) {
   }
 };
 
-window._auditCopyPrompt = function (runId) {
-  API.getAuditRun(runId)
-    .then(function (data) {
-      var events = data.events || [];
-      var a1111Ev = events.find(function (e) { return e.service === 'a1111'; });
-      if (!a1111Ev || !a1111Ev.input_json) {
-        showToast('No A1111 event found for this run.', 'error');
-        return;
-      }
-      var payload = typeof a1111Ev.input_json === 'string'
-        ? a1111Ev.input_json
-        : JSON.stringify(a1111Ev.input_json, null, 2);
-      navigator.clipboard.writeText(payload)
-        .then(function () { showToast('A1111 payload copied to clipboard.', 'success'); })
-        .catch(function () { alert(payload); });
-    })
-    .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
-};

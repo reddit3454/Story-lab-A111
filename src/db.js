@@ -127,6 +127,10 @@ const _defaults = [
   ['cast_trigger_chips_enabled',        'true'],
   ['scene_heat_readout_enabled',        'true'],
   ['sfw_arousal_ceiling',             '3'],
+  // Scene-state extraction (mood / arousal / clothing from the finished prose)
+  ['scene_state_enabled',             'true'],
+  ['scene_state_model',               ''],      // '' -> qwen2.5:7b-instruct default
+  ['scene_state_keep_alive',          '5m'],    // '0' unloads after each turn for VRAM headroom
 ];
 
 for (const [key, value] of _defaults) {

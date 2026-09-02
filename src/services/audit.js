@@ -15,7 +15,6 @@ export function audit({
   token_estimate = null,
   scenario_id = null,
   turn_id = null,
-  scene_image_id = null,
 }) {
   try {
     const data_json  = JSON.stringify(input ?? null);

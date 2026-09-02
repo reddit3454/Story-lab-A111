@@ -1,5 +1,5 @@
 import { state } from '../state.js';
-import { escapeHtml, relativeTime, imageSrc } from '../utils.js';
+import { escapeHtml, relativeTime } from '../utils.js';
 import { showToast, showConfirm, setLoading, statusDotsHtml } from '../ui.js';
 
 export function initDashboard() {
@@ -13,7 +13,6 @@ export function initDashboard() {
         '<button class="btn btn-ghost btn-sm" id="btn-browse-media">Browse Media</button>' +
         '<a href="#characters" class="btn btn-ghost">Characters</a>' +
         '<a href="#locations" class="btn btn-ghost">Locations</a>' +
-        '<a href="#images" class="btn btn-ghost">Images</a>' +
         '<a href="#settings" class="btn btn-ghost">Settings</a>' +
         '<button id="btn-new-scenario" class="btn btn-primary">New Scenario</button>' +
       '</div>'+
@@ -86,11 +85,6 @@ function renderScenarioGrid(scenarios) {
     if (chars.length) {
       var avatars = chars.map(function (c, i) {
         var z = 'z-index:' + (chars.length - i) + ';';
-        if (c.reference_image_path) {
-          return '<img class="char-avatar-sm" src="' + imageSrc(c.reference_image_path) + '" ' +
-            'alt="' + escapeHtml(c.name) + '" title="' + escapeHtml(c.name) + '" ' +
-            'style="' + z + '" loading="lazy">';
-        }
         var initials = c.name ? c.name.charAt(0).toUpperCase() : '?';
         return '<div class="char-avatar-sm char-avatar-initials" title="' + escapeHtml(c.name) + '" style="' + z + '">' + initials + '</div>';
       }).join('');
@@ -145,7 +139,7 @@ function _locationCardDesc(loc) {
 }
 
 function _locationCardTags(loc) {
-  var raw = (loc.tags || loc.image_tags || '').trim();
+  var raw = (loc.tags || '').trim();
   return raw ? raw.split(',').map(function (t) { return t.trim(); }).filter(Boolean) : [];
 }
 
@@ -204,8 +198,6 @@ function openLocationModal(loc, onSaved) {
   var overlay = document.getElementById('modal-overlay');
   var isNew = !loc;
   var l = loc || {};
-  var dayTags = l.image_tags_day || l.image_tags || '';
-  var nightTags = l.image_tags_night || '';
 
   overlay.innerHTML =
     '<div class="modal modal-wide">' +
@@ -225,23 +217,6 @@ function openLocationModal(loc, onSaved) {
         '</textarea>' +
       '</div>' +
       '<div class="form-group">' +
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
-          '<label class="form-label" style="margin:0">Image Tags</label>' +
-          '<div style="display:flex;gap:0;border-bottom:1px solid var(--border)">' +
-            '<button class="si-tab active" id="loc-tab-day-btn" type="button">Day</button>' +
-            '<button class="si-tab" id="loc-tab-night-btn" type="button">Night</button>' +
-          '</div>' +
-        '</div>' +
-        '<div id="loc-panel-day">' +
-          '<input class="form-input" id="loc-image-tags-day" type="text" value="' + escapeHtml(dayTags) + '" placeholder="park, benches, trees, daylight">' +
-          '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">Used when scenario time is Day</div>' +
-        '</div>' +
-        '<div id="loc-panel-night" style="display:none">' +
-          '<input class="form-input" id="loc-image-tags-night" type="text" value="' + escapeHtml(nightTags) + '" placeholder="park at night, park benches, street lamps">' +
-          '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">Used when scenario time is Night. Defaults to Day tags if blank.</div>' +
-        '</div>' +
-      '</div>' +
-      '<div class="form-group">' +
         '<label class="form-label">Card Tags</label>' +
         '<input class="form-input" id="loc-tags" type="text" value="' + escapeHtml(l.tags || '') + '" placeholder="outdoor, park, night">' +
         '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">Short labels shown on location cards</div>' +
@@ -254,24 +229,6 @@ function openLocationModal(loc, onSaved) {
 
   overlay.classList.remove('hidden');
 
-  document.getElementById('loc-tab-day-btn').onclick = function () {
-    document.getElementById('loc-tab-day-btn').classList.add('active');
-    document.getElementById('loc-tab-night-btn').classList.remove('active');
-    document.getElementById('loc-panel-day').style.display = '';
-    document.getElementById('loc-panel-night').style.display = 'none';
-  };
-
-  document.getElementById('loc-tab-night-btn').onclick = function () {
-    document.getElementById('loc-tab-night-btn').classList.add('active');
-    document.getElementById('loc-tab-day-btn').classList.remove('active');
-    document.getElementById('loc-panel-day').style.display = 'none';
-    document.getElementById('loc-panel-night').style.display = '';
-    var nightInput = document.getElementById('loc-image-tags-night');
-    if (!nightInput.value.trim()) {
-      nightInput.value = document.getElementById('loc-image-tags-day').value;
-    }
-  };
-
   overlay.onclick = function (e) {
     if (e.target === overlay) overlay.classList.add('hidden');
   };
@@ -283,17 +240,12 @@ function openLocationModal(loc, onSaved) {
   document.getElementById('loc-save-btn').onclick = function () {
     var name = (document.getElementById('loc-name').value || '').trim();
     if (!name) { showToast('Name is required.', 'error'); return; }
-    var dayVal = (document.getElementById('loc-image-tags-day').value || '').trim() || null;
-    var nightVal = (document.getElementById('loc-image-tags-night').value || '').trim() || null;
     var fullDesc = (document.getElementById('loc-full-desc').value || '').trim() || null;
     var data = {
       name: name,
       short_desc: (document.getElementById('loc-short-desc').value || '').trim() || null,
       full_desc: fullDesc,
       description: fullDesc,
-      image_tags: dayVal,
-      image_tags_day: dayVal,
-      image_tags_night: nightVal,
       tags: (document.getElementById('loc-tags').value || '').trim() || null,
     };
     var saveBtn = document.getElementById('loc-save-btn');

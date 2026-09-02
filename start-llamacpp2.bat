@@ -1,7 +1,7 @@
 @echo off
 title llama-server (Story-Lab-A111 Narrator - MN-12B-Mag-Mell-R1.Q4)
 
-set MODEL_PATH=H:\Models\MN-12B-Mag-Mell-R1\MN-12B-Mag-Mell-R1-Q4_K_M.gguf
+set MODEL_PATH=J:\Models\MN-12B-Mag-Mell-R1\MN-12B-Mag-Mell-R1-Q4_K_M.gguf
 set LLAMA_SERVER_EXE=C:\llama-cpp\llama-server.exe
 set PORT=8080
 

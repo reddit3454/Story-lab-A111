@@ -89,24 +89,11 @@ export function relativeTime(dateStr) {
   return new Date(dateStr).toLocaleDateString();
 }
 
-export function imageSrc(filename) {
-  if (!filename) return '';
-  return 'http://localhost:4090/story-images/' + filename;
-}
-
-// Returns HTML for a circular character avatar.
-// Shows reference image if available; falls back to initial circle on error or absence.
+// Returns HTML for a circular character avatar (initial letter).
 // extraClass is appended to 'char-avatar' — e.g. 'turn-avatar' for 40px size.
 export function avatarHtml(char, extraClass) {
   var cls = 'char-avatar' + (extraClass ? ' ' + extraClass : '');
   var initial = (char && char.name) ? escapeHtml(char.name[0].toUpperCase()) : '?';
-  if (char && char.reference_image_path) {
-    return '<div class="' + cls + ' char-avatar-img" data-initial="' + initial + '">' +
-      '<img src="' + escapeHtml(imageSrc(char.reference_image_path)) + '" ' +
-      'alt="' + initial + '" ' +
-      'onerror="var p=this.parentNode;p.classList.remove(\'char-avatar-img\');p.innerHTML=p.dataset.initial">' +
-      '</div>';
-  }
   return '<div class="' + cls + '">' + initial + '</div>';
 }
 

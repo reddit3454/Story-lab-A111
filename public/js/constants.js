@@ -1,16 +1,5 @@
 // Extracted from app.js Phase 7 — static data constants shared across views.
 
-export var IMAGE_MODELS = [
-  { label: 'Juggernaut XL v11',            value: 'Juggernaut-XI-v11.safetensors'              },
-  { label: 'Juggernaut XL v11 - Face ID',  value: 'Juggernaut-XI-v11.safetensors|faceid'       },
-  { label: 'Juggernaut Ragnarok',           value: 'juggernautXL_ragnarokBy.safetensors'        },
-  { label: 'Juggernaut Ragnarok - Face ID', value: 'juggernautXL_ragnarokBy.safetensors|faceid' },
-  { label: 'Illustrious XL v2.0',           value: 'Illustrious-XL-v2.0.safetensors'           },
-  { label: 'RealCartoon XL v7',             value: 'realcartoonXL_v7.safetensors'               },
-  { label: 'RealCartoon XL v4',             value: 'realcartoonXL_v4/realcartoonXL_v4.safetensors' },
-  { label: 'DreamShaper XL Lightning',      value: 'dreamshaperXL_lightningDPMSDE.safetensors'  }
-];
-
 export var TEXT_PREF_DEFAULTS = {
   fontSize:       18,
   lineHeight:     1.70,

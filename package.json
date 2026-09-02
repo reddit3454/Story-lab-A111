@@ -1,7 +1,7 @@
 {
   "name": "story-lab-a1111",
   "version": "0.1.0",
-  "description": "AI story and roleplay app with A1111 image generation",
+  "description": "AI story and roleplay narrator app",
   "main": "src/server.js",
   "type": "module",
   "engines": {

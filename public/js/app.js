@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { openLightbox, closeLightbox, startStatusPolling, showToast, showConfirm, setLoading } from './ui.js';
+import { startStatusPolling, showToast, showConfirm, setLoading } from './ui.js';
 import { initDashboard } from './views/dashboard.js';
 import { initCharacters } from './views/characters.js';
 import { initScenarioSetup } from './views/scenario-setup.js';
@@ -7,10 +7,8 @@ import { initPlay } from './views/play.js';
 import { connectWs } from './views/play.js';
 import { initSettings } from './views/settings.js';
 import { initLocations } from './views/locations.js';
-import { initStyles } from './views/styles.js';
-import { initImages } from './views/images.js';
 
-// Expose UI helpers so non-module scripts (locations-init.js, styles-init.js) can use them
+// Expose UI helpers so non-module scripts (locations-init.js) can use them
 window.showToast   = showToast;
 window.showConfirm = showConfirm;
 window.setLoading  = setLoading;
@@ -35,8 +33,6 @@ export function router() {
   else if (view === 'play')           { activate('view-play');           initPlay(params.get('scenario')); }
   else if (view === 'settings')       { activate('view-settings');       initSettings(); }
   else if (view === 'locations')      { activate('view-locations');      initLocations(params.get('scenario')); }
-  else if (view === 'styles')         { activate('view-styles');         initStyles(params.get('scenario')); }
-  else if (view === 'images')         { activate('view-images');         initImages(); }
   else    { location.hash = '#dashboard'; }
 }
 
@@ -48,48 +44,6 @@ export function activate(id) {
 /* ============================================================
    BOOT
    ============================================================ */
-
-// Lightbox overlay
-(function () {
-  var lb = document.createElement('div');
-  lb.id = 'story-lightbox';
-  lb.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:9999;align-items:center;justify-content:center;cursor:zoom-out;';
-  var lbImg = document.createElement('img');
-  lbImg.style.cssText = 'max-width:92vw;max-height:92vh;border-radius:8px;object-fit:contain;';
-  lb.appendChild(lbImg);
-  lb.onclick = closeLightbox;
-  document.body.appendChild(lb);
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeLightbox(); });
-}());
-
-// Image status panel with progress bar
-(function () {
-  var panel = document.createElement('div');
-  panel.id = 'img-status-panel';
-
-  var text = document.createElement('div');
-  text.id = 'img-status-text';
-
-  var track = document.createElement('div');
-  track.id = 'img-status-bar-track';
-
-  var fill = document.createElement('div');
-  fill.id = 'img-status-bar-fill';
-
-  track.appendChild(fill);
-  panel.appendChild(text);
-  panel.appendChild(track);
-  document.body.appendChild(panel);
-}());
-
-// Global click delegation for lightbox on data-lightbox-src images
-document.addEventListener('click', function (e) {
-  var el = e.target;
-  if (el.tagName === 'IMG' && el.dataset.lightboxSrc) {
-    e.preventDefault();
-    openLightbox(el.dataset.lightboxSrc);
-  }
-});
 
 startStatusPolling();
 

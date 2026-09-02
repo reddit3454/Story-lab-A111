@@ -11,13 +11,12 @@ const SCENARIO_FIELDS = [
   'pacing', 'narrative_pov', 'violence_level', 'tone_modifier',
   'narrator_presence_enabled', 'narrator_presence_mode', 'narrator_presence_config',
   'active_location_id', 'user_character_id', 'ended_at', 'generation_config',
-  'append_start', 'append_middle', 'append_end',
 ];
 
 const BOOL_FIELDS = new Set(['nsfw_enabled', 'narrator_presence_enabled']);
 
 const _getChars = db.prepare(`
-  SELECT c.id, c.name, c.reference_image_path FROM characters c
+  SELECT c.id, c.name FROM characters c
   JOIN scenario_characters sc ON c.id = sc.character_id
   WHERE sc.scenario_id = ?
   ORDER BY c.name
@@ -154,7 +153,6 @@ router.get('/:id/scene-card', function (req, res) {
 });
 
 router.post('/:id/reset-scene', function (req, res) {
-  db.prepare('DELETE FROM scene_images WHERE scenario_id = ?').run(req.params.id);
   db.prepare('DELETE FROM turns WHERE scenario_id = ?').run(req.params.id);
   db.prepare("UPDATE scenarios SET active_location_id = NULL, updated_at = datetime('now') WHERE id = ?").run(req.params.id);
   res.json({ ok: true });
