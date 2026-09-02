@@ -1264,12 +1264,26 @@ function _populateSceneSubjectChips() {
   var sid = state.currentScenario && state.currentScenario.id;
   if (!els.chips || !sid) return;
   API.getScenarioCharacters(sid).then(function (chars) {
+    if (state.imageGen) state.imageGen.sceneCast = Array.isArray(chars) ? chars : [];
+    if (state.imageGen && state.imageGen.mode === 'scene' && state.imageGen.actionText) _selectPrimarySceneSubject(state.imageGen.actionText);
     var selected = state.imageGen.sceneCharacterIds || [];
     els.chips.innerHTML = (chars || []).map(function (character) {
       var active = selected.includes(Number(character.id));
       return '<button type="button" class="btn btn-ghost btn-xs img-scene-subject" data-id="' + character.id + '" aria-pressed="' + active + '">' + escapeHtml(character.name) + '</button>';
     }).join(' ');
   });
+}
+
+function _selectPrimarySceneSubject(actionText) {
+  if (!state.imageGen || (state.imageGen.sceneCharacterIds || []).length) return;
+  var cast = state.imageGen.sceneCast || [];
+  if (!cast.length) return;
+  var text = String(actionText || '');
+  var primary = cast.find(function (character) {
+    return character.name && new RegExp('\\b' + String(character.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(text);
+  }) || cast[0];
+  state.imageGen.sceneCharacterIds = [Number(primary.id)];
+  _populateSceneSubjectChips();
 }
 
 function _refreshAcceptedImagesForTurn(turnId) {
@@ -1379,6 +1393,7 @@ function _loadShotActionForSidebar(sid, turnId) {
         _populateSceneSubjectChips();
         _syncImageModeControls();
       }
+      if (mode === 'scene' && text) _selectPrimarySceneSubject(text);
       if (mode === 'fullbody' && res) {
         state.imageGen.framing = res.framing || 'auto';
         _syncImageModeControls();
@@ -1396,6 +1411,7 @@ function _loadShotActionForSidebar(sid, turnId) {
         var sugText = (sug && sug.text) ? String(sug.text).trim() : text;
         var sugSource = (sug && sug.source) || (sugText ? 'heuristic' : 'empty');
         _applyShotActionToSidebar(sugText, sugSource);
+        if (mode === 'scene' && sugText) _selectPrimarySceneSubject(sugText);
         _setShotActionLoading(false);
       }).catch(function (err) {
         if (token !== _shotActionLoadToken) return;
