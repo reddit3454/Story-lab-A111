@@ -55,3 +55,15 @@ loras/
 outputs/
 comfyui-output/
 comfyui-temp/
+
+# graphify knowledge-graph output (generated cache - regenerate with /graphify)
+graphify-out/
+
+# Claude Code local session config
+.claude/
+
+# scratch / botched-redirect files
+/None
+_fixtest.py
+_inspect_settings.py
+scripts/_*.py
