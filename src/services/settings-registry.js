@@ -11,6 +11,7 @@ const SETTINGS = [
   { key: 'a1111_pose_model', status: 'active', uiOwner: 'image-generation', label: 'Pose model' },
   { key: 'a1111_pose_module', status: 'active', uiOwner: 'image-generation', label: 'Pose module' },
   { key: 'a1111_pose_weight', status: 'active', uiOwner: 'image-generation', label: 'Pose weight' },
+  { key: 'master_negative', status: 'active', uiOwner: 'image-generation', label: 'Master image negative' },
   { key: 'nsfw_enabled', status: 'active', uiOwner: 'story-dynamics', label: 'NSFW enabled' },
   { key: 'explicit_mode', status: 'active', uiOwner: 'story-dynamics', label: 'Explicit mode' },
   { key: 'arousal_decay_enabled', status: 'active', uiOwner: 'story-dynamics', label: 'Arousal decay' },

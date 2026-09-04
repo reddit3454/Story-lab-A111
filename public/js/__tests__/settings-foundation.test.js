@@ -13,5 +13,6 @@ test('Settings has styled tab and scene-state control contracts', () => {
   assert.match(settings, /id="sd-scene-state-enabled"/);
   assert.match(settings, /id="sd-scene-state-model"/);
   assert.match(settings, /id="sd-scene-state-keep-alive"/);
+  assert.match(settings, /id="ig-master-negative"/);
   assert.match(settings, /id="model-narrator-max-tokens"/);
 });

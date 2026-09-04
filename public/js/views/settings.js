@@ -304,6 +304,7 @@ function buildTabContent(tabId) {
         '<div class="settings-section">' +
           '<h2 class="section-title">A1111 Connection</h2>' +
           '<div id="imagegen-a1111-status"><div class="loading-state">Checking...</div></div>' +
+          '<div id="imagegen-master-negative-form"><div class="loading-state">Loading...</div></div>' +
         '</div>' +
         '<div class="settings-section">' +
           '<h2 class="section-title">Looks</h2>' +
@@ -520,6 +521,7 @@ var _looksCache = [];
 
 function wireImageGenSettings() {
   loadA1111Status();
+  loadMasterNegativeConfig();
   loadLooksList();
   loadFaceidConfig();
   loadPoseControlConfig();
@@ -528,6 +530,27 @@ function wireImageGenSettings() {
   if (newLookBtn) {
     newLookBtn.onclick = function () { showLookEditor(null); };
   }
+}
+
+function loadMasterNegativeConfig() {
+  var el = document.getElementById('imagegen-master-negative-form');
+  if (!el) return;
+  API.getConfig().then(function (cfg) {
+    el.innerHTML =
+      '<div class="form-group"><label class="form-label">Master negative prompt</label>' +
+      '<textarea class="form-input" rows="3" id="ig-master-negative">' + escapeHtml(cfg.master_negative || '') + '</textarea>' +
+      '<div class="form-hint">Anatomy and safety baseline only. Look-specific style negatives remain in each Look.</div></div>' +
+      '<button type="button" class="btn btn-primary btn-sm" id="ig-save-master-negative">Save Master Negative</button>';
+    document.getElementById('ig-save-master-negative').onclick = function () {
+      var btn = document.getElementById('ig-save-master-negative');
+      setLoading(btn, true, 'Saving...');
+      API.setConfig('master_negative', document.getElementById('ig-master-negative').value.trim())
+        .then(function () { showToast('Master negative saved.', 'success'); setLoading(btn, false); })
+        .catch(function (e) { showToast('Save failed: ' + e.message, 'error'); setLoading(btn, false); });
+    };
+  }).catch(function (e) {
+    el.innerHTML = '<p class="text-muted">Could not load the master negative: ' + escapeHtml(e.message) + '</p>';
+  });
 }
 
 function loadA1111Status() {
