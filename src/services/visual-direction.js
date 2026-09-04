@@ -1,7 +1,7 @@
 import { normalizeShotAction } from './image-shot-action.js';
 
-const SCENE_FRAMINGS = new Set(['auto', 'close', 'medium', 'wide']);
-const FULLBODY_FRAMINGS = new Set(['auto', 'medium', 'wide']);
+export const SCENE_FRAMINGS = new Set(['auto', 'close', 'medium', 'wide']);
+export const FULLBODY_FRAMINGS = new Set(['auto', 'medium', 'wide']);
 
 function castIds(cast) {
   return new Set((cast || []).map((character) => Number(character.id)));
@@ -31,7 +31,12 @@ export function normalizeVisualDirection(input = {}, scenarioCast = [], mode = '
   if (new Set(subjectIds).size !== subjectIds.length) errors.push('scene subjects must be unique');
   if (subjectIds.length > 2) errors.push('scene mode allows at most two subjects');
   if (subjectIds.some((id) => !ids.has(id))) errors.push('every scene subject must belong to the scenario cast');
-  return { direction: { action_text: text, subject_ids: subjectIds, framing }, errors };
+  // The returned direction only ever carries ids that are still in the cast. The
+  // count/uniqueness/membership errors above are still raised for the PUT path
+  // (which rejects on any error), but the read path (parseVisualDirections) then
+  // never hands back a stale id for a character that has since left the scenario.
+  const liveSubjectIds = subjectIds.filter((id) => ids.has(id));
+  return { direction: { action_text: text, subject_ids: liveSubjectIds, framing }, errors };
 }
 
 export function parseVisualDirections(raw, scenarioCast = []) {

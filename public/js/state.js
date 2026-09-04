@@ -15,7 +15,8 @@ export var state = {
   editingScenarioId:  null,
   ollamaOk:           null,
   a1111Ok:            null,
-  allLocations:       [],
+  allLocations:       [],   // locations linked to the current scenario
+  locationCards:      [],   // full location-card library (Place tab picker)
   characterStates:    {},   // charId -> { moodcurrent, arousalcurrent } — live mood state
   acceptedImagesByTurn: {}, // turnId -> accepted scene_images rows rendered in the story thread
   // Play image generator (right sidebar) - on-command only, never auto on turns
@@ -28,6 +29,8 @@ export var state = {
     characterId: null,
     actionText: '',
     characterAction: '',
+    posePreviewId: null,
+    poseOptions: [],
     sceneCharacterIds: [],
     framing: 'auto',
   },

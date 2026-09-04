@@ -71,17 +71,28 @@ export function resolveFaceRefAbsolutePath(character) {
  * — logs the failure but never throws, so a missing reference degrades the
  * pipeline to "generate without FaceID" rather than crashing it.
  */
+// path -> { mtimeMs, size, b64 }. A FaceID reference is re-read on every single
+// generation; caching the base64 keyed on the file's mtime+size skips the disk
+// read and the (multi-MB) base64 encode until the file actually changes.
+const _faceRefCache = new Map();
+
 export function readFaceRefBase64(character) {
   const absPath = resolveFaceRefAbsolutePath(character);
   if (!absPath) return null;
   try {
-    if (!fs.existsSync(absPath)) {
-      logError('character-appearance', 'face_ref_missing', new Error(`reference file not found: ${absPath}`));
-      return null;
-    }
-    return fs.readFileSync(absPath).toString('base64');
+    const stat = fs.statSync(absPath);
+    const cached = _faceRefCache.get(absPath);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.b64;
+    const b64 = fs.readFileSync(absPath).toString('base64');
+    _faceRefCache.set(absPath, { mtimeMs: stat.mtimeMs, size: stat.size, b64 });
+    return b64;
   } catch (err) {
-    logError('character-appearance', 'face_ref_read_failed', err);
+    if (err.code === 'ENOENT') {
+      logError('character-appearance', 'face_ref_missing', new Error(`reference file not found: ${absPath}`));
+    } else {
+      logError('character-appearance', 'face_ref_read_failed', err);
+    }
+    _faceRefCache.delete(absPath);
     return null;
   }
 }

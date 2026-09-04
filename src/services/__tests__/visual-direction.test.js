@@ -27,3 +27,10 @@ test('malformed stored direction returns an empty versioned record', () => {
   assert.deepEqual(result.scene.subject_ids, []);
   assert.deepEqual(result.fullbody_by_character, {});
 });
+
+test('parseVisualDirections drops a stored scene subject whose character has left the cast', () => {
+  const stored = JSON.stringify({ scene: { action_text: 'the two of them talk', subject_ids: [7, 9], framing: 'auto' } });
+  // Morgan (9) is no longer in the scenario.
+  const result = parseVisualDirections(stored, [{ id: 7, name: 'Riley' }]);
+  assert.deepEqual(result.scene.subject_ids, [7]);
+});

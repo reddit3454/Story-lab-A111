@@ -182,6 +182,11 @@ migrate("ALTER TABLE scenarios ADD COLUMN narrator_presence_enabled   INTEGER DE
 migrate("ALTER TABLE scenarios ADD COLUMN narrator_presence_mode      TEXT    DEFAULT 'all'");
 migrate("ALTER TABLE scenarios ADD COLUMN narrator_presence_config    TEXT    DEFAULT NULL");
 migrate("ALTER TABLE scenarios ADD COLUMN active_location_id          INTEGER DEFAULT NULL");
+// Free-text active place — an ad-hoc location the user typed instead of picking
+// a location card. Mutually exclusive with active_location_id (enforced by the
+// scenarios PUT route). Consumed by narrator.js and image-pipeline.js via
+// resolveScenarioPlace().
+migrate("ALTER TABLE scenarios ADD COLUMN active_place_text           TEXT    DEFAULT ''");
 migrate("ALTER TABLE scenarios ADD COLUMN user_character_id           INTEGER DEFAULT NULL");
 migrate("ALTER TABLE scenarios ADD COLUMN ended_at                    TEXT    DEFAULT NULL");
 migrate("ALTER TABLE scenarios ADD COLUMN generation_config           TEXT    DEFAULT NULL");
@@ -332,6 +337,10 @@ const _imageDefaults = [
   // their A1111's ControlNet model list.
   ['a1111_faceid_model',  ''],
   ['a1111_faceid_module', 'ip-adapter_clip_sdxl'],
+  // Pose ControlNet consumes library-provided skeletons. Both fields stay
+  // empty until the user selects a live verified A1111 option in Settings.
+  ['a1111_pose_model',    ''],
+  ['a1111_pose_module',   ''],
   // Anatomy/safety only — no style words belong in the master negative. Style
   // negatives live on the active Look.
   ['master_negative', 'lowres, bad anatomy, bad hands, extra fingers, missing fingers, fused fingers, too many fingers, extra limbs, missing limbs, malformed limbs, mutated hands, poorly drawn hands, poorly drawn face, cross-eyed, deformed, disfigured, watermark, signature, text, logo, jpeg artifacts'],

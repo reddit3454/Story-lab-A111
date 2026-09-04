@@ -20,6 +20,7 @@ import { normalizeVisualDirection, parseVisualDirections } from '../services/vis
 
 const router = Router({ mergeParams: true });
 const _activeTurns = new Map();
+const _sceneStateQueues = new Map();
 const TURN_LOCK_STALE_MS = 130000; // slightly above Ollama timeout
 
 function _lockKey(scenarioId) {
@@ -55,15 +56,18 @@ async function _buildSceneCardFromProse(scenarioId, storyText, config) {
   for (const c of cast) clothingByCharId[c.id] = getScenarioClothing(scenarioId, c.id);
 
   let carryArousal = 1;
-  const prevCard = db.prepare(`
+  const priorCards = db.prepare(`
     SELECT scene_card_json FROM turns
     WHERE scenario_id = ? AND role = 'narrator'
-    ORDER BY turn_number DESC LIMIT 1
-  `).get(scenarioId);
-  if (prevCard?.scene_card_json) {
+    ORDER BY turn_number DESC
+  `).all(scenarioId);
+  for (const prevCard of priorCards) {
+    if (!prevCard?.scene_card_json) continue;
     try {
       const p = JSON.parse(prevCard.scene_card_json);
+      if (p?.scene_state_status === 'pending') continue;
       if (typeof p?.arousal_level === 'number') carryArousal = p.arousal_level;
+      break;
     } catch (_) {}
   }
 
@@ -90,6 +94,58 @@ async function _buildSceneCardFromProse(scenarioId, storyText, config) {
     })),
   };
   return { sceneCard, sceneState };
+}
+
+function _pendingSceneCard(scenarioId) {
+  let carryArousal = 1;
+  const priorCards = db.prepare(`
+    SELECT scene_card_json FROM turns
+    WHERE scenario_id = ? AND role = 'narrator'
+    ORDER BY turn_number DESC
+  `).all(scenarioId);
+  for (const row of priorCards) {
+    try {
+      const card = JSON.parse(row.scene_card_json || '{}');
+      if (card.scene_state_status === 'pending') continue;
+      if (typeof card.arousal_level === 'number') carryArousal = card.arousal_level;
+      break;
+    } catch (_) {}
+  }
+  return {
+    mood: 'neutral',
+    arousal_level: carryArousal,
+    clothing_changes: [],
+    scene_state_status: 'pending',
+  };
+}
+
+// State extraction is deliberately serialized per scenario. A later narrator
+// turn must not let an older extraction overwrite its clothing or mood state.
+function _enqueueSceneState(scenarioId, turnId, storyText, config) {
+  const key = _lockKey(scenarioId);
+  const prior = _sceneStateQueues.get(key) || Promise.resolve();
+  const job = prior.catch(() => {}).then(async () => {
+    const { sceneCard, sceneState } = await _buildSceneCardFromProse(scenarioId, storyText, config);
+    const turn = db.prepare('SELECT id FROM turns WHERE id = ? AND scenario_id = ?').get(turnId, scenarioId);
+    if (!turn) return;
+
+    sceneCard.scene_state_status = 'complete';
+    db.prepare('UPDATE turns SET scene_card_json = ? WHERE id = ? AND scenario_id = ?')
+      .run(JSON.stringify(sceneCard), turnId, scenarioId);
+
+    const clothingUpdates = applyClothingChanges(db, scenarioId, sceneCard.clothing_changes);
+    if (clothingUpdates.length) {
+      broadcast.send('clothingupdate', { scenarioId: parseInt(scenarioId, 10), characters: clothingUpdates });
+    }
+    _applySceneStateAndBroadcast(scenarioId, sceneState, config);
+    const finalTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(turnId);
+    broadcast.send('scene_state_complete', {
+      scenarioId: parseInt(scenarioId, 10), turn: finalTurn, clothing_updates: clothingUpdates,
+    });
+  });
+  _sceneStateQueues.set(key, job);
+  job.catch((err) => console.error('[turns] deferred scene-state failed:', err.message))
+    .finally(() => { if (_sceneStateQueues.get(key) === job) _sceneStateQueues.delete(key); });
 }
 
 // Apply the extracted per-character mood/arousal and broadcast the change.
@@ -170,9 +226,10 @@ router.post('/', async function (req, res) {
 
       const narratorTurnNum = nextTurn + 1;
 
-      // (b2) Extract scene state (mood / arousal / clothing) from the finished prose
+      // The narrator response is user-visible. Persist a pending card now and
+      // perform the secondary state call after the response has been returned.
       const turnConfig = resolveMasterConfig(db);
-      const { sceneCard, sceneState } = await _buildSceneCardFromProse(scenarioId, result.story_text, turnConfig);
+      const sceneCard = _pendingSceneCard(scenarioId);
 
       // (c) Atomic: insert user turn + narrator turn
       let userIns, narratorIns;
@@ -203,11 +260,7 @@ router.post('/', async function (req, res) {
       const userTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(userIns.lastInsertRowid);
       const finalNarratorTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(narratorIns.lastInsertRowid);
 
-      // Apply extracted clothing changes (scenario-scoped runtime only)
-      const clothingUpdates = applyClothingChanges(db, scenarioId, sceneCard.clothing_changes);
-      if (clothingUpdates.length) {
-        broadcast.send('clothingupdate', { scenarioId: parseInt(scenarioId, 10), characters: clothingUpdates });
-      }
+      const clothingUpdates = [];
 
       // Fire memory generation async if threshold reached.
       // Use exchange count (floor(narratorTurnNum/2)) so the interval fires every 20
@@ -222,7 +275,7 @@ router.post('/', async function (req, res) {
 
       broadcast.send('turn_complete', { scenarioId: parseInt(scenarioId, 10), turn: finalNarratorTurn, clothing_updates: clothingUpdates });
 
-      _applySceneStateAndBroadcast(scenarioId, sceneState, turnConfig);
+      _enqueueSceneState(scenarioId, finalNarratorTurn.id, result.story_text, turnConfig);
 
       return res.json({ user_turn: userTurn, narrator_turn: finalNarratorTurn, clothing_updates: clothingUpdates });
     } finally {
@@ -294,7 +347,7 @@ router.post('/:turnId/regenerate', async function (req, res) {
       return res.status(500).json({ error: 'Narrator failed: ' + err.message });
     }
 
-    const { sceneCard, sceneState } = await _buildSceneCardFromProse(scenarioId, result.story_text, masterCfg);
+    const sceneCard = _pendingSceneCard(scenarioId);
 
     db.prepare(`
       UPDATE turns
@@ -308,10 +361,7 @@ router.post('/:turnId/regenerate', async function (req, res) {
       scenarioId,
     );
 
-    const clothingUpdates = applyClothingChanges(db, scenarioId, sceneCard.clothing_changes);
-    if (clothingUpdates.length) {
-      broadcast.send('clothingupdate', { scenarioId: parseInt(scenarioId, 10), characters: clothingUpdates });
-    }
+    const clothingUpdates = [];
 
     const finalTurn = db.prepare('SELECT * FROM turns WHERE id = ?').get(turnId);
 
@@ -321,7 +371,7 @@ router.post('/:turnId/regenerate', async function (req, res) {
       clothing_updates: clothingUpdates,
     });
 
-    _applySceneStateAndBroadcast(scenarioId, sceneState, masterCfg);
+    _enqueueSceneState(scenarioId, turnId, result.story_text, masterCfg);
 
     return res.json({ turn: finalTurn, clothing_updates: clothingUpdates });
   } finally {
@@ -382,14 +432,26 @@ router.post('/:turnId/shot-action/suggest', async function (req, res) {
   const turn = db.prepare('SELECT * FROM turns WHERE id = ? AND scenario_id = ?').get(turnId, scenarioId);
   if (!turn) return res.status(404).json({ error: 'Turn not found' });
 
-  const existing = resolveShotActionSync(turn);
-  if (existing.text && (existing.source === 'user_draft' || existing.source === 'scene_card' || existing.source === 'cached')) {
-    return res.json({ text: existing.text, source: existing.source, ok: true });
+  const mode = req.body?.mode === 'fullbody' ? 'fullbody' : 'scene';
+  const characterId = Number(req.body?.characterId) || null;
+  const focusCharacter = mode === 'fullbody' && characterId
+    ? db.prepare('SELECT c.name FROM characters c JOIN scenario_characters sc ON sc.character_id = c.id WHERE sc.scenario_id = ? AND c.id = ?').get(scenarioId, characterId)?.name || null
+    : null;
+
+  // Only the scene mode can reuse a whole-turn draft/summary. Fullbody wants a
+  // fresh single-character description and must not adopt the scene text.
+  if (mode === 'scene') {
+    const existing = resolveShotActionSync(turn);
+    if (existing.text && (existing.source === 'user_draft' || existing.source === 'scene_card' || existing.source === 'cached')) {
+      return res.json({ text: existing.text, source: existing.source, ok: true });
+    }
   }
 
-  const result = await suggestShotActionViaLlm({ contentText: turn.content_text, db });
+  const result = await suggestShotActionViaLlm({ contentText: turn.content_text, db, mode, focusCharacter });
   if (result.ok && result.text) {
-    cacheShotSummaryInSceneCard(db, turnId, scenarioId, result.text);
+    // The cached summary is a scene-level field shared by every mode — never
+    // overwrite it with a single-character fullbody description.
+    if (mode === 'scene') cacheShotSummaryInSceneCard(db, turnId, scenarioId, result.text);
     return res.json({ text: result.text, source: 'llm', ok: true });
   }
 

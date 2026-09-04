@@ -315,6 +315,11 @@ function buildTabContent(tabId) {
           '<h2 class="section-title">FaceID</h2>' +
           '<p class="text-muted" style="margin-bottom:10px">Requires the sd-webui-controlnet extension installed in A1111. Leave the model blank to disable FaceID — it is never sent with a guessed model name.</p>' +
           '<div id="faceid-config-form"><div class="loading-state">Loading...</div></div>' +
+        '</div>' +
+        '<div class="settings-section">' +
+          '<h2 class="section-title">Pose Control</h2>' +
+          '<p class="text-muted" style="margin-bottom:10px">Uses prepared skeletons from the StoryLab pose library. Select only a live verified OpenPose option; leave it disabled to keep pose selection unavailable.</p>' +
+          '<div id="pose-control-config-form"><div class="loading-state">Loading...</div></div>' +
         '</div>';
 
     // -----------------------------------------------------------------------
@@ -516,6 +521,7 @@ function wireImageGenSettings() {
   loadA1111Status();
   loadLooksList();
   loadFaceidConfig();
+  loadPoseControlConfig();
 
   var newLookBtn = document.getElementById('btn-new-look');
   if (newLookBtn) {
@@ -915,33 +921,140 @@ function _wireTestResultButtons(editorEl) {
   });
 }
 
+// ControlNet weight guard, mirrors the clamp the image pipeline applies
+// server-side (0-2, the range the A1111 ControlNet UI allows). Blank or
+// non-numeric input falls back to the supplied default.
+function _clampCnWeight(raw, fallback) {
+  var n = Number(raw);
+  if (!isFinite(n)) return fallback;
+  return Math.min(2, Math.max(0, Math.round(n * 100) / 100));
+}
+
 function loadFaceidConfig() {
   var el = document.getElementById('faceid-config-form');
   if (!el) return;
-  API.getConfig().then(function (cfg) {
+  Promise.all([API.getConfig(), API.getA1111FaceIdOptions()]).then(function (results) {
+    var cfg = results[0];
+    var options = results[1].options || [];
+    var savedModel = cfg.a1111_faceid_model || '';
+    var savedModule = cfg.a1111_faceid_module || '';
+    var savedWeight = _clampCnWeight(cfg.a1111_faceid_weight, 0.6);
+    var savedOption = options.find(function (option) {
+      return option.model === savedModel && option.module === savedModule;
+    });
+    var modelOptions = '<option value="">Disabled (do not attach FaceID)</option>' + options.map(function (option) {
+      return '<option value="' + escapeHtml(option.model) + '"' + (savedOption && savedOption.model === option.model ? ' selected' : '') + '>' +
+        escapeHtml(option.label + ' - ' + option.model) + '</option>';
+    }).join('');
+    var warning = '';
+    if (savedModel && !savedOption) {
+      warning = '<p class="form-hint" style="color:var(--warning,#d9a441)">The saved FaceID pair is not in the active A1111 verified catalog. It has not been changed; choose a listed pair and save to replace it.</p>';
+    }
+    if (!options.length) {
+      warning = '<p class="form-hint" style="color:var(--warning,#d9a441)">A1111 reported no installed verified SDXL FaceID pairs. FaceID can remain disabled until one is available.</p>';
+    }
     el.innerHTML =
-      '<div class="form-group"><label class="form-label">ControlNet FaceID model <span class="form-hint">(exact model filename from your A1111 ControlNet models — blank disables FaceID)</span></label>' +
-        '<input type="text" class="form-input" id="fc-model" value="' + escapeHtml(cfg.a1111_faceid_model || '') + '" placeholder="e.g. ip-adapter-faceid-plusv2_sdxl.bin"></div>' +
-      '<div class="form-group"><label class="form-label">Preprocessor module</label>' +
-        '<input type="text" class="form-input" id="fc-module" value="' + escapeHtml(cfg.a1111_faceid_module || 'ip-adapter_clip_sdxl') + '"></div>' +
+      '<div class="form-group"><label class="form-label">ControlNet FaceID model <span class="form-hint">(verified from the running A1111 ControlNet catalog)</span></label>' +
+        '<select class="form-input" id="fc-model">' + modelOptions + '</select></div>' +
+      '<div class="form-group"><label class="form-label">Preprocessor module <span class="form-hint">(locked to the selected compatible model)</span></label>' +
+        '<select class="form-input" id="fc-module" disabled></select></div>' +
+      '<div class="form-group"><label class="form-label">FaceID weight <span class="form-hint">(0-2, default 0.6 — higher locks identity harder, lower blends more with the prompt)</span></label>' +
+        '<input class="form-input" id="fc-weight" type="number" min="0" max="2" step="0.05" value="' + escapeHtml(String(savedWeight)) + '"></div>' +
+      warning +
       '<button type="button" class="btn btn-primary btn-sm" id="fc-save">Save FaceID Config</button>';
+
+    var modelEl = document.getElementById('fc-model');
+    var moduleEl = document.getElementById('fc-module');
+    function syncModule() {
+      var selected = options.find(function (option) { return option.model === modelEl.value; });
+      var module = selected ? selected.module : '';
+      moduleEl.innerHTML = '<option value="' + escapeHtml(module) + '">' + escapeHtml(module || 'No module (FaceID disabled)') + '</option>';
+    }
+    modelEl.onchange = syncModule;
+    syncModule();
 
     document.getElementById('fc-save').onclick = function () {
       var btn = document.getElementById('fc-save');
+      var weightEl = document.getElementById('fc-weight');
       setLoading(btn, true, 'Saving...');
-      API.setConfigs({
-        a1111_faceid_model: document.getElementById('fc-model').value.trim(),
-        a1111_faceid_module: document.getElementById('fc-module').value.trim() || 'ip-adapter_clip_sdxl',
-      }).then(function () {
+      Promise.all([
+        API.setA1111FaceIdConfig({ model: modelEl.value, module: moduleEl.value }),
+        API.setConfig('a1111_faceid_weight', _clampCnWeight(weightEl.value, 0.6)),
+      ]).then(function () {
         showToast('FaceID config saved.', 'success');
         setLoading(btn, false);
+        loadFaceidConfig();
       }).catch(function (e) {
         showToast('Save failed: ' + e.message, 'error');
         setLoading(btn, false);
       });
     };
   }).catch(function (e) {
-    el.innerHTML = '<p class="text-muted">Could not load config: ' + escapeHtml(e.message) + '</p>';
+    el.innerHTML = '<p class="text-muted">Could not load the verified A1111 FaceID catalog. Existing config was not changed: ' + escapeHtml(e.message) + '</p>';
+  });
+}
+
+function loadPoseControlConfig() {
+  var el = document.getElementById('pose-control-config-form');
+  if (!el) return;
+  Promise.all([API.getConfig(), API.getA1111PoseOptions()]).then(function (results) {
+    var cfg = results[0];
+    var options = results[1].options || [];
+    var savedModel = cfg.a1111_pose_model || '';
+    var savedModule = cfg.a1111_pose_module || '';
+    var savedWeight = _clampCnWeight(cfg.a1111_pose_weight, 0.75);
+    var savedOption = options.find(function (option) {
+      return option.model === savedModel && option.module === savedModule;
+    });
+    var modelOptions = '<option value="">Disabled (do not attach pose control)</option>' + options.map(function (option) {
+      return '<option value="' + escapeHtml(option.model) + '"' + (savedOption && savedOption.model === option.model ? ' selected' : '') + '>' +
+        escapeHtml(option.label + ' - ' + option.model) + '</option>';
+    }).join('');
+    var warning = '';
+    if (savedModel && !savedOption) {
+      warning = '<p class="form-hint" style="color:var(--warning,#d9a441)">The saved pose pair is not in the active A1111 verified catalog. It has not been changed; choose a listed option and save to replace it.</p>';
+    }
+    if (!options.length) {
+      warning = '<p class="form-hint" style="color:var(--warning,#d9a441)">A1111 reported no installed verified SDXL OpenPose model with the prepared-skeleton module.</p>';
+    }
+    el.innerHTML =
+      '<div class="form-group"><label class="form-label">ControlNet pose model <span class="form-hint">(verified from the running A1111 ControlNet catalog)</span></label>' +
+        '<select class="form-input" id="pc-model">' + modelOptions + '</select></div>' +
+      '<div class="form-group"><label class="form-label">Preprocessor module <span class="form-hint">(prepared skeletons skip preprocessing)</span></label>' +
+        '<select class="form-input" id="pc-module" disabled></select></div>' +
+      '<div class="form-group"><label class="form-label">Pose weight <span class="form-hint">(0-2, default 0.75 — higher forces the skeleton harder, lower lets the prompt breathe)</span></label>' +
+        '<input class="form-input" id="pc-weight" type="number" min="0" max="2" step="0.05" value="' + escapeHtml(String(savedWeight)) + '"></div>' +
+      warning +
+      '<button type="button" class="btn btn-primary btn-sm" id="pc-save">Save Pose Control Config</button>';
+
+    var modelEl = document.getElementById('pc-model');
+    var moduleEl = document.getElementById('pc-module');
+    function syncModule() {
+      var selected = options.find(function (option) { return option.model === modelEl.value; });
+      var module = selected ? selected.module : '';
+      moduleEl.innerHTML = '<option value="' + escapeHtml(module) + '">' + escapeHtml(module || 'No module (pose control disabled)') + '</option>';
+    }
+    modelEl.onchange = syncModule;
+    syncModule();
+
+    document.getElementById('pc-save').onclick = function () {
+      var btn = document.getElementById('pc-save');
+      var weightEl = document.getElementById('pc-weight');
+      setLoading(btn, true, 'Saving...');
+      Promise.all([
+        API.setA1111PoseConfig({ model: modelEl.value, module: moduleEl.value }),
+        API.setConfig('a1111_pose_weight', _clampCnWeight(weightEl.value, 0.75)),
+      ]).then(function () {
+        showToast('Pose Control config saved.', 'success');
+        setLoading(btn, false);
+        loadPoseControlConfig();
+      }).catch(function (e) {
+        showToast('Save failed: ' + e.message, 'error');
+        setLoading(btn, false);
+      });
+    };
+  }).catch(function (e) {
+    el.innerHTML = '<p class="text-muted">Could not load the verified A1111 pose catalog. Existing config was not changed: ' + escapeHtml(e.message) + '</p>';
   });
 }
 

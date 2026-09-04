@@ -43,6 +43,35 @@ reintroduce ComfyUI, ImageCore, legacy styles/image_profiles, or dual style syst
    silently stops emitting an appended JSON block once context fills. Do NOT re-add a
    `buildSceneCardInstruction()` / `---SCENE---` block to the narrator prompt.
 
+9. Never make a menu option that requires the user to hand-type a specific file name.
+   For checkpoints, VAEs, LoRAs, ControlNet models/preprocessors, workflows, or any other
+   installed/service-provided asset, load a verified runtime catalog and present a dropdown.
+   If valid choices depend on one another, present only verified compatible pairs. Do not
+   guess filenames or silently replace a saved value when a catalog is unavailable; show a
+   clear unavailable or legacy-config state instead.
+
+10. Performance and inference-boundary rules are mandatory:
+    - Never add an LLM call, image job, model warm-up, catalog probe, or other slow remote/local
+      operation to the user-visible narrator-turn response without a measured before/after latency
+      result and explicit user approval. Secondary state work must be asynchronous unless the
+      user explicitly accepts its latency as a hard prerequisite for returning the turn.
+    - Every background model job needs a named trigger, an opt-in/configurable enable switch, a
+      timeout, one bounded retry policy (or none), an observable result/failure state, and a
+      fallback that leaves the primary interaction usable.
+    - A launcher must not automatically start a GPU-heavy inference service merely because it is
+      installed. Start only the backend selected by current configuration, or require an explicit
+      user launch. Document GPU/VRAM ownership whenever A1111, llama.cpp, and Ollama can coexist.
+    - A client timeout for A1111 must not orphan a server-side generation. The implementation must
+      either wait through a verified compatible timeout, interrupt the A1111 job, or surface that
+      the job is still running and prevent duplicate submissions.
+    - Do not add fire-and-forget warm-ups until a real live request succeeds. Failed warm-ups must
+      be rate-limited, visible in the UI/audit trail, and disabled after failure rather than retried
+      on every user interaction.
+    - Tests must direct logs and audit output to test-local temporary paths. Never pollute
+      `H:\MEDIA\Story_Lab\data\audit.jsonl` with mocked test traffic.
+    - Before calling a performance-sensitive feature complete, verify live p50/p95 latency for its
+      exact trigger and report the narrator, secondary-model, and A1111 durations separately.
+
 ---
 
 ## Image pipeline (current)

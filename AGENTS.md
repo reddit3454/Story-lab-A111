@@ -34,6 +34,13 @@ reintroduce ComfyUI, ImageCore, legacy styles/image_profiles, or dual style syst
    Content stages must strip style words (`prompt-builder.stripStyleWords`). Exactly one active Look.
    Soft-fail when A1111 or FaceID/ControlNet is unavailable (clean HTTP error / skip FaceID, no crash).
 
+8. Never make a menu option that requires the user to hand-type a specific file name.
+   For checkpoints, VAEs, LoRAs, ControlNet models/preprocessors, workflows, or any other
+   installed/service-provided asset, load a verified runtime catalog and present a dropdown.
+   If valid choices depend on one another, present only verified compatible pairs. Do not
+   guess filenames or silently replace a saved value when a catalog is unavailable; show a
+   clear unavailable or legacy-config state instead.
+
 ---
 
 ## Image pipeline (current)

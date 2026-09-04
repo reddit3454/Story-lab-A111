@@ -3,6 +3,9 @@ setlocal enabledelayedexpansion
 title Story-Lab-A111
 cd /d "%~dp0"
 
+:: Launch the narrator server in its own window before Story-Lab starts.
+start "Story-Lab-A111 llama.cpp" /D "%~dp0" cmd /c call "%~dp0start-llamacpp2.bat"
+
 echo.
 echo ========================================
 echo  Story-Lab-A111

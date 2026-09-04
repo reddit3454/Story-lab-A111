@@ -58,6 +58,7 @@ export function buildImageGenerationOptions({
   characterId = null,
   sceneCharacterIds = [],
   framing = 'auto',
+  poseId = null,
 } = {}) {
   var options = {
     turnId: turnId,
@@ -66,6 +67,8 @@ export function buildImageGenerationOptions({
   };
   var trimmedAction = String(characterAction || '').trim();
   if (trimmedAction) options.characterAction = trimmedAction;
+  var trimmedPoseId = String(poseId || '').trim();
+  if (trimmedPoseId) options.poseId = trimmedPoseId;
   if ((mode === 'portrait' || mode === 'fullbody') && characterId) {
     options.characterIds = [Number(characterId)];
   }

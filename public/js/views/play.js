@@ -1,6 +1,7 @@
 import { state, chatColors, getNpcColor } from '../state.js';
 import { escapeHtml, formatStoryContent, formatNarratorLinesWithGutter, narratorResponseLabel, avatarHtml, groupAcceptedImagesByTurn, renderAcceptedStoryImages, buildImageGenerationOptions } from '../utils.js';
 import { showToast, showConfirm, setLoading, statusDotsHtml } from '../ui.js';
+import { getPosePreviewOption, renderPosePickerHtml } from '../pose-picker.js';
 
 var _ws = null;
 var _turnInFlight = false;
@@ -171,30 +172,42 @@ export function initPlay(scenarioId) {
           '<button type="button" class="play-image-sidebar-close" id="img-sidebar-close" title="Close image panel">&times;</button>' +
         '</div>' +
         '<div class="play-image-sidebar-body">' +
+          '<label class="play-image-sidebar-label" for="img-sidebar-mode">Image type</label>' +
+          '<div class="turn-image-controls">' +
+            '<select id="img-sidebar-mode" class="turn-image-mode-select" title="What kind of image to generate">' +
+              '<option value="scene">Scene — the moment, one or two people</option>' +
+              '<option value="portrait">Portrait — head and shoulders, one person</option>' +
+              '<option value="fullbody">Full body — one person, head to feet</option>' +
+            '</select>' +
+            '<select id="img-sidebar-char" class="turn-image-char-select hidden" title="Which character this portrait / full body is of">' +
+              '<option value="">Character...</option>' +
+            '</select>' +
+          '</div>' +
+          '<p class="play-image-sidebar-hint hidden" id="img-sidebar-facelock"></p>' +
           '<label class="play-image-sidebar-label" for="img-sidebar-action">Scene description (editable)</label>' +
           '<p class="play-image-sidebar-hint" id="img-sidebar-action-hint">Describe only what should be visible. Style comes from the selected Look.</p>' +
           '<div id="img-sidebar-shot-loading" class="play-image-shot-loading hidden" aria-live="polite">Loading scene description...</div>' +
           '<textarea id="img-sidebar-action" class="turn-image-action" rows="4" placeholder="Describe what should be visible in this shot..."></textarea>' +
-          '<div id="img-sidebar-scene-subjects" class="hidden"><label class="play-image-sidebar-label">Subjects in this image</label><div id="img-sidebar-subject-chips"></div><p class="play-image-sidebar-hint">Choose up to two people for a clearer action scene.</p></div>' +
-          '<div id="img-sidebar-framing-wrap"><label class="play-image-sidebar-label" for="img-sidebar-framing">Framing</label><select id="img-sidebar-framing" class="turn-image-mode-select"><option value="auto">Auto</option><option value="close">Close</option><option value="medium">Medium</option><option value="wide">Wide</option></select></div>' +
-          '<div class="turn-image-controls">' +
-            '<select id="img-sidebar-mode" class="turn-image-mode-select" title="Image type">' +
-              '<option value="scene">Scene</option>' +
-              '<option value="portrait">Portrait</option>' +
-              '<option value="fullbody">Full body</option>' +
-            '</select>' +
-            '<select id="img-sidebar-char" class="turn-image-char-select hidden" title="Character for portrait/fullbody">' +
-              '<option value="">Character...</option>' +
-            '</select>' +
+          '<div id="img-sidebar-character-action-wrap">' +
+            '<label class="play-image-sidebar-label" for="img-sidebar-character-action">Focal action (optional)</label>' +
+            '<input id="img-sidebar-character-action" class="turn-image-character-action" type="text" placeholder="one specific thing a person is doing, e.g. fastening one earring">' +
           '</div>' +
-          '<label class="play-image-sidebar-label" for="img-sidebar-character-action">Character action (optional)</label>' +
-          '<input id="img-sidebar-character-action" class="turn-image-character-action" type="text" placeholder="e.g. fastening one earring">' +
-          '<label class="play-image-sidebar-label" for="img-sidebar-look">Image workflow</label>' +
+          '<div id="img-sidebar-scene-subjects" class="hidden"><label class="play-image-sidebar-label">Subjects in this image</label><div id="img-sidebar-subject-chips"></div><p class="play-image-sidebar-hint">Pick one or two people, or leave all off to use the whole cast.</p></div>' +
+          '<div id="img-sidebar-framing-wrap"><label class="play-image-sidebar-label" for="img-sidebar-framing">Framing</label><select id="img-sidebar-framing" class="turn-image-mode-select"><option value="auto">Auto</option><option value="close">Close</option><option value="medium">Medium</option><option value="wide">Wide</option></select></div>' +
+          '<div class="pose-reference-control" id="img-sidebar-pose-wrap">' +
+            '<label class="play-image-sidebar-label">Pose reference (optional)</label>' +
+            '<div class="pose-reference-row"><span id="img-sidebar-pose-summary" class="pose-reference-summary">No pose selected</span>' +
+              '<button type="button" class="btn btn-ghost btn-sm hidden" id="img-sidebar-pose-clear">Clear</button>' +
+              '<button type="button" class="btn btn-secondary btn-sm" id="img-sidebar-pose-picker">Choose pose</button></div>' +
+            '<p class="play-image-sidebar-hint" id="img-sidebar-pose-hint">A selected pose guides this image only. Set up Pose Control in Settings first.</p>' +
+          '</div>' +
+          '<label class="play-image-sidebar-label" for="img-sidebar-look">Style (Look)</label>' +
           '<select id="img-sidebar-look" class="turn-image-look-select"><option value="">Loading Looks...</option></select>' +
           '<button type="button" class="turn-image-generate-btn" id="img-sidebar-generate">Generate</button>' +
-          '<div id="img-sidebar-status" class="turn-image-status"></div>' +
+          '<div id="img-sidebar-status" class="turn-image-status" aria-live="polite"></div>' +
           '<div id="img-sidebar-result" class="turn-image-result"></div>' +
         '</div>' +
+        '<div id="img-sidebar-pose-overlay" class="pose-picker-overlay hidden"></div>' +
       '</aside>' +
 
     '</div>';
@@ -890,11 +903,17 @@ function setupPlayInteractions(scenarioId) {
   var resetSceneBtn = document.getElementById('btn-reset-scene');
   if (resetSceneBtn) {
     resetSceneBtn.onclick = function () {
-      showConfirm('Reset Scene', 'Delete all turns and restart the story from the beginning?', function () {
+      showConfirm('Reset Scene', 'Delete all turns and restart the story from the beginning? Generated images are deleted unless you marked them ♥ Keep.', function () {
         fetch('/api/scenarios/' + scenarioId + '/reset-scene', { method: 'POST' })
-          .then(function (r) { return r.json(); })
-          .then(function () {
-            showToast('Scene reset.', 'info');
+          .then(function (r) {
+            return r.json().catch(function () {
+              throw new Error('server returned an unexpected response (HTTP ' + r.status + ')');
+            });
+          })
+          .then(function (res) {
+            if (res && res.error) throw new Error(res.error);
+            var kept = (res && res.kept) || 0;
+            showToast('Scene reset.' + (kept ? ' Kept ' + kept + ' image' + (kept === 1 ? '' : 's') + '.' : ''), 'info');
             location.reload();
           })
           .catch(function (e) { showToast('Failed: ' + e.message, 'error'); });
@@ -1154,9 +1173,17 @@ function _getImageSidebarEls() {
     root: document.getElementById('play-image-sidebar'),
     action: document.getElementById('img-sidebar-action'),
     characterAction: document.getElementById('img-sidebar-character-action'),
+    poseSummary: document.getElementById('img-sidebar-pose-summary'),
+    posePicker: document.getElementById('img-sidebar-pose-picker'),
+    poseClear: document.getElementById('img-sidebar-pose-clear'),
+    poseWrap: document.getElementById('img-sidebar-pose-wrap'),
+    poseHint: document.getElementById('img-sidebar-pose-hint'),
+    poseOverlay: document.getElementById('img-sidebar-pose-overlay'),
     subjects: document.getElementById('img-sidebar-scene-subjects'),
     chips: document.getElementById('img-sidebar-subject-chips'),
     framing: document.getElementById('img-sidebar-framing'),
+    framingWrap: document.getElementById('img-sidebar-framing-wrap'),
+    charActionWrap: document.getElementById('img-sidebar-character-action-wrap'),
     mode: document.getElementById('img-sidebar-mode'),
     char: document.getElementById('img-sidebar-char'),
     look: document.getElementById('img-sidebar-look'),
@@ -1171,14 +1198,140 @@ function _getImageSidebarEls() {
   };
 }
 
+// Ask the server to load the checkpoint + ControlNet models for this shot while
+// the user is still editing, so the real Generate is not a cold model load
+// (the usual cause of pose-generation timeouts). Fire-and-forget, debounced.
+var _warmupTimer = null;
+function _scheduleWarmup() {
+  if (_warmupTimer) clearTimeout(_warmupTimer);
+  _warmupTimer = setTimeout(function () {
+    _warmupTimer = null;
+    var ig = state.imageGen;
+    if (!ig || !ig.open || !ig.scenarioId) return;
+    var characterIds = null;
+    if (ig.mode === 'portrait' || ig.mode === 'fullbody') {
+      if (!ig.characterId) return; // nothing specific to warm yet
+      characterIds = [Number(ig.characterId)];
+    } else if (ig.sceneCharacterIds && ig.sceneCharacterIds.length) {
+      characterIds = ig.sceneCharacterIds.slice();
+    }
+    API.warmupImage(ig.scenarioId, {
+      characterIds: characterIds,
+      poseId: ig.posePreviewId || null,
+    }).catch(function () { /* warm-up is best effort */ });
+  }, 700);
+}
+
+function _renderPosePreviewSummary() {
+  var els = _getImageSidebarEls();
+  if (!els.poseSummary) return;
+  var pose = state.imageGen && getPosePreviewOption(state.imageGen.poseOptions, state.imageGen.posePreviewId);
+  var selectedId = state.imageGen && state.imageGen.posePreviewId;
+  els.poseSummary.textContent = pose ? pose.label
+    : (selectedId ? 'Pose selected' : 'No pose selected');
+  if (els.poseClear) els.poseClear.classList.toggle('hidden', !selectedId);
+  if (els.posePicker) els.posePicker.textContent = selectedId ? 'Change pose' : 'Choose pose';
+}
+
+function _posePickerSubjectCount() {
+  var ig = state.imageGen || {};
+  if (ig.mode === 'fullbody') return 1;
+  return (ig.sceneCharacterIds && ig.sceneCharacterIds.length) ||
+         (ig.sceneCast && ig.sceneCast.length) || 1;
+}
+
+function _onPosePickerKeydown(e) {
+  if (e.key === 'Escape') _closePosePicker();
+}
+
+function _openPosePicker() {
+  var els = _getImageSidebarEls();
+  if (!els.poseOverlay) return;
+  els.poseOverlay.innerHTML = '<div class="pose-picker-dialog"><div class="loading-state">Loading prepared poses...</div></div>';
+  els.poseOverlay.classList.remove('hidden');
+  document.addEventListener('keydown', _onPosePickerKeydown);
+  API.getPoseLibrary().then(function (result) {
+    if (!state.imageGen || !els.poseOverlay || els.poseOverlay.classList.contains('hidden')) return;
+    state.imageGen.poseOptions = Array.isArray(result.poses) ? result.poses : [];
+    els.poseOverlay.innerHTML = renderPosePickerHtml(state.imageGen.poseOptions, state.imageGen.posePreviewId, _posePickerSubjectCount());
+    var selected = els.poseOverlay.querySelector('.pose-preview-card.is-selected') ||
+      els.poseOverlay.querySelector('.pose-preview-card:not([disabled])');
+    if (selected) selected.focus();
+  }).catch(function (err) {
+    if (els.poseOverlay) els.poseOverlay.innerHTML = '<div class="pose-picker-dialog"><p class="text-muted">Could not load prepared poses: ' + escapeHtml(err.message || 'unknown error') + '</p></div>';
+  });
+}
+
+function _closePosePicker() {
+  var els = _getImageSidebarEls();
+  if (els.poseOverlay) els.poseOverlay.classList.add('hidden');
+  document.removeEventListener('keydown', _onPosePickerKeydown);
+  if (els.posePicker) { try { els.posePicker.focus(); } catch (e) {} }
+}
+
+// Single source of truth for which sidebar fields apply to the current image
+// type. Called on open, on mode change, and after the shot action / cast load.
 function _syncImageModeControls() {
   var els = _getImageSidebarEls();
-  if (!els.mode || !els.char) return;
-  var mode = els.mode.value;
-  if (mode === 'portrait' || mode === 'fullbody') {
-    els.char.classList.remove('hidden');
+  if (!els.mode) return;
+  var mode = els.mode.value || 'scene';
+  var isScene = mode === 'scene';
+  var isPortrait = mode === 'portrait';
+  var isFullbody = mode === 'fullbody';
+
+  // Character picker: portrait / full body are about one specific person.
+  if (els.char) els.char.classList.toggle('hidden', isScene);
+
+  // Subjects: scene only, and only when there is actually a choice to make.
+  var castCount = (state.imageGen && state.imageGen.sceneCast && state.imageGen.sceneCast.length) || 0;
+  if (els.subjects) els.subjects.classList.toggle('hidden', !(isScene && castCount > 1));
+
+  // Framing: portrait is always a head-and-shoulders crop, so the control is
+  // hidden there; "close" is not valid for a full-body shot.
+  if (els.framingWrap) els.framingWrap.classList.toggle('hidden', isPortrait);
+  if (els.framing) {
+    var closeOpt = els.framing.querySelector('option[value="close"]');
+    if (closeOpt) closeOpt.disabled = isFullbody;
+    if (isFullbody && els.framing.value === 'close') {
+      els.framing.value = 'auto';
+      if (state.imageGen) state.imageGen.framing = 'auto';
+    }
+  }
+
+  // Focal action: the whole figure is the subject in full body — no separate slot.
+  if (els.charActionWrap) els.charActionWrap.classList.toggle('hidden', isFullbody);
+
+  // Pose reference: a skeleton only makes sense for a scene or a full-body shot.
+  if (els.poseWrap) els.poseWrap.classList.toggle('hidden', isPortrait);
+
+  _renderFaceLockStatus();
+}
+
+// Tells the user, before they click Generate, whether face-consistency will
+// actually be applied to this shot — otherwise FaceID is entirely invisible.
+function _renderFaceLockStatus() {
+  var node = document.getElementById('img-sidebar-facelock');
+  if (!node) return;
+  var ig = state.imageGen || {};
+  var cast = ig.sceneCast || [];
+  var inShot;
+  if (ig.mode === 'portrait' || ig.mode === 'fullbody') {
+    inShot = cast.filter(function (c) { return Number(c.id) === Number(ig.characterId); });
+  } else if (ig.sceneCharacterIds && ig.sceneCharacterIds.length) {
+    inShot = cast.filter(function (c) { return ig.sceneCharacterIds.indexOf(Number(c.id)) !== -1; });
   } else {
-    els.char.classList.add('hidden');
+    inShot = cast;
+  }
+  var withRef = inShot.filter(function (c) { return c.reference_image_path; });
+  if (!withRef.length) { node.classList.add('hidden'); return; }
+  node.classList.remove('hidden');
+  var names = withRef.map(function (c) { return c.name; }).join(', ');
+  if (!(_playConfig && _playConfig.a1111_faceid_model)) {
+    node.textContent = 'Face lock off — ' + names + ' ' + (withRef.length === 1 ? 'has a reference image' : 'have reference images') +
+      ', but FaceID is not set up in Settings › Image Generation.';
+  } else {
+    node.textContent = 'Face lock on — ' + withRef[0].name +
+      (withRef.length > 1 ? ' (one reference per image — the others are ignored)' : '');
   }
 }
 
@@ -1242,7 +1395,7 @@ function _buildTurnImageCardHtml(scenarioId, image) {
   var src = '/story-images/' + scenarioId + '/' + encodeURIComponent(image.filename);
   var meta = (image.mode || 'scene') + ' &middot; ' + (image.generation_method || 'txt2img') +
     (image.model_name ? ' &middot; ' + escapeHtml(image.model_name) : '');
-  if (image.accepted) meta += ' &middot; accepted';
+  if (image.accepted) meta += ' &middot; kept';
   var rating = Number(image.user_rating || 0);
   var upActive = rating === 1 ? ' is-active' : '';
   var downActive = rating === -1 ? ' is-active' : '';
@@ -1251,7 +1404,7 @@ function _buildTurnImageCardHtml(scenarioId, image) {
     '<img src="' + src + '" alt="Generated image" loading="lazy">' +
     '<div class="turn-image-card-meta">' + meta + '</div>' +
     '<div class="turn-image-card-actions">' +
-      '<button type="button" class="turn-image-accept-btn' + acceptActive + '" title="Accept this image">Accept</button>' +
+      '<button type="button" class="turn-image-accept-btn' + acceptActive + '" title="Keep this image — it survives Reset Scene and pins into the story">&#9829; Keep</button>' +
       '<button type="button" class="turn-image-rate-btn' + upActive + '" data-rating="1" title="Rate good">+</button>' +
       '<button type="button" class="turn-image-rate-btn' + downActive + '" data-rating="-1" title="Rate bad">-</button>' +
       '<button type="button" class="turn-image-delete-btn" title="Delete this image">Delete</button>' +
@@ -1265,12 +1418,17 @@ function _populateSceneSubjectChips() {
   if (!els.chips || !sid) return;
   API.getScenarioCharacters(sid).then(function (chars) {
     if (state.imageGen) state.imageGen.sceneCast = Array.isArray(chars) ? chars : [];
-    if (state.imageGen && state.imageGen.mode === 'scene' && state.imageGen.actionText) _selectPrimarySceneSubject(state.imageGen.actionText);
+    // NOTE: the default-primary selection is applied only from the explicit load
+    // path (_loadShotActionForSidebar). Re-applying it here would instantly undo
+    // the user clearing the last chip, making "leave empty for the full cast"
+    // unreachable.
     var selected = state.imageGen.sceneCharacterIds || [];
     els.chips.innerHTML = (chars || []).map(function (character) {
       var active = selected.includes(Number(character.id));
       return '<button type="button" class="btn btn-ghost btn-xs img-scene-subject" data-id="' + character.id + '" aria-pressed="' + active + '">' + escapeHtml(character.name) + '</button>';
     }).join(' ');
+    // cast size just became known — the subjects row only shows for a 2+ cast
+    _syncImageModeControls();
   });
 }
 
@@ -1342,22 +1500,22 @@ function _shotActionSourceHint(source) {
 
 function _applyShotActionToSidebar(text, source) {
   var els = _getImageSidebarEls();
+  var mode = (state.imageGen && state.imageGen.mode) || 'scene';
   var value = text != null ? String(text) : '';
   if (els.action) {
     els.action.value = value;
-    els.action.placeholder = 'Describe what should be visible in this shot...';
+    els.action.placeholder = mode === 'fullbody'
+      ? 'What is the character doing, head to feet? Leave blank for a plain standing shot.'
+      : 'Describe what should be visible in this shot...';
   }
   var actionLabel = document.querySelector('label[for="img-sidebar-action"]');
-  var characterLabel = document.querySelector('label[for="img-sidebar-character-action"]');
-  if (actionLabel) actionLabel.textContent = mode === 'fullbody' ? 'Fullbody action (editable)' : 'Scene description (editable)';
-  if (characterLabel) characterLabel.classList.toggle('hidden', mode === 'fullbody');
-  if (els.characterAction) els.characterAction.classList.toggle('hidden', mode === 'fullbody');
-  if (els.subjects) els.subjects.classList.toggle('hidden', mode !== 'scene');
-  if (els.framing) {
-    els.framing.value = state.imageGen.framing || 'auto';
-    els.framing.querySelector('option[value="close"]').disabled = mode === 'fullbody';
-    if (mode === 'fullbody' && els.framing.value === 'close') els.framing.value = 'auto';
+  if (actionLabel) {
+    actionLabel.textContent = mode === 'fullbody' ? 'Full-body action (editable)'
+      : mode === 'portrait' ? 'Portrait description (editable)'
+      : 'Scene description (editable)';
   }
+  if (els.framing) els.framing.value = (state.imageGen && state.imageGen.framing) || 'auto';
+  _syncImageModeControls();
   if (els.hint) els.hint.textContent = _shotActionSourceHint(source);
   if (els.shotLoading) els.shotLoading.classList.add('hidden');
   if (state.imageGen) state.imageGen.actionText = value;
@@ -1434,10 +1592,21 @@ function _loadShotActionForSidebar(sid, turnId) {
 }
 
 function _scheduleSaveShotActionDraft(sid, turnId, text) {
+  // Snapshot the mode/character/framing that the text was typed UNDER. Reading
+  // these at flush time instead would persist the edit against whatever mode the
+  // user switched to during the 600ms debounce (e.g. scene text saved as a
+  // character's fullbody direction, or a 400 that silently drops the edit).
+  var mode = state.imageGen && state.imageGen.mode === 'fullbody' ? 'fullbody' : 'scene';
   _shotActionDraftPending = {
     sid: Number(sid),
     turnId: Number(turnId),
     text: text != null ? String(text) : '',
+    mode: mode,
+    characterId: state.imageGen && state.imageGen.characterId,
+    framing: state.imageGen && state.imageGen.framing,
+    subjectIds: mode === 'scene' && state.imageGen && Array.isArray(state.imageGen.sceneCharacterIds)
+      ? state.imageGen.sceneCharacterIds.slice()
+      : undefined,
   };
   if (_shotActionDraftTimer) clearTimeout(_shotActionDraftTimer);
   _shotActionDraftTimer = setTimeout(function () {
@@ -1454,9 +1623,8 @@ function _flushShotActionDraftSave() {
   var pending = _shotActionDraftPending;
   _shotActionDraftPending = null;
   if (!pending || !pending.sid || !pending.turnId) return;
-  var mode = state.imageGen && state.imageGen.mode === 'fullbody' ? 'fullbody' : 'scene';
-  var body = { mode: mode, text: pending.text, characterId: state.imageGen && state.imageGen.characterId, framing: state.imageGen && state.imageGen.framing };
-  if (mode === 'scene') body.subjectIds = state.imageGen && state.imageGen.sceneCharacterIds;
+  var body = { mode: pending.mode, text: pending.text, characterId: pending.characterId, framing: pending.framing };
+  if (pending.mode === 'scene') body.subjectIds = pending.subjectIds;
   API.saveShotActionDraft(pending.sid, pending.turnId, body).catch(function (err) {
     console.error('shot-action draft save failed', err);
   });
@@ -1507,6 +1675,8 @@ function openImageSidebar(opts) {
     els.characterAction.value = '';
     state.imageGen.characterAction = '';
   }
+  state.imageGen.posePreviewId = null;
+  _renderPosePreviewSummary();
   if (els.mode) els.mode.value = state.imageGen.mode || 'scene';
   if (els.status) {
     els.status.textContent = '';
@@ -1528,6 +1698,7 @@ function openImageSidebar(opts) {
   if (els.action) {
     try { els.action.focus(); } catch (e) {}
   }
+  _scheduleWarmup();
 }
 
 function _readImageSidebarIntoState() {
@@ -1550,23 +1721,36 @@ function wireImageSidebarOnce() {
   if (els.close) {
     els.close.onclick = function () { closeImageSidebar(); };
   }
+  if (els.posePicker) {
+    els.posePicker.onclick = function () { _openPosePicker(); };
+  }
+  if (els.poseClear) {
+    els.poseClear.onclick = function () {
+      state.imageGen.posePreviewId = null;
+      _renderPosePreviewSummary();
+    };
+  }
 
   els.root.addEventListener('change', function (e) {
     if (e.target.id === 'img-sidebar-mode') {
+      // Persist any pending edit under the OUTGOING mode before switching.
+      _flushShotActionDraftSave();
       _readImageSidebarIntoState();
       _syncImageModeControls();
       _loadShotActionForSidebar(state.imageGen.scenarioId, state.imageGen.turnId);
+      _scheduleWarmup();
       return;
     }
     if (e.target.id === 'img-sidebar-look' && e.target.value) {
+      // Only remember the choice here — the Look is activated on Generate so
+      // that browsing the dropdown doesn't change the app-wide active style.
       state.imageGen.lookId = Number(e.target.value);
-      API.activateLook(Number(e.target.value)).catch(function (err) {
-        showToast('Failed to activate Look: ' + err.message, 'error');
-      });
       return;
     }
     if (e.target.id === 'img-sidebar-char') {
       state.imageGen.characterId = e.target.value ? Number(e.target.value) : null;
+      _syncImageModeControls();
+      _scheduleWarmup();
       if (state.imageGen.mode === 'fullbody') _loadShotActionForSidebar(state.imageGen.scenarioId, state.imageGen.turnId);
     }
     if (e.target.id === 'img-sidebar-framing') state.imageGen.framing = e.target.value || 'auto';
@@ -1581,6 +1765,7 @@ function wireImageSidebarOnce() {
     else if (current.length < 2) state.imageGen.sceneCharacterIds = current.concat(id);
     else { showToast('Choose at most two scene subjects.', 'error'); return; }
     _populateSceneSubjectChips();
+    _scheduleWarmup();
   });
 
   if (els.action) {
@@ -1620,6 +1805,7 @@ function wireImageSidebarOnce() {
         characterId: state.imageGen.characterId,
         sceneCharacterIds: state.imageGen.sceneCharacterIds,
         framing: state.imageGen.framing,
+        poseId: state.imageGen.posePreviewId,
       });
       if (genMode === 'portrait' || genMode === 'fullbody') {
         var charId = state.imageGen.characterId ? Number(state.imageGen.characterId) : 0;
@@ -1631,8 +1817,19 @@ function wireImageSidebarOnce() {
       }
 
       els.generate.disabled = true;
-      els.status.textContent = 'Generating...';
+      els.status.textContent = 'Generating…';
       els.status.classList.remove('is-error');
+
+      var startedAt = Date.now();
+      var progressTimer = setInterval(function () {
+        API.getA1111Progress().then(function (p) {
+          if (!els.generate.disabled) return; // request already settled
+          if (!p || !p.busy) { els.status.textContent = 'Generating…'; return; }
+          var pct = Math.round((p.progress || 0) * 100);
+          els.status.textContent = 'Generating… ' + pct + '%' +
+            (p.eta_seconds > 1 ? ' (~' + Math.round(p.eta_seconds) + 's left)' : '');
+        }).catch(function () {});
+      }, 2000);
 
       var lookPromise = Promise.resolve();
       if (els.look && els.look.value) {
@@ -1648,10 +1845,21 @@ function wireImageSidebarOnce() {
             els.result.insertAdjacentHTML('afterbegin', _buildTurnImageCardHtml(sid, result.image));
           }
         }
+        if (result && result.pose_skipped) {
+          // The image was generated, but the chosen skeleton could not be used.
+          els.status.textContent = 'Image made without the pose — ' + result.pose_skipped;
+          showToast('Pose skipped: ' + result.pose_skipped, 'error');
+        }
       }).catch(function (err) {
-        els.status.textContent = 'Failed: ' + (err.message || 'unknown error');
+        var msg = err.message || 'unknown error';
+        // An aborted / timed-out request often means A1111 is still rendering —
+        // the image may land in this turn's list a bit later.
+        var stillRunning = /abort|timeout|timed out/i.test(msg) || (Date.now() - startedAt) > 90000;
+        els.status.textContent = 'Failed: ' + msg +
+          (stillRunning ? ' — A1111 may still be finishing; check back in a moment.' : '');
         els.status.classList.add('is-error');
       }).finally(function () {
+        clearInterval(progressTimer);
         els.generate.disabled = false;
       });
     };
@@ -1659,6 +1867,19 @@ function wireImageSidebarOnce() {
 
   // Accept / rate / delete on cards inside the sidebar
   els.root.addEventListener('click', function (e) {
+    var poseChoice = e.target.closest('[data-pose-preview-id]');
+    if (poseChoice) {
+      if (poseChoice.disabled) return;
+      state.imageGen.posePreviewId = poseChoice.dataset.posePreviewId || null;
+      _renderPosePreviewSummary();
+      _closePosePicker();
+      if (state.imageGen.posePreviewId) _scheduleWarmup();
+      return;
+    }
+    if (e.target.closest('[data-pose-picker-close]') || e.target === els.poseOverlay) {
+      _closePosePicker();
+      return;
+    }
     var imageAcceptBtn = e.target.closest('.turn-image-accept-btn');
     if (imageAcceptBtn) {
       var acceptCard = imageAcceptBtn.closest('.turn-image-card');
@@ -1670,9 +1891,9 @@ function wireImageSidebarOnce() {
       API.acceptImage(acceptSid, acceptId).then(function (updated) {
         acceptCard.outerHTML = _buildTurnImageCardHtml(acceptSid, updated);
         _storeAcceptedImage(updated);
-        showToast('Image accepted.', 'success');
+        showToast('Image kept.', 'success');
       }).catch(function (err) {
-        showToast('Accept failed: ' + (err.message || 'unknown error'), 'error');
+        showToast('Keep failed: ' + (err.message || 'unknown error'), 'error');
         imageAcceptBtn.disabled = false;
       });
       return;
@@ -1825,8 +2046,11 @@ function showSceneInfo() {
 
   var locationName = 'None';
   if (scenario.active_location_id) {
-    var loc = state.allLocations.find(function (l) { return l.id === scenario.active_location_id; });
+    var loc = (state.allLocations || []).find(function (l) { return l.id === scenario.active_location_id; }) ||
+              (state.locationCards || []).find(function (l) { return l.id === scenario.active_location_id; });
     locationName = loc ? loc.name : String(scenario.active_location_id);
+  } else if (scenario.active_place_text) {
+    locationName = scenario.active_place_text;
   }
 
   function infoRow(label, value) {
@@ -2618,74 +2842,126 @@ function renderRelationshipsTab(container, scenarioId) {
    LOCATION SIDEBAR TAB
    ============================================================ */
 function renderLocationTab(container, scenarioId) {
-  var locs    = state.allLocations || [];
-  var sc      = state.currentScenario;
-  var activeId = sc ? sc.active_location_id : null;
+  container.innerHTML = '<div class="loading-state small">Loading...</div>';
+  API.getLocations()
+    .then(function (cards) {
+      state.locationCards = Array.isArray(cards) ? cards : [];
+      _renderLocationTabInner(container, scenarioId);
+    })
+    .catch(function (err) {
+      container.innerHTML = '<div class="error-state">Failed to load locations: ' + escapeHtml(err.message) + '</div>';
+    });
+}
 
-  function buildItems() {
-    if (!locs.length) {
-      return '<p style="font-size:13px;color:var(--text-muted);padding:8px 0">' +
-        'No locations linked to this scenario.' +
-        '</p>';
-    }
-    return '<div class="loc-tab-list" style="display:flex;flex-direction:column;gap:6px;margin-top:8px">' +
-      locs.map(function (l) {
-        var isActive = l.id === activeId;
-        return '<div class="loc-tab-item" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;background:' +
-          (isActive ? 'var(--accent-muted,rgba(100,180,255,.15))' : 'var(--bg-card,#1e1e2e)') + ';border:1px solid ' +
-          (isActive ? 'var(--accent,#64b4ff)' : 'var(--border,#333)') + '">' +
-          '<div style="flex:1;min-width:0">' +
-            '<div style="font-size:13px;font-weight:' + (isActive ? '600' : '400') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
-              escapeHtml(l.name) +
-              (isActive ? ' <span style="font-size:11px;color:var(--accent,#64b4ff)">(active)</span>' : '') +
-            '</div>' +
-            (l.time_of_day && l.time_of_day !== 'any'
-              ? '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(l.time_of_day) + '</div>'
-              : '') +
-          '</div>' +
-          (isActive
-            ? '<button class="btn btn-ghost btn-xs loc-tab-clear" style="white-space:nowrap">Clear</button>'
-            : '<button class="btn btn-xs btn-secondary loc-tab-set" data-locid="' + l.id + '" style="white-space:nowrap">Set</button>') +
-        '</div>';
-      }).join('') +
+function _renderLocationTabInner(container, scenarioId) {
+  var cards     = state.locationCards || [];
+  var sc        = state.currentScenario || {};
+  var activeId  = sc.active_location_id || null;
+  var placeText = (sc.active_place_text || '').trim();
+  var placeActive = !!placeText && !activeId;
+  var hasActive   = !!activeId || placeActive;
+
+  function cardRow(l) {
+    var isActive = l.id === activeId;
+    return '<div class="loc-tab-item" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;background:' +
+      (isActive ? 'var(--accent-muted,rgba(100,180,255,.15))' : 'var(--bg-card,#1e1e2e)') + ';border:1px solid ' +
+      (isActive ? 'var(--accent,#64b4ff)' : 'var(--border,#333)') + '">' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:13px;font-weight:' + (isActive ? '600' : '400') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+          escapeHtml(l.name) +
+          (isActive ? ' <span style="font-size:11px;color:var(--accent,#64b4ff)">(active)</span>' : '') +
+        '</div>' +
+        (l.time_of_day && l.time_of_day !== 'any'
+          ? '<div style="font-size:11px;color:var(--text-muted)">' + escapeHtml(l.time_of_day) + '</div>'
+          : '') +
+      '</div>' +
+      (isActive
+        ? '<button class="btn btn-ghost btn-xs loc-tab-clear" style="white-space:nowrap">Clear</button>'
+        : '<button class="btn btn-xs btn-secondary loc-tab-set" data-locid="' + l.id + '" style="white-space:nowrap">Set</button>') +
     '</div>';
   }
 
+  var cardsHtml = cards.length
+    ? '<div class="loc-tab-list" style="display:flex;flex-direction:column;gap:6px;margin-top:6px">' +
+        cards.map(cardRow).join('') +
+      '</div>'
+    : '<p style="font-size:12px;color:var(--text-muted);padding:6px 0">No location cards yet. Create them in the Locations manager.</p>';
+
   container.innerHTML =
     '<div style="padding:4px 0">' +
-      '<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">' +
-        'Set the active location for narrator context.' +
+      '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">' +
+        'Set the active place. Used for narrator context and image generation.' +
       '</div>' +
-      buildItems() +
+      '<div style="display:flex;gap:6px">' +
+        '<input type="text" id="loc-tab-place-input" class="form-input form-input-sm" style="flex:1;min-width:0" ' +
+          'placeholder="Type a place…" value="' + escapeHtml(placeActive ? placeText : '') + '">' +
+        '<button class="btn btn-xs btn-secondary" id="loc-tab-place-set" style="white-space:nowrap">Set place</button>' +
+      '</div>' +
+      (placeActive
+        ? '<div style="font-size:11px;color:var(--accent,#64b4ff);margin-top:4px">Active place: ' + escapeHtml(placeText) + '</div>'
+        : '') +
+      '<div style="font-size:11px;color:var(--text-muted);margin:12px 0 0">Location cards</div>' +
+      cardsHtml +
+      (hasActive
+        ? '<button class="btn btn-ghost btn-xs" id="loc-tab-clear-all" style="margin-top:10px">Clear place</button>'
+        : '') +
     '</div>';
+
+  function doClear(btn) {
+    if (btn) btn.disabled = true;
+    API.clearScenarioPlace(scenarioId)
+      .then(function () {
+        sc.active_location_id = null;
+        sc.active_place_text = '';
+        showToast('Place cleared.', 'info');
+        _renderLocationTabInner(container, scenarioId);
+      })
+      .catch(function (err) { if (btn) btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
+  }
 
   container.querySelectorAll('.loc-tab-set').forEach(function (btn) {
     btn.onclick = function () {
       var locId = Number(btn.dataset.locid);
       btn.disabled = true;
       API.setScenarioActiveLocation(scenarioId, locId)
+        .then(function () { return API.addLocationToScenario(scenarioId, locId).catch(function () {}); })
         .then(function () {
-          if (sc) sc.active_location_id = locId;
-          renderLocationTab(container, scenarioId);
-          var loc = locs.find(function (l) { return l.id === locId; });
-          showToast('Location set: ' + escapeHtml(loc ? loc.name : String(locId)), 'success');
+          sc.active_location_id = locId;
+          sc.active_place_text = '';
+          var loc = cards.find(function (l) { return l.id === locId; });
+          showToast('Place set: ' + (loc ? loc.name : String(locId)), 'success');
+          _renderLocationTabInner(container, scenarioId);
         })
         .catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
     };
   });
 
   container.querySelectorAll('.loc-tab-clear').forEach(function (btn) {
-    btn.onclick = function () {
-      btn.disabled = true;
-      API.clearScenarioActiveLocation(scenarioId)
-        .then(function () {
-          if (sc) sc.active_location_id = null;
-          renderLocationTab(container, scenarioId);
-          showToast('Active location cleared.', 'info');
-        })
-        .catch(function (err) { btn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
-    };
+    btn.onclick = function () { doClear(btn); };
   });
+  var clearAll = container.querySelector('#loc-tab-clear-all');
+  if (clearAll) clearAll.onclick = function () { doClear(clearAll); };
+
+  var placeSetBtn = container.querySelector('#loc-tab-place-set');
+  var placeInput  = container.querySelector('#loc-tab-place-input');
+  if (placeSetBtn && placeInput) {
+    placeSetBtn.onclick = function () {
+      var text = (placeInput.value || '').trim();
+      if (!text) { doClear(placeSetBtn); return; }
+      placeSetBtn.disabled = true;
+      API.setScenarioActivePlace(scenarioId, text)
+        .then(function () {
+          sc.active_place_text = text;
+          sc.active_location_id = null;
+          showToast('Place set: ' + text, 'success');
+          _renderLocationTabInner(container, scenarioId);
+        })
+        .catch(function (err) { placeSetBtn.disabled = false; showToast('Failed: ' + err.message, 'error'); });
+    };
+    placeInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); placeSetBtn.click(); }
+    });
+  }
 }
 
 /* ============================================================

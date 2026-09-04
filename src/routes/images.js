@@ -4,6 +4,7 @@ import path from 'path';
 import db from '../db.js';
 import { IMAGES_DIR } from '../paths.js';
 import { generate } from '../services/image-pipeline.js';
+import { warmup } from '../services/image-warmup.js';
 
 const router = Router({ mergeParams: true });
 
@@ -22,7 +23,7 @@ router.get('/', function (req, res) {
 
 router.post('/generate', async function (req, res) {
   const { scenarioId } = req.params;
-  const { turnId = null, mode = 'scene', actionText, characterAction = '', characterIds = null, framing = 'auto' } = req.body || {};
+  const { turnId = null, mode = 'scene', actionText, characterAction = '', characterIds = null, framing = 'auto', poseId = null } = req.body || {};
 
   try {
     const result = await generate({
@@ -33,14 +34,31 @@ router.post('/generate', async function (req, res) {
       characterAction,
       characterIds: Array.isArray(characterIds) ? characterIds.map(Number) : null,
       framing,
+      poseId,
     });
     res.json(result);
   } catch (err) {
-    // A1111 offline, bad config, ControlNet failure, etc. — clean error, no
-    // partial DB row was ever written (image-pipeline only inserts after a
-    // verified successful generation).
-    res.status(502).json({ ok: false, error: err.message });
+    // No partial DB row is ever written (image-pipeline only inserts after a
+    // verified successful generation). err.status carries the intended code:
+    // 400 = bad request (unknown ids, wrong pose subject count), 409 = A1111 is
+    // busy with another render; anything else is an upstream failure → 502.
+    const status = err.status === 400 || err.status === 409 ? err.status : 502;
+    res.status(status).json({ ok: false, error: err.message });
   }
+});
+
+// Fire-and-forget model warm-up — loads the checkpoint + ControlNet models into
+// VRAM while the user is still editing, so the real Generate is not a cold load.
+// Never produces a stored image (see src/services/image-warmup.js).
+router.post('/warmup', function (req, res) {
+  const { scenarioId } = req.params;
+  const { characterIds = null, poseId = null } = req.body || {};
+  warmup({
+    scenarioId: parseInt(scenarioId, 10),
+    characterIds: Array.isArray(characterIds) ? characterIds.map(Number) : null,
+    poseId: typeof poseId === 'string' ? poseId : null,
+  });
+  res.json({ ok: true, started: true });
 });
 
 router.put('/:id/accept', function (req, res) {

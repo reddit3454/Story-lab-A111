@@ -30,3 +30,16 @@ test('buildImageGenerationOptions omits blank optional character action', () => 
     actionText: 'A quiet apartment at dusk',
   });
 });
+
+test('buildImageGenerationOptions forwards one selected pose id without changing prompt fields', () => {
+  assert.deepEqual(buildImageGenerationOptions({
+    turnId: 17,
+    sceneText: 'sitting in an armchair',
+    poseId: 'sitting-demo-01',
+  }), {
+    turnId: 17,
+    mode: 'scene',
+    actionText: 'sitting in an armchair',
+    poseId: 'sitting-demo-01',
+  });
+});

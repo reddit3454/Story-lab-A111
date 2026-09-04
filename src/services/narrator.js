@@ -7,6 +7,7 @@ import { log, logError } from '../logger.js';
 import { ensureScenarioCharacterState, buildEmotionalDirective, buildCastBehaviorBlock } from './character-state.js';
 import { resolveRelationshipsForScenario, formatRelationshipLine } from './relationship-resolve.js';
 import { getScenarioClothing } from './clothing.js';
+import { resolveScenarioPlace } from './scenario-place.js';
 import {
   estimateTokenCount,
   resolveNarratorInputBudget,
@@ -245,9 +246,11 @@ async function llamacppChat({ port, messages, maxTokens }) {
 
 export async function runNarratorTurn({ db, scenario, messages, turnNumber }) {
   const characters   = _getCharacters.all(scenario.id);
-  const location     = scenario.active_location_id
+  const locationCard = scenario.active_location_id
     ? _getLocation.get(scenario.active_location_id)
     : null;
+  // Resolves to the location card, or the scenario's free-text place, or null.
+  const location     = resolveScenarioPlace({ scenario, location: locationCard });
   const rules        = _getRules.all(scenario.id);
   const worldEntries = _getWorldEntries.all(scenario.id);
   const memories     = _getMemories.all(scenario.id);

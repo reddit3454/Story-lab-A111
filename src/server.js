@@ -24,6 +24,7 @@ import characterStatesRouter    from './routes/character-states.js';
 import a1111Router      from './routes/a1111.js';
 import looksRouter      from './routes/looks.js';
 import imagesRouter     from './routes/images.js';
+import posesRouter      from './routes/poses.js';
 
 const PORT = process.env.PORT || 4090;
 
@@ -79,6 +80,7 @@ app.use('/api/scenarios/:scenarioId/images', imagesRouter);
 app.use('/api/audit',  auditRouter);
 app.use('/api/a1111',  a1111Router);
 app.use('/api/looks',  looksRouter);
+app.use('/api/poses',  posesRouter);
 
 /* ── SPA fallback ────────────────────────────────────────────────────── */
 

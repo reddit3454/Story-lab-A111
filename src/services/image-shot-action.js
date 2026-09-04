@@ -159,12 +159,14 @@ export function resolveShotActionSync(turn) {
   };
 }
 
-export async function suggestShotActionViaLlm({ contentText, db }) {
+export async function suggestShotActionViaLlm({ contentText, db, mode = 'scene', focusCharacter = null }) {
   const excerpt = String(contentText || '').replace(/\s+/g, ' ').trim().slice(0, 2500);
   if (!excerpt) return { text: '', ok: false, error: 'No turn content to summarize' };
 
   const model = await resolveNarratorModel(db);
-  const prompt = `Story beat to summarize visually:\n\n${excerpt}`;
+  const prompt = mode === 'fullbody' && focusCharacter
+    ? `From this story beat, describe ONLY ${focusCharacter} as a full-body shot: their pose, action, and what they are wearing. One short sentence. Do not describe other characters or the wider setting.\n\n${excerpt}`
+    : `Story beat to summarize visually:\n\n${excerpt}`;
 
   try {
     const data = await ollama.generate({

@@ -1,5 +1,8 @@
 import { Router } from 'express';
+import fs from 'fs';
+import path from 'path';
 import db from '../db.js';
+import { IMAGES_DIR } from '../paths.js';
 
 const router = Router();
 
@@ -10,7 +13,7 @@ const SCENARIO_FIELDS = [
   'reply_length', 'lust_level', 'explicitness_level',
   'pacing', 'narrative_pov', 'violence_level', 'tone_modifier',
   'narrator_presence_enabled', 'narrator_presence_mode', 'narrator_presence_config',
-  'active_location_id', 'user_character_id', 'ended_at', 'generation_config',
+  'active_location_id', 'active_place_text', 'user_character_id', 'ended_at', 'generation_config',
 ];
 
 const BOOL_FIELDS = new Set(['nsfw_enabled', 'narrator_presence_enabled']);
@@ -115,6 +118,17 @@ router.get('/:id', function (req, res) {
 router.put('/:id', function (req, res) {
   const b = req.body;
 
+  // active_location_id and active_place_text are mutually exclusive: a location
+  // card and a free-text place can never both be set. Trim the text, and if the
+  // request would leave both populated, the location card wins.
+  if ('active_place_text' in b) {
+    b.active_place_text = String(b.active_place_text ?? '').trim();
+    if (b.active_place_text && !b.active_location_id) b.active_location_id = null;
+  }
+  if ('active_location_id' in b && b.active_location_id) {
+    b.active_place_text = '';
+  }
+
   const sets = [];
   const vals = [];
 
@@ -153,9 +167,55 @@ router.get('/:id/scene-card', function (req, res) {
 });
 
 router.post('/:id/reset-scene', function (req, res) {
-  db.prepare('DELETE FROM turns WHERE scenario_id = ?').run(req.params.id);
-  db.prepare("UPDATE scenarios SET active_location_id = NULL, updated_at = datetime('now') WHERE id = ?").run(req.params.id);
-  res.json({ ok: true });
+  const scenarioId = req.params.id;
+
+  // Images the user marked "Keep" (accepted = 1) survive a reset; everything
+  // else generated during the wiped turns is thrown away, row and file both.
+  // We must also detach the kept images from their turns BEFORE deleting the
+  // turns: on installs that predate the image-pipeline rebuild, the
+  // scene_images.turn_id foreign key is ON DELETE NO ACTION (not SET NULL),
+  // so deleting a referenced turn would fail with a FOREIGN KEY constraint
+  // error and the whole reset would blow up.
+  let discardFiles = [];
+  let kept = 0;
+  let discarded = 0;
+  try {
+    discardFiles = db
+      .prepare('SELECT filename FROM scene_images WHERE scenario_id = ? AND COALESCE(accepted, 0) = 0')
+      .all(scenarioId)
+      .map((r) => r.filename);
+
+    db.exec('BEGIN');
+    try {
+      discarded = db.prepare('DELETE FROM scene_images WHERE scenario_id = ? AND COALESCE(accepted, 0) = 0').run(scenarioId).changes;
+      kept = db.prepare('UPDATE scene_images SET turn_id = NULL WHERE scenario_id = ? AND COALESCE(accepted, 0) = 1').run(scenarioId).changes;
+      db.prepare('DELETE FROM turns WHERE scenario_id = ?').run(scenarioId);
+      // Clear BOTH place sources — a lingering active_place_text would otherwise
+      // keep being injected into every narrator turn and generated image after
+      // the reset.
+      db.prepare("UPDATE scenarios SET active_location_id = NULL, active_place_text = '', updated_at = datetime('now') WHERE id = ?").run(scenarioId);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  } catch (err) {
+    console.error('[scenarios] reset-scene failed', err.message);
+    return res.status(500).json({ error: 'Reset failed: ' + err.message });
+  }
+
+  // Best-effort file cleanup, outside the transaction. A missing or locked file
+  // must not fail the request — the DB is already consistent.
+  for (const filename of discardFiles) {
+    const abs = path.join(IMAGES_DIR, String(scenarioId), filename);
+    try {
+      if (fs.existsSync(abs)) fs.unlinkSync(abs);
+    } catch (err) {
+      console.error('[scenarios] reset-scene: could not delete', abs, err.message);
+    }
+  }
+
+  res.json({ ok: true, kept, discarded });
 });
 
 export default router;

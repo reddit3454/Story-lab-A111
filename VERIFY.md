@@ -25,6 +25,25 @@ Run after boot from the **current tree**. Prefer scratch port if :4090 may be st
 26. Change Look in the panel and Generate immediately → new image uses that Look (activate-before-generate).
 27. UI served from a non-4090 port still talks to that same origin (relative `API` base).
 
+## Performance and model-boundary checks (added 2026-09-03)
+
+28. Record separate durations for a normal narrator response, every synchronous secondary-model
+    call, and the total HTTP turn response. Do not report only one combined duration.
+29. Confirm a normal narrator turn remains usable while optional scene state, clothing extraction,
+    memory, and image-action assistance are disabled or unavailable. A secondary backend failure
+    must be shown as such and must not strand the primary turn.
+30. With the selected startup configuration, inspect GPU memory before and after boot. Record which
+    of A1111, llama.cpp, and Ollama owns GPU memory; do not assume they can run together without
+    contention.
+31. Submit one deliberately slow A1111 request. Confirm the application either completes it within
+    the configured timeout or explicitly interrupts/tracks the A1111 job. After the client returns,
+    `GET /sdapi/v1/progress` must not show an unreported orphaned job.
+32. Trigger image warm-up once with the current live ControlNet configuration. A warm-up failure
+    must be visible, must not repeat automatically on each interaction, and must not block manual
+    image generation.
+33. Run `npm test`, then confirm test traffic was written only to a test-local audit path and did
+    not add mocked events to `H:\MEDIA\Story_Lab\data\audit.jsonl`.
+
 ---
 
 ## Full verification results (2026-07-20)

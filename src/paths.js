@@ -12,6 +12,7 @@ export const AUDIO_DIR       = 'H:\\MEDIA\\Story_Lab\\audio';
 export const IMAGES_DIR      = 'H:\\MEDIA\\Story_Lab\\images';
 export const DB_PATH         = join(DATA_DIR, 'story-lab.db');
 export const AUDIT_LOG_PATH  = join(DATA_DIR, 'audit.jsonl');
+export const POSE_LIBRARY_DIR = process.env.STORYLAB_POSE_LIBRARY_DIR || 'H:\\MEDIA\\Model_pose_reference\\storylab_pose_library';
 
 function ensureDirectories() {
   for (const dir of [DATA_DIR, AUDIO_DIR, IMAGES_DIR]) {

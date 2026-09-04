@@ -1,6 +1,22 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractSceneState, EMPTY_SCENE_STATE, SCENE_STATE_SCHEMA } from '../scene-state.js';
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'story-lab-scene-state-'));
+const DATA_DIR = path.join(ROOT, 'data');
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+mock.module('../../paths.js', {
+  namedExports: {
+    ROOT_DIR: ROOT, PUBLIC_DIR: path.join(ROOT, 'public'), DATA_DIR,
+    IMAGES_DIR: path.join(ROOT, 'images'), AUDIO_DIR: path.join(ROOT, 'audio'),
+    DB_PATH: ':memory:', AUDIT_LOG_PATH: path.join(DATA_DIR, 'audit.jsonl'),
+  },
+});
+
+const { extractSceneState, EMPTY_SCENE_STATE, SCENE_STATE_SCHEMA } = await import('../scene-state.js');
 
 const CAST = [{ id: 11, name: 'Carol' }, { id: 2, name: 'Jib' }];
 

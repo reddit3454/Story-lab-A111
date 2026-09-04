@@ -74,6 +74,8 @@
     removeLocationFromScenario: function (sid, locId) { return request('DELETE', '/api/scenarios/' + sid + '/locations/' + locId + '/remove'); },
     setScenarioActiveLocation:   function (sid, locId) { return request('PUT',    '/api/scenarios/' + sid, { active_location_id: locId }); },
     clearScenarioActiveLocation: function (sid)        { return request('PUT',    '/api/scenarios/' + sid, { active_location_id: null }); },
+    setScenarioActivePlace:      function (sid, text)  { return request('PUT',    '/api/scenarios/' + sid, { active_place_text: text }); },
+    clearScenarioPlace:          function (sid)        { return request('PUT',    '/api/scenarios/' + sid, { active_location_id: null, active_place_text: '' }); },
     getScenarioActiveLocation:   function (sid)        {
       return request('GET', '/api/scenarios/' + sid).then(function (d) {
         return { active_location_id: (d.scenario || d).active_location_id || null };
@@ -153,12 +155,20 @@
     /* A1111 health + catalog */
     getHealthA1111:   function ()      { return request('GET',  '/api/health/a1111'); },
     getA1111Status:   function ()      { return request('GET',  '/api/a1111/status'); },
+    getA1111Progress: function ()      { return request('GET',  '/api/a1111/progress'); },
     getA1111Models:   function ()      { return request('GET',  '/api/a1111/models'); },
     getA1111Loras:    function ()      { return request('GET',  '/api/a1111/loras'); },
     getA1111Samplers: function ()      { return request('GET',  '/api/a1111/samplers'); },
     getA1111Vaes:       function ()  { return request('GET', '/api/a1111/vaes'); },
     getA1111Schedulers: function ()  { return request('GET', '/api/a1111/schedulers'); },
+    getA1111FaceIdOptions: function () { return request('GET', '/api/a1111/controlnet/faceid-options'); },
+    setA1111FaceIdConfig: function (config) { return request('PUT', '/api/a1111/controlnet/faceid-config', config); },
+    getA1111PoseOptions: function () { return request('GET', '/api/a1111/controlnet/pose-options'); },
+    setA1111PoseConfig: function (config) { return request('PUT', '/api/a1111/controlnet/pose-config', config); },
     setA1111Model:    function (name)  { return request('POST', '/api/a1111/model', { model_name: name }); },
+
+    /* Prepared pose library — metadata and previews only; control images remain server-side. */
+    getPoseLibrary: function () { return request('GET', '/api/poses'); },
 
     /* Looks (style lock) — exactly one active at a time */
     getLooks:       function ()      { return request('GET',    '/api/looks'); },
@@ -183,6 +193,7 @@
       return request('GET', '/api/scenarios/' + sid + '/images' + (turnId ? '?turnId=' + turnId : ''));
     },
     generateImage:      function (sid, opts) { return request('POST', '/api/scenarios/' + sid + '/images/generate', opts || {}); },
+    warmupImage:        function (sid, opts) { return request('POST', '/api/scenarios/' + sid + '/images/warmup', opts || {}); },
     acceptImage:         function (sid, imageId) { return request('PUT', '/api/scenarios/' + sid + '/images/' + imageId + '/accept'); },
     rateImage:            function (sid, imageId, rating) { return request('PUT', '/api/scenarios/' + sid + '/images/' + imageId + '/rate', { rating: rating }); },
     deleteImage:          function (sid, imageId) { return request('DELETE', '/api/scenarios/' + sid + '/images/' + imageId); },
