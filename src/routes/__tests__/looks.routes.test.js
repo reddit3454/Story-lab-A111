@@ -329,6 +329,46 @@ test('POST /api/looks/test-generate runs one txt2img with the draft settings and
   assert.equal(capturedPayload.batch_size, 1);
 });
 
+test('draft test generation uses the production prompt order and request-local model overrides', async (t) => {
+  let capturedPayload = null;
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    if (String(url).includes('/sdapi/v1/txt2img')) {
+      capturedPayload = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({
+          images: ['iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='],
+          info: JSON.stringify({ seed: 12 }),
+        }),
+      };
+    }
+    throw new Error('unexpected fetch in test: ' + String(url));
+  });
+
+  const created = await post('/api/looks', {
+    name: 'Production Test Draft', checkpoint: 'draft-checkpoint.safetensors', vae: 'draft-vae.safetensors',
+    clip_skip: 2, prompt_prefix: 'prefix first', prompt_suffix: 'suffix last', negative: 'look negative',
+    loras: [{ file: 'first-lora', strength: 0.45 }, { file: 'second-lora', strength: 0.8 }],
+  });
+  const draft = await post(`/api/looks/${created.json.id}/drafts`);
+  const generated = await post(`/api/looks/drafts/${draft.json.id}/test-generate`, {
+    test_subject: 'a woman standing in a park, full body',
+  });
+
+  assert.equal(generated.status, 200);
+  const prompt = capturedPayload.prompt;
+  assert.ok(prompt.indexOf('prefix first') < prompt.indexOf('<lora:first-lora:0.45>'));
+  assert.ok(prompt.indexOf('<lora:first-lora:0.45>') < prompt.indexOf('<lora:second-lora:0.8>'));
+  assert.ok(prompt.indexOf('<lora:second-lora:0.8>') < prompt.indexOf('a woman standing in a park, full body'));
+  assert.ok(prompt.indexOf('a woman standing in a park, full body') < prompt.indexOf('suffix last'));
+  assert.equal(capturedPayload.override_settings.sd_model_checkpoint, 'draft-checkpoint.safetensors');
+  assert.equal(capturedPayload.override_settings.sd_vae, 'draft-vae.safetensors');
+  assert.equal(capturedPayload.override_settings.CLIP_stop_at_last_layers, 2);
+  assert.equal(capturedPayload.override_settings_restore_afterwards, true);
+  assert.match(capturedPayload.negative_prompt, /look negative/);
+  assert.match(capturedPayload.negative_prompt, /bad anatomy/);
+});
+
 test('POST /api/looks/test-generate/save moves the file into the permanent saves folder', async (t) => {
   t.mock.method(globalThis, 'fetch', async (url, opts) => {
     if (String(url).includes('/sdapi/v1/txt2img')) {

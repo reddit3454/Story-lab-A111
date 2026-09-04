@@ -5,7 +5,7 @@ import db from '../db.js';
 import broadcast from '../broadcast.js';
 import { IMAGES_DIR } from '../paths.js';
 import { resolveMasterConfig } from '../services/config-resolver.js';
-import { loraTags } from '../services/prompt-builder.js';
+import { buildPrompt } from '../services/prompt-builder.js';
 import { LOOK_SNAPSHOT_FIELDS, parseLookSnapshot, snapshotLook } from '../services/look-version.js';
 import * as a1111 from '../services/a1111.js';
 
@@ -338,49 +338,66 @@ function _a1111BaseUrl() {
   return config.a1111_url || 'http://127.0.0.1:7860';
 }
 
+async function _generateDraftTest(snapshot, testSubject) {
+  const master = resolveMasterConfig(db);
+  const assembled = buildPrompt({
+    look: snapshot,
+    actionText: testSubject || '',
+    masterNegative: master.master_negative || '',
+    mode: 'scene',
+  });
+  const payload = {
+    prompt: assembled.prompt,
+    negative_prompt: assembled.negative,
+    steps: snapshot.steps != null && snapshot.steps !== '' ? parseInt(snapshot.steps, 10) : 30,
+    cfg_scale: snapshot.cfg != null && snapshot.cfg !== '' ? Number(snapshot.cfg) : 7,
+    width: snapshot.width != null && snapshot.width !== '' ? parseInt(snapshot.width, 10) : 832,
+    height: snapshot.height != null && snapshot.height !== '' ? parseInt(snapshot.height, 10) : 1216,
+    sampler_name: snapshot.sampler || 'DPM++ 2M SDE',
+    scheduler: snapshot.scheduler || 'Karras',
+    restore_faces: !!snapshot.restore_faces,
+    tiling: !!snapshot.tiling,
+    seed: -1,
+    n_iter: 1,
+    batch_size: 1,
+  };
+  if (snapshot.checkpoint || snapshot.vae || (snapshot.clip_skip != null && snapshot.clip_skip !== '')) {
+    payload.override_settings = {};
+    if (snapshot.checkpoint) payload.override_settings.sd_model_checkpoint = snapshot.checkpoint;
+    if (snapshot.vae) payload.override_settings.sd_vae = snapshot.vae;
+    if (snapshot.clip_skip != null && snapshot.clip_skip !== '') {
+      payload.override_settings.CLIP_stop_at_last_layers = parseInt(snapshot.clip_skip, 10);
+    }
+    payload.override_settings_restore_afterwards = true;
+  }
+
+  fs.mkdirSync(SCRATCH_DIR, { recursive: true });
+  const filename = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
+  const result = await a1111.txt2img(_a1111BaseUrl(), payload, path.join(SCRATCH_DIR, filename));
+  return {
+    ok: true,
+    filename: result.filename,
+    url: `/story-images/_look-test-scratch/${result.filename}`,
+    seed: result.seed,
+    generation_time_ms: result.generation_time_ms,
+  };
+}
+
+router.post('/drafts/:versionId/test-generate', async function (req, res) {
+  const draft = db.prepare("SELECT * FROM image_look_versions WHERE id = ? AND status = 'draft'").get(req.params.versionId);
+  if (!draft) return res.status(404).json({ ok: false, error: 'Draft not found' });
+  try {
+    res.json(await _generateDraftTest(parseLookSnapshot(draft.snapshot_json), req.body?.test_subject));
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 router.post('/test-generate', async function (req, res) {
   const b = req.body || {};
   try {
-    const master = resolveMasterConfig(db);
-    const loras = loraTags({ loras_json: JSON.stringify(Array.isArray(b.loras) ? b.loras : []) });
-    const promptParts = [...loras, b.prompt_prefix || '', b.test_subject || '', b.prompt_suffix || ''].filter(Boolean);
-    const prompt = promptParts.join(', ');
-    const negative = [b.negative || '', master.master_negative || ''].filter(Boolean).join(', ');
-
-    const payload = {
-      prompt,
-      negative_prompt: negative,
-      steps: b.steps != null && b.steps !== '' ? parseInt(b.steps, 10) : 30,
-      cfg_scale: b.cfg != null && b.cfg !== '' ? Number(b.cfg) : 7,
-      width: b.width != null && b.width !== '' ? parseInt(b.width, 10) : 832,
-      height: b.height != null && b.height !== '' ? parseInt(b.height, 10) : 1216,
-      sampler_name: b.sampler || 'DPM++ 2M SDE',
-      scheduler: b.scheduler || 'Karras',
-      restore_faces: !!b.restore_faces,
-      tiling: !!b.tiling,
-      seed: -1,
-      n_iter: 1,
-      batch_size: 1,
-    };
-    if (b.vae || (b.clip_skip != null && b.clip_skip !== '')) {
-      payload.override_settings = {};
-      if (b.vae) payload.override_settings.sd_vae = b.vae;
-      if (b.clip_skip != null && b.clip_skip !== '') payload.override_settings.CLIP_stop_at_last_layers = parseInt(b.clip_skip, 10);
-      payload.override_settings_restore_afterwards = true;
-    }
-
-    fs.mkdirSync(SCRATCH_DIR, { recursive: true });
-    const filename = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
-    const savePath = path.join(SCRATCH_DIR, filename);
-
-    const result = await a1111.txt2img(_a1111BaseUrl(), payload, savePath);
-    res.json({
-      ok: true,
-      filename: result.filename,
-      url: `/story-images/_look-test-scratch/${result.filename}`,
-      seed: result.seed,
-      generation_time_ms: result.generation_time_ms,
-    });
+    const snapshot = _updatedDraftSnapshot(_emptyLookSnapshot(), b);
+    res.json(await _generateDraftTest(snapshot, b.test_subject));
   } catch (err) {
     res.status(502).json({ ok: false, error: err.message });
   }
