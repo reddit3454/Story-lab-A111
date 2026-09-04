@@ -10,12 +10,11 @@ test('every active setting declares one visible owner or an internal classificat
   }
 });
 
-test('scene-state and preload settings are visible runtime controls', () => {
+test('scene-state settings are visible runtime controls', () => {
   const visible = new Map(getVisibleSettings().map((setting) => [setting.key, setting]));
   assert.equal(visible.get('scene_state_enabled').uiOwner, 'story-dynamics');
   assert.equal(visible.get('scene_state_model').uiOwner, 'story-dynamics');
   assert.equal(visible.get('scene_state_keep_alive').uiOwner, 'story-dynamics');
-  assert.equal(visible.get('image_warmup_enabled').uiOwner, 'image-generation');
 });
 
 test('the stale llama.cpp extractor route is explicitly legacy', () => {

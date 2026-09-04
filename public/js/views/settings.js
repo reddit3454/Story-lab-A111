@@ -304,12 +304,6 @@ function buildTabContent(tabId) {
         '<div class="settings-section">' +
           '<h2 class="section-title">A1111 Connection</h2>' +
           '<div id="imagegen-a1111-status"><div class="loading-state">Checking...</div></div>' +
-          '<div id="imagegen-connection-form"><div class="loading-state">Loading...</div></div>' +
-        '</div>' +
-        '<div class="settings-section">' +
-          '<h2 class="section-title">Performance</h2>' +
-          '<p class="text-muted" style="margin-bottom:10px">Keep A1111 cold by default. Enable preloading only if a faster first image is worth its idle VRAM cost.</p>' +
-          '<div id="imagegen-performance-form"><div class="loading-state">Loading...</div></div>' +
         '</div>' +
         '<div class="settings-section">' +
           '<h2 class="section-title">Looks</h2>' +
@@ -526,8 +520,6 @@ var _looksCache = [];
 
 function wireImageGenSettings() {
   loadA1111Status();
-  loadImageConnectionConfig();
-  loadImagePerformanceConfig();
   loadLooksList();
   loadFaceidConfig();
   loadPoseControlConfig();
@@ -536,51 +528,6 @@ function wireImageGenSettings() {
   if (newLookBtn) {
     newLookBtn.onclick = function () { showLookEditor(null); };
   }
-}
-
-function loadImageConnectionConfig() {
-  var el = document.getElementById('imagegen-connection-form');
-  if (!el) return;
-  API.getConfig().then(function (cfg) {
-    el.innerHTML =
-      '<div class="settings-subsection"><h3>Connection and safety baseline</h3>' +
-      '<div class="form-group"><label class="form-label">A1111 URL</label><input class="form-input" id="ig-a1111-url" value="' + escapeHtml(cfg.a1111_url || 'http://127.0.0.1:7860') + '"><div class="form-hint">The direct A1111 service used for every image request.</div></div>' +
-      '<div class="form-group"><label class="form-label">Master negative prompt</label><textarea class="form-input" rows="3" id="ig-master-negative">' + escapeHtml(cfg.master_negative || '') + '</textarea><div class="form-hint">Anatomy and safety baseline only. Look-specific style negatives stay with the active Look.</div></div>' +
-      '<button type="button" class="btn btn-primary btn-sm" id="ig-save-connection">Save Connection</button></div>';
-    document.getElementById('ig-save-connection').onclick = function () {
-      var btn = document.getElementById('ig-save-connection');
-      setLoading(btn, true, 'Saving...');
-      API.setConfigs({
-        a1111_url: document.getElementById('ig-a1111-url').value.trim(),
-        master_negative: document.getElementById('ig-master-negative').value.trim(),
-      }).then(function () { showToast('Image connection saved.', 'success'); setLoading(btn, false); loadA1111Status(); })
-        .catch(function (e) { showToast('Save failed: ' + e.message, 'error'); setLoading(btn, false); });
-    };
-  }).catch(function (e) {
-    el.innerHTML = '<p class="text-muted">Could not load image connection settings: ' + escapeHtml(e.message) + '</p>';
-  });
-}
-
-function loadImagePerformanceConfig() {
-  var el = document.getElementById('imagegen-performance-form');
-  if (!el) return;
-  API.getConfig().then(function (cfg) {
-    var enabled = cfg.image_warmup_enabled === true || cfg.image_warmup_enabled === 'true' || cfg.image_warmup_enabled === 1 || cfg.image_warmup_enabled === '1';
-    el.innerHTML =
-      '<label class="settings-toggle-row"><span><strong>Preload A1111</strong><small>Warm the image service after Story Lab starts.</small></span>' +
-      '<input type="checkbox" id="ig-warmup-enabled"' + (enabled ? ' checked' : '') + '></label>' +
-      '<p class="form-hint">Current default is off. Changing this applies on the next Story Lab restart.</p>' +
-      '<button type="button" class="btn btn-primary btn-sm" id="ig-save-performance">Save Performance</button>';
-    document.getElementById('ig-save-performance').onclick = function () {
-      var btn = document.getElementById('ig-save-performance');
-      setLoading(btn, true, 'Saving...');
-      API.setConfig('image_warmup_enabled', document.getElementById('ig-warmup-enabled').checked ? 'true' : 'false')
-        .then(function () { showToast('Image performance saved. Restart Story Lab to apply preload changes.', 'success'); setLoading(btn, false); })
-        .catch(function (e) { showToast('Save failed: ' + e.message, 'error'); setLoading(btn, false); });
-    };
-  }).catch(function (e) {
-    el.innerHTML = '<p class="text-muted">Could not load image performance settings: ' + escapeHtml(e.message) + '</p>';
-  });
 }
 
 function loadA1111Status() {
