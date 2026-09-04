@@ -20,6 +20,111 @@
 - Keep the existing dirty working tree isolated from this work.
 - All output must be ASCII-only.
 
+## UI and Settings Coverage Contract (added after live UI audit)
+
+Every user-selectable runtime behavior must have exactly one clear owner in the
+Settings UI, a server-validated persisted value, a plain-language description,
+and a visible current status. The generic `/api/config` key-value endpoint is
+not itself a settings contract: it accepts arbitrary keys, so it cannot prove
+that a saved behavior is represented in the UI.
+
+### Required information architecture
+
+Keep the existing Settings page, but make these operational sections explicit:
+
+1. **General**: service health only. Show Story Lab, Ollama, llama.cpp when
+   selected by any role, A1111, and Codex only when configured. Each row shows
+   Available, Unavailable, or Disabled, plus a concise actionable reason.
+2. **Models and reasoning**: separate the narrator backend from secondary
+   reasoning. The narrator remains Ollama/llama.cpp only. A Secondary reasoning
+   subsection contains Scene state, Memory, and Image action rows.
+3. **Image generation**: group Connection, Identity lock (FaceID), Pose lock,
+   Looks, and Performance. Do not mix raw model routing with visual controls.
+4. **Story dynamics**: group Scene state extraction first, then character mood,
+   arousal, relationship behavior, and Play-only affordances.
+
+The current `settings-tab-*` DOM classes have no matching CSS rules in
+`public/css/main.css`; the live screen renders its navigation as browser-default
+buttons. Repair this layout before adding controls. Use the existing dark Story
+Lab visual language: a constrained content column, a real segmented tab bar,
+card/row grouping, consistently styled native inputs, and section descriptions
+that explain effect rather than implementation. Do not introduce a separate
+design system or a card grid for every individual checkbox.
+
+### Settings that must be represented
+
+| Area | Persisted setting(s) | Required visible control/state |
+| --- | --- | --- |
+| Scene-state extraction | `scene_state_enabled`, `scene_state_model`, `scene_state_keep_alive` | Enable switch; local model selector; residency choice with VRAM explanation; current job state and last duration/fallback result. |
+| Secondary providers | one provider selection per role: scene state, memory, image action; timeout/fallback policy | Provider select defaults to Ollama. Codex appears only as Available or Unavailable, never as a misleading usable choice. Show selected provider and actual provider used for the latest call. |
+| Local model routing | `llamacpp_config` roles | Keep Narrator, Extractor, Summarizer, Picker, Tools. Add clear ownership labels so a secondary-role provider selection cannot be confused with a local llama.cpp/Ollama model choice. |
+| FaceID | model, locked compatible module, `a1111_faceid_weight` | Existing UI stays, with catalog failure and disabled state preserved. |
+| Pose control | model, locked compatible module, `a1111_pose_weight` | Existing UI stays, with catalog failure and disabled state preserved. |
+| Image preload | `image_warmup_enabled` | A Performance row. Default Off and label it as disabled pending live verification. Do not silently fire an A1111 generation from ordinary sidebar editing. |
+| Image style | active Look and Look fields | Existing Look editor remains the sole style owner. |
+| Story behavior | existing NSFW, explicit, mood, arousal, relationship, and Play controls | Retain all existing controls but organize them into labeled groups rather than one uninterrupted checkbox list. |
+
+Legacy `global_config` keys that are no longer consumed by the A1111-direct
+pipeline must be classified in a server-owned registry as `legacy` and omitted
+from ordinary Settings. They must not be presented as active controls or be
+silently deleted. The registry is the testable inventory used to guarantee that
+every active setting is either represented, intentionally internal, or legacy.
+
+### Verified current mismatch to remove
+
+The current Models tab labels a saved `llamacpp_config.extractor` entry as
+"Extractor", but `src/services/scene-state.js` does not read that entry. It
+reads `scene_state_model` directly and currently runs `qwen2.5:7b-instruct`.
+Do not retain that label as though it controls scene state. Until the shared
+secondary-reasoning contract is implemented, present it as an unused legacy
+route or remove it from the active form. After the refactor, each visible role
+must point to one named runtime contract and a test must prove the selected
+value reaches that contract.
+
+### Required runtime states
+
+For each secondary role, record and expose:
+
+- configured provider and model;
+- availability at last health probe;
+- provider actually used for the last completed call;
+- fallback reason when configured provider was not used;
+- duration and timestamp; and
+- whether the result is pending, complete, skipped, or failed.
+
+Do not expose credentials, raw Codex thread content, FaceID data, local media
+paths, or production story text in Settings or health output.
+
+## Task 0: Repair Settings Foundation and Create the Registry
+
+**Files:**
+
+- Create: `src/services/settings-registry.js`
+- Modify: `src/routes/config.js`, `src/routes/health.js`, `public/js/api.js`,
+  `public/js/views/settings.js`, `public/css/main.css`
+- Test: `src/services/__tests__/settings-registry.test.js`,
+  `src/routes/__tests__/config.routes.test.js`,
+  `public/js/__tests__/settings-layout.test.js`
+
+**Produces:** A source-of-truth inventory for active versus legacy settings and
+a visibly coherent Settings screen before the Codex provider is offered.
+
+- [ ] Write registry tests proving every active setting has a UI owner or an
+  explicit internal classification, and that unknown provider values are
+  rejected server-side.
+- [ ] Replace the unstyled settings tab shell with tested CSS for the current
+  DOM, then visually inspect General, Models and reasoning, Image generation,
+  and Story dynamics at the normal desktop viewport.
+- [ ] Add the missing scene-state and preload controls. Preserve saved values
+  when a live catalog/health check is unavailable; show unavailable rather than
+  overwriting or guessing.
+- [ ] Add health/status API data without performing a Codex request merely to
+  render Settings. Codex health is an explicit, bounded probe after Task 1
+  establishes the supported local interface.
+- [ ] Do not add a Codex option to a select until Task 1 marks the local
+  integration available. Before then, render its unavailable explanation in
+  the role row.
+
 ## File Structure
 
 - `src/services/secondary-reasoning.js`: provider-neutral validation and dispatch.
