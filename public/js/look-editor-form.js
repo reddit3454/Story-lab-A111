@@ -22,10 +22,9 @@ function _intOrNull(v) {
 }
 
 /**
- * Builds the request body for POST/PUT /api/looks (and the equivalent draft
- * shape for POST /api/looks/test-generate, which accepts the same field
- * names) from a plain object of raw form values. Returns { ok: false } if
- * required fields are missing — never throws.
+ * Builds the request body for PUT /api/looks/drafts/:id. The production Look
+ * is never written from the editor; activation applies a saved draft. Returns
+ * { ok: false } if required fields are missing — never throws.
  */
 export function buildLookPayload(fields) {
   const name = String(fields.name || '').trim();

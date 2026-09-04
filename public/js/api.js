@@ -178,6 +178,13 @@
     updateLook:     function (id, d) { return request('PUT',    '/api/looks/' + id, d); },
     deleteLook:     function (id)    { return request('DELETE', '/api/looks/' + id); },
     activateLook:   function (id)    { return request('POST',   '/api/looks/' + id + '/activate'); },
+    createLookDraft: function (lookId) {
+      return lookId ? request('POST', '/api/looks/' + lookId + '/drafts') : request('POST', '/api/looks/drafts');
+    },
+    saveLookDraft: function (draftId, data) { return request('PUT', '/api/looks/drafts/' + draftId, data); },
+    discardLookDraft: function (draftId) { return request('DELETE', '/api/looks/drafts/' + draftId); },
+    activateLookDraft: function (draftId) { return request('POST', '/api/looks/drafts/' + draftId + '/activate'); },
+    testGenerateLookDraft: function (draftId, data) { return request('POST', '/api/looks/drafts/' + draftId + '/test-generate', data); },
     testGenerateLook:      function (draft)     { return request('POST', '/api/looks/test-generate', draft); },
     saveTestLookImage:     function (filename)   { return request('POST', '/api/looks/test-generate/save', { filename }); },
     cleanupTestLookImages: function (filenames) { return request('POST', '/api/looks/test-generate/cleanup', { filenames }); },

@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { addLoraRow, removeLoraRow, buildLookPayload } from '../look-editor-form.js';
+
+const root = path.resolve(import.meta.dirname, '..', '..', '..');
+const settings = fs.readFileSync(path.join(root, 'public', 'js', 'views', 'settings.js'), 'utf8');
+const api = fs.readFileSync(path.join(root, 'public', 'js', 'api.js'), 'utf8');
 
 test('addLoraRow appends a blank row without mutating the input array', () => {
   const before = [{ file: 'a', strength: 1 }];
@@ -37,4 +43,15 @@ test('buildLookPayload trims name, filters blank LoRA rows, and coerces numeric 
 test('buildLookPayload returns ok:false when name is blank', () => {
   const payload = buildLookPayload({ name: '   ' });
   assert.equal(payload.ok, false);
+});
+
+test('Look editor saves, tests, activates, and discards through draft endpoints', () => {
+  assert.match(api, /createLookDraft/);
+  assert.match(api, /saveLookDraft/);
+  assert.match(api, /testGenerateLookDraft/);
+  assert.match(api, /activateLookDraft/);
+  assert.match(api, /discardLookDraft/);
+  assert.match(settings, /Save Draft/);
+  assert.match(settings, /Activate Draft/);
+  assert.match(settings, /Discard Draft/);
 });

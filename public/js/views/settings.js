@@ -528,7 +528,16 @@ function wireImageGenSettings() {
 
   var newLookBtn = document.getElementById('btn-new-look');
   if (newLookBtn) {
-    newLookBtn.onclick = function () { showLookEditor(null); };
+    newLookBtn.onclick = function () {
+      newLookBtn.disabled = true;
+      API.createLookDraft().then(function (draft) {
+        newLookBtn.disabled = false;
+        showLookEditor(draft);
+      }).catch(function (e) {
+        newLookBtn.disabled = false;
+        showToast('Could not create draft: ' + e.message, 'error');
+      });
+    };
   }
 }
 
@@ -629,7 +638,14 @@ function renderLooksList() {
   el.querySelectorAll('.look-edit-btn').forEach(function (btn) {
     btn.onclick = function () {
       var look = _looksCache.find(function (l) { return l.id === Number(btn.dataset.id); });
-      if (look) showLookEditor(look);
+      if (!look) return;
+      btn.disabled = true;
+      API.createLookDraft(look.id).then(function (draft) {
+        showLookEditor(draft);
+      }).catch(function (e) {
+        showToast('Could not create draft: ' + e.message, 'error');
+        btn.disabled = false;
+      });
     };
   });
   el.querySelectorAll('.look-delete-btn').forEach(function (btn) {
@@ -661,10 +677,11 @@ function _cleanupLookEditorScratch() {
 function showLookEditor(look) {
   var editorEl = document.getElementById('look-editor');
   if (!editorEl) return;
-  var isNew = !look;
   var l = look || {};
 
   _lookEditorState = {
+    draftId: l.id,
+    sourceLookId: l.look_id || null,
     loras: (function () {
       try { return JSON.parse(l.loras_json || '[]'); } catch (_) { return []; }
     })(),
@@ -689,7 +706,7 @@ function showLookEditor(look) {
       samplers: results[3].samplers || [],
       schedulers: (results[4].schedulers && results[4].schedulers.length) ? results[4].schedulers : SCHEDULER_FALLBACK,
     };
-    _renderLookEditor(editorEl, look, isNew);
+    _renderLookEditor(editorEl, look);
   });
 }
 
@@ -731,13 +748,13 @@ function _renderTestResults() {
   }).join('');
 }
 
-function _renderLookEditor(editorEl, look, isNew) {
+function _renderLookEditor(editorEl, look) {
   var l = look || {};
   var cat = _a1111Catalog;
 
   editorEl.innerHTML =
     '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:14px">' +
-      '<h3 style="margin:0 0 12px;font-size:14px">' + (isNew ? 'New Look' : 'Edit: ' + escapeHtml(l.name || '')) + '</h3>' +
+      '<h3 style="margin:0 0 12px;font-size:14px">' + (l.look_id ? 'Edit draft: ' + escapeHtml(l.name || '') : 'New Look draft') + '</h3>' +
 
       '<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;color:var(--text-muted)">Model &amp; Rendering</h4>' +
       '<div class="form-group"><label class="form-label">Checkpoint</label>' +
@@ -796,18 +813,19 @@ function _renderLookEditor(editorEl, look, isNew) {
       '<button type="button" class="btn btn-secondary btn-sm" id="le-test-generate" style="margin-bottom:10px">Generate Test Image</button>' +
       '<div id="le-test-results">' + _renderTestResults() + '</div>' +
 
-      '<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;color:var(--text-muted)">Save as Look</h4>' +
+      '<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;color:var(--text-muted)">Draft details</h4>' +
       '<div class="form-group"><label class="form-label">Name</label>' +
         '<input type="text" class="form-input" id="le-name" value="' + escapeHtml(l.name || '') + '"></div>' +
       '<div class="form-group"><label class="form-label">Description</label>' +
         '<input type="text" class="form-input" id="le-description" value="' + escapeHtml(l.description || '') + '"></div>' +
       '<div style="display:flex;gap:8px;margin-top:10px">' +
-        '<button class="btn btn-primary btn-sm" id="le-save">' + (isNew ? 'Create Look' : 'Save Changes') + '</button>' +
-        '<button class="btn btn-ghost btn-sm" id="le-cancel">Cancel</button>' +
+        '<button class="btn btn-secondary btn-sm" id="le-save">Save Draft</button>' +
+        '<button class="btn btn-primary btn-sm" id="le-activate">Activate Draft</button>' +
+        '<button class="btn btn-ghost btn-sm" id="le-cancel">Discard Draft</button>' +
       '</div>' +
     '</div>';
 
-  _wireLookEditorEvents(editorEl, look, isNew);
+  _wireLookEditorEvents(editorEl, look);
 }
 
 function _collectDraftFields() {
@@ -832,7 +850,7 @@ function _collectDraftFields() {
   };
 }
 
-function _wireLookEditorEvents(editorEl, look, isNew) {
+function _wireLookEditorEvents(editorEl, look) {
   editorEl.querySelectorAll('.le-lora-file').forEach(function (sel) {
     sel.onchange = function () { _lookEditorState.loras[Number(sel.dataset.idx)].file = sel.value; };
   });
@@ -843,13 +861,13 @@ function _wireLookEditorEvents(editorEl, look, isNew) {
     btn.onclick = function () {
       _lookEditorState.loras = removeLoraRow(_lookEditorState.loras, Number(btn.dataset.idx));
       document.getElementById('le-lora-rows').innerHTML = _renderLoraRows();
-      _wireLookEditorEvents(editorEl, look, isNew);
+      _wireLookEditorEvents(editorEl, look);
     };
   });
   document.getElementById('le-lora-add').onclick = function () {
     _lookEditorState.loras = addLoraRow(_lookEditorState.loras);
     document.getElementById('le-lora-rows').innerHTML = _renderLoraRows();
-    _wireLookEditorEvents(editorEl, look, isNew);
+    _wireLookEditorEvents(editorEl, look);
   };
 
   editorEl.querySelectorAll('.le-res-preset').forEach(function (btn) {
@@ -859,12 +877,20 @@ function _wireLookEditorEvents(editorEl, look, isNew) {
     };
   });
 
+  function saveCurrentDraft() {
+    var payload = buildLookPayload(_collectDraftFields());
+    if (!payload.ok) return Promise.reject(new Error(payload.error));
+    delete payload.ok;
+    return API.saveLookDraft(_lookEditorState.draftId, payload);
+  }
+
   document.getElementById('le-test-generate').onclick = function () {
     var btn = document.getElementById('le-test-generate');
-    var draft = _collectDraftFields();
-    draft.test_subject = document.getElementById('le-test-subject').value.trim();
+    var testSubject = document.getElementById('le-test-subject').value.trim();
     setLoading(btn, true, 'Generating...');
-    API.testGenerateLook(draft).then(function (result) {
+    saveCurrentDraft().then(function () {
+      return API.testGenerateLookDraft(_lookEditorState.draftId, { test_subject: testSubject });
+    }).then(function (result) {
       setLoading(btn, false);
       if (!result.ok) { showToast('Test generation failed: ' + (result.error || 'unknown error'), 'error'); return; }
       _lookEditorState.scratchFilenames.add(result.filename);
@@ -880,29 +906,42 @@ function _wireLookEditorEvents(editorEl, look, isNew) {
   _wireTestResultButtons(editorEl);
 
   document.getElementById('le-cancel').onclick = function () {
+    var draftId = _lookEditorState && _lookEditorState.draftId;
     _cleanupLookEditorScratch();
     editorEl.style.display = 'none';
     editorEl.innerHTML = '';
+    if (draftId) API.discardLookDraft(draftId).catch(function (e) {
+      showToast('Could not discard draft: ' + e.message, 'error');
+    });
   };
 
   document.getElementById('le-save').onclick = function () {
     var saveBtn = document.getElementById('le-save');
-    var payload = buildLookPayload(_collectDraftFields());
-    if (!payload.ok) { showToast(payload.error, 'error'); return; }
-    delete payload.ok;
-
     setLoading(saveBtn, true, 'Saving...');
-    var promise = isNew ? API.createLook(payload) : API.updateLook(look.id, payload);
-    promise.then(function () {
-      showToast(isNew ? 'Look created.' : 'Look saved.', 'success');
-      _lookEditorState.scratchFilenames.clear(); // saved images (if any) were kept via Save; the rest is abandoned scratch
+    saveCurrentDraft().then(function () {
+      setLoading(saveBtn, false);
+      showToast('Draft saved. Activate it when you are ready to change the live Look.', 'success');
+    }).catch(function (e) {
+      showToast('Save failed: ' + e.message, 'error');
+      setLoading(saveBtn, false);
+    });
+  };
+
+  document.getElementById('le-activate').onclick = function () {
+    var activateBtn = document.getElementById('le-activate');
+    setLoading(activateBtn, true, 'Activating...');
+    saveCurrentDraft().then(function () {
+      return API.activateLookDraft(_lookEditorState.draftId);
+    }).then(function () {
+      showToast('Draft activated. The live Look now uses these exact settings.', 'success');
+      _lookEditorState.scratchFilenames.clear();
       _cleanupLookEditorScratch();
       editorEl.style.display = 'none';
       editorEl.innerHTML = '';
       loadLooksList();
     }).catch(function (e) {
-      showToast('Save failed: ' + e.message, 'error');
-      setLoading(saveBtn, false);
+      showToast('Activation failed: ' + e.message, 'error');
+      setLoading(activateBtn, false);
     });
   };
 }
