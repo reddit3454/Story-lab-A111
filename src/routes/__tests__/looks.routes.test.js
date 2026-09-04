@@ -42,6 +42,16 @@ async function post(p, body) {
   });
   return { status: res.status, json: await res.json().catch(() => ({})) };
 }
+async function put(p, body) {
+  const res = await realFetch(`${baseUrl}${p}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+  });
+  return { status: res.status, json: await res.json().catch(() => ({})) };
+}
+async function del(p) {
+  const res = await realFetch(`${baseUrl}${p}`, { method: 'DELETE' });
+  return { status: res.status, json: await res.json().catch(() => ({})) };
+}
 
 test('db seeds exactly one active Look on boot', () => {
   const activeRows = db.prepare('SELECT id, name FROM image_looks WHERE is_active = 1').all();
@@ -57,6 +67,33 @@ test('GET /api/looks lists Looks with boolean is_active', async () => {
   assert.ok(Array.isArray(json));
   assert.ok(json.length >= 1, 'expected at least the default Look');
   assert.equal(typeof json[0].is_active, 'boolean');
+});
+
+test('saving a draft never changes its source live Look', async () => {
+  const created = await post('/api/looks', {
+    name: 'Draft Isolation Look',
+    prompt_prefix: 'original prefix',
+    loras: [{ file: 'original.safetensors', strength: 0.8 }],
+  });
+  const draft = await post(`/api/looks/${created.json.id}/drafts`);
+  assert.equal(draft.status, 201);
+  const saved = await put(`/api/looks/drafts/${draft.json.id}`, {
+    prompt_prefix: 'draft-only prefix',
+    loras: [{ file: 'draft.safetensors', strength: 0.55 }],
+  });
+  assert.equal(saved.status, 200);
+
+  const live = await get(`/api/looks/${created.json.id}`);
+  assert.equal(live.json.prompt_prefix, 'original prefix');
+  assert.deepEqual(JSON.parse(live.json.loras_json), [{ file: 'original.safetensors', strength: 0.8 }]);
+});
+
+test('discard deletes only the draft', async () => {
+  const created = await post('/api/looks', { name: 'Draft Discard Look', prompt_prefix: 'original' });
+  const draft = await post(`/api/looks/${created.json.id}/drafts`);
+  assert.equal((await del(`/api/looks/drafts/${draft.json.id}`)).status, 200);
+  assert.equal((await get(`/api/looks/${created.json.id}`)).status, 200);
+  assert.equal((await get(`/api/looks/drafts/${draft.json.id}`)).status, 404);
 });
 
 test('activating a Look deactivates every other Look — exactly one active at a time', async () => {

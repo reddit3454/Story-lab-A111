@@ -1,4 +1,4 @@
-const LOOK_FIELDS = [
+export const LOOK_SNAPSHOT_FIELDS = [
   'name', 'description', 'checkpoint', 'vae', 'clip_skip', 'restore_faces',
   'tiling', 'loras_json', 'prompt_prefix', 'prompt_suffix', 'negative',
   'sampler', 'scheduler', 'steps', 'cfg', 'width', 'height', 'is_active',
@@ -15,7 +15,7 @@ function parseLoras(raw) {
 
 export function snapshotLook(row) {
   const snapshot = {};
-  for (const field of LOOK_FIELDS) snapshot[field] = row[field];
+  for (const field of LOOK_SNAPSHOT_FIELDS) snapshot[field] = row[field];
   snapshot.loras = parseLoras(row.loras_json);
   return snapshot;
 }

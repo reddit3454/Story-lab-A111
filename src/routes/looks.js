@@ -6,6 +6,7 @@ import broadcast from '../broadcast.js';
 import { IMAGES_DIR } from '../paths.js';
 import { resolveMasterConfig } from '../services/config-resolver.js';
 import { loraTags } from '../services/prompt-builder.js';
+import { LOOK_SNAPSHOT_FIELDS, parseLookSnapshot, snapshotLook } from '../services/look-version.js';
 import * as a1111 from '../services/a1111.js';
 
 const router = Router();
@@ -13,6 +14,60 @@ const router = Router();
 function _clean(row) {
   if (!row) return row;
   return { ...row, is_active: !!row.is_active, restore_faces: !!row.restore_faces, tiling: !!row.tiling };
+}
+
+function _draftResponse(row) {
+  if (!row) return row;
+  const snapshot = parseLookSnapshot(row.snapshot_json);
+  return {
+    id: row.id,
+    look_id: row.look_id,
+    status: row.status,
+    source_version_id: row.source_version_id,
+    created_at: row.created_at,
+    activated_at: row.activated_at,
+    ...snapshot,
+    is_draft: true,
+  };
+}
+
+function _emptyLookSnapshot() {
+  return {
+    name: '',
+    description: '',
+    checkpoint: '',
+    vae: '',
+    clip_skip: null,
+    restore_faces: 0,
+    tiling: 0,
+    loras_json: '[]',
+    loras: [],
+    prompt_prefix: '',
+    prompt_suffix: '',
+    negative: '',
+    sampler: 'DPM++ 2M SDE',
+    scheduler: 'Karras',
+    steps: 30,
+    cfg: 7,
+    width: 832,
+    height: 1216,
+    is_active: 0,
+  };
+}
+
+function _updatedDraftSnapshot(snapshot, body) {
+  const next = { ...snapshot };
+  for (const field of LOOK_SNAPSHOT_FIELDS) {
+    if (field === 'loras_json' || field === 'is_active') continue;
+    if (body[field] !== undefined) next[field] = body[field];
+  }
+  if (body.loras !== undefined) {
+    next.loras = Array.isArray(body.loras) ? body.loras : [];
+    next.loras_json = JSON.stringify(next.loras);
+  } else if (!Array.isArray(next.loras)) {
+    next.loras = JSON.parse(next.loras_json || '[]');
+  }
+  return next;
 }
 
 router.get('/', function (req, res) {
@@ -23,6 +78,58 @@ router.get('/', function (req, res) {
 router.get('/active', function (req, res) {
   const row = db.prepare('SELECT * FROM image_looks WHERE is_active = 1 LIMIT 1').get();
   res.json(_clean(row) || null);
+});
+
+router.post('/drafts', function (req, res) {
+  const result = db.prepare(`
+    INSERT INTO image_look_versions (look_id, status, snapshot_json)
+    VALUES (NULL, 'draft', ?)
+  `).run(JSON.stringify(_emptyLookSnapshot()));
+  const row = db.prepare('SELECT * FROM image_look_versions WHERE id = ?').get(result.lastInsertRowid);
+  res.status(201).json(_draftResponse(row));
+});
+
+router.post('/:id/drafts', function (req, res) {
+  const look = db.prepare('SELECT * FROM image_looks WHERE id = ?').get(req.params.id);
+  if (!look) return res.status(404).json({ error: 'Look not found' });
+
+  const source = db.prepare(`
+    SELECT id FROM image_look_versions
+    WHERE look_id = ? AND status IN ('baseline', 'activated')
+    ORDER BY id DESC LIMIT 1
+  `).get(look.id);
+  const result = db.prepare(`
+    INSERT INTO image_look_versions (look_id, status, source_version_id, snapshot_json)
+    VALUES (?, 'draft', ?, ?)
+  `).run(look.id, source?.id ?? null, JSON.stringify(snapshotLook(look)));
+  const row = db.prepare('SELECT * FROM image_look_versions WHERE id = ?').get(result.lastInsertRowid);
+  res.status(201).json(_draftResponse(row));
+});
+
+router.get('/drafts/:versionId', function (req, res) {
+  const row = db.prepare("SELECT * FROM image_look_versions WHERE id = ? AND status = 'draft'").get(req.params.versionId);
+  if (!row) return res.status(404).json({ error: 'Draft not found' });
+  res.json(_draftResponse(row));
+});
+
+router.put('/drafts/:versionId', function (req, res) {
+  const row = db.prepare("SELECT * FROM image_look_versions WHERE id = ? AND status = 'draft'").get(req.params.versionId);
+  if (!row) return res.status(404).json({ error: 'Draft not found' });
+  const body = req.body || {};
+  if (body.name !== undefined && !String(body.name).trim()) {
+    return res.status(400).json({ error: 'name is required' });
+  }
+  const snapshot = _updatedDraftSnapshot(parseLookSnapshot(row.snapshot_json), body);
+  if (snapshot.name != null) snapshot.name = String(snapshot.name).trim();
+  db.prepare('UPDATE image_look_versions SET snapshot_json = ? WHERE id = ?').run(JSON.stringify(snapshot), row.id);
+  const updated = db.prepare('SELECT * FROM image_look_versions WHERE id = ?').get(row.id);
+  res.json(_draftResponse(updated));
+});
+
+router.delete('/drafts/:versionId', function (req, res) {
+  const result = db.prepare("DELETE FROM image_look_versions WHERE id = ? AND status = 'draft'").run(req.params.versionId);
+  if (!result.changes) return res.status(404).json({ error: 'Draft not found' });
+  res.json({ ok: true });
 });
 
 router.get('/:id', function (req, res) {
