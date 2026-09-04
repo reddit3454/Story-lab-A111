@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { DB_PATH } from './paths.js';
 import { seedAndMigrateDefaultLooks } from './default-look.js';
 import { migrateImageLooksSchema, migrateImageLooksData } from './image-looks-migration.js';
+import { migrateLookVersionSchema, seedLookBaselines } from './services/look-version.js';
 
 const db = new DatabaseSync(DB_PATH);
 
@@ -377,6 +378,8 @@ migrateImageLooksData(db);
 
 // Default Look seed + safe migration (fresh DB + legacy Photoreal/Cinematic installs).
 seedAndMigrateDefaultLooks(db);
+migrateLookVersionSchema(db);
+seedLookBaselines(db);
 
 // Character FaceID reference image (relative path under IMAGES_DIR).
 migrate("ALTER TABLE characters ADD COLUMN reference_image_path TEXT DEFAULT NULL");
