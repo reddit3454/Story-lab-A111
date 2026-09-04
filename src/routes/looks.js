@@ -70,6 +70,30 @@ function _updatedDraftSnapshot(snapshot, body) {
   return next;
 }
 
+function _lookValues(snapshot) {
+  return [
+    String(snapshot.name).trim(), snapshot.description ?? '', snapshot.checkpoint ?? '', snapshot.vae ?? '',
+    snapshot.clip_skip === '' || snapshot.clip_skip == null ? null : parseInt(snapshot.clip_skip, 10),
+    snapshot.restore_faces ? 1 : 0, snapshot.tiling ? 1 : 0,
+    snapshot.loras_json ?? JSON.stringify(Array.isArray(snapshot.loras) ? snapshot.loras : []),
+    snapshot.prompt_prefix ?? '', snapshot.prompt_suffix ?? '', snapshot.negative ?? '',
+    snapshot.sampler || 'DPM++ 2M SDE', snapshot.scheduler || 'Karras',
+    snapshot.steps === '' || snapshot.steps == null ? 30 : parseInt(snapshot.steps, 10),
+    snapshot.cfg === '' || snapshot.cfg == null ? 7 : Number(snapshot.cfg),
+    snapshot.width === '' || snapshot.width == null ? 832 : parseInt(snapshot.width, 10),
+    snapshot.height === '' || snapshot.height == null ? 1216 : parseInt(snapshot.height, 10),
+  ];
+}
+
+const LOOK_UPDATE_SQL = `
+  UPDATE image_looks SET
+    name = ?, description = ?, checkpoint = ?, vae = ?, clip_skip = ?,
+    restore_faces = ?, tiling = ?, loras_json = ?, prompt_prefix = ?,
+    prompt_suffix = ?, negative = ?, sampler = ?, scheduler = ?, steps = ?,
+    cfg = ?, width = ?, height = ?
+  WHERE id = ?
+`;
+
 router.get('/', function (req, res) {
   const rows = db.prepare('SELECT * FROM image_looks ORDER BY name ASC').all();
   res.json(rows.map(_clean));
@@ -130,6 +154,54 @@ router.delete('/drafts/:versionId', function (req, res) {
   const result = db.prepare("DELETE FROM image_look_versions WHERE id = ? AND status = 'draft'").run(req.params.versionId);
   if (!result.changes) return res.status(404).json({ error: 'Draft not found' });
   res.json({ ok: true });
+});
+
+router.post('/drafts/:versionId/activate', function (req, res) {
+  const draft = db.prepare("SELECT * FROM image_look_versions WHERE id = ? AND status = 'draft'").get(req.params.versionId);
+  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+
+  const snapshot = parseLookSnapshot(draft.snapshot_json);
+  if (!snapshot.name || !String(snapshot.name).trim()) {
+    return res.status(400).json({ error: 'name is required before activation' });
+  }
+
+  let lookId = draft.look_id;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    if (lookId) {
+      const live = db.prepare('SELECT * FROM image_looks WHERE id = ?').get(lookId);
+      if (!live) throw new Error('source Look not found');
+      db.prepare(`
+        INSERT INTO image_look_versions (look_id, status, source_version_id, snapshot_json)
+        VALUES (?, 'superseded', ?, ?)
+      `).run(lookId, draft.id, JSON.stringify(snapshotLook(live)));
+      db.prepare(LOOK_UPDATE_SQL).run(..._lookValues(snapshot), lookId);
+    } else {
+      const result = db.prepare(`
+        INSERT INTO image_looks (
+          name, description, checkpoint, vae, clip_skip, restore_faces, tiling, loras_json,
+          prompt_prefix, prompt_suffix, negative, sampler, scheduler, steps, cfg, width, height
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).run(..._lookValues(snapshot));
+      lookId = Number(result.lastInsertRowid);
+      db.prepare('UPDATE image_look_versions SET look_id = ? WHERE id = ?').run(lookId, draft.id);
+    }
+
+    db.prepare('UPDATE image_looks SET is_active = 0 WHERE is_active = 1').run();
+    db.prepare('UPDATE image_looks SET is_active = 1 WHERE id = ?').run(lookId);
+    db.prepare("UPDATE image_look_versions SET status = 'activated', activated_at = datetime('now') WHERE id = ?").run(draft.id);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    if (String(err.message).includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ error: 'a Look with that name already exists' });
+    }
+    return res.status(400).json({ error: err.message });
+  }
+
+  const look = db.prepare('SELECT * FROM image_looks WHERE id = ?').get(lookId);
+  broadcast.send('lookactivated', { lookId: look.id, name: look.name });
+  res.json(_clean(look));
 });
 
 router.get('/:id', function (req, res) {

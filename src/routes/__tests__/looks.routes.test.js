@@ -96,6 +96,39 @@ test('discard deletes only the draft', async () => {
   assert.equal((await get(`/api/looks/drafts/${draft.json.id}`)).status, 404);
 });
 
+test('activating a draft atomically changes the live Look and preserves the prior snapshot', async () => {
+  const created = await post('/api/looks', {
+    name: 'Draft Activation Look', prompt_prefix: 'old prefix', prompt_suffix: 'old suffix',
+    loras: [{ file: 'old.safetensors', strength: 0.7 }],
+  });
+  const draft = await post(`/api/looks/${created.json.id}/drafts`);
+  await put(`/api/looks/drafts/${draft.json.id}`, {
+    name: 'Draft Activation Look', prompt_prefix: 'new prefix', prompt_suffix: 'new suffix',
+    loras: [{ file: 'first.safetensors', strength: 0.4 }, { file: 'second.safetensors', strength: 0.9 }],
+  });
+
+  const activated = await post(`/api/looks/drafts/${draft.json.id}/activate`);
+  assert.equal(activated.status, 200);
+  assert.equal(activated.json.is_active, true);
+
+  const live = await get(`/api/looks/${created.json.id}`);
+  assert.equal(live.json.prompt_prefix, 'new prefix');
+  assert.equal(live.json.prompt_suffix, 'new suffix');
+  assert.deepEqual(JSON.parse(live.json.loras_json), [
+    { file: 'first.safetensors', strength: 0.4 },
+    { file: 'second.safetensors', strength: 0.9 },
+  ]);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM image_looks WHERE is_active = 1').get().count, 1);
+
+  const prior = db.prepare(`
+    SELECT snapshot_json FROM image_look_versions
+    WHERE look_id = ? AND status = 'superseded' ORDER BY id DESC LIMIT 1
+  `).get(created.json.id);
+  const priorSnapshot = JSON.parse(prior.snapshot_json);
+  assert.equal(priorSnapshot.prompt_prefix, 'old prefix');
+  assert.deepEqual(priorSnapshot.loras, [{ file: 'old.safetensors', strength: 0.7 }]);
+});
+
 test('activating a Look deactivates every other Look — exactly one active at a time', async () => {
   const created = await post('/api/looks', {
     name: 'Test Look A',
