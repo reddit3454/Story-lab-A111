@@ -131,6 +131,9 @@ const _defaults = [
   ['scene_state_enabled',             'true'],
   ['scene_state_model',               ''],      // '' -> qwen2.5:7b-instruct default
   ['scene_state_keep_alive',          '5m'],    // '0' unloads after each turn for VRAM headroom
+  // Off by default: only warm A1111 when the user explicitly trades idle VRAM
+  // for a faster first image request.
+  ['image_warmup_enabled',            'false'],
 ];
 
 for (const [key, value] of _defaults) {

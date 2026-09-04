@@ -293,7 +293,8 @@ function buildTabContent(tabId) {
       return '' +
         '<div class="settings-section" id="llamacpp-settings-section">' +
           '<h2 class="section-title">Model Backends</h2>' +
-          '<p class="text-muted" style="margin-bottom:12px;">Choose Ollama or llama.cpp independently for each role. Ollama: pick from installed models. llama.cpp: enter a port number and the .gguf path for the model loaded on that port.</p>' +
+          '<p class="text-muted" style="margin-bottom:12px;">Narration uses the backend selected here. Scene-state extraction is configured separately under Story Dynamics so its actual runtime model is visible.</p>' +
+          '<div class="settings-callout"><strong>Secondary reasoning provider</strong><span>Local Ollama is active. Codex is not yet a runnable provider; this is intentionally not a fake toggle.</span></div>' +
           '<div id="llamacpp-config-form"><div class="loading-state">Loading...</div></div>' +
         '</div>';
 
@@ -303,6 +304,12 @@ function buildTabContent(tabId) {
         '<div class="settings-section">' +
           '<h2 class="section-title">A1111 Connection</h2>' +
           '<div id="imagegen-a1111-status"><div class="loading-state">Checking...</div></div>' +
+          '<div id="imagegen-connection-form"><div class="loading-state">Loading...</div></div>' +
+        '</div>' +
+        '<div class="settings-section">' +
+          '<h2 class="section-title">Performance</h2>' +
+          '<p class="text-muted" style="margin-bottom:10px">Keep A1111 cold by default. Enable preloading only if a faster first image is worth its idle VRAM cost.</p>' +
+          '<div id="imagegen-performance-form"><div class="loading-state">Loading...</div></div>' +
         '</div>' +
         '<div class="settings-section">' +
           '<h2 class="section-title">Looks</h2>' +
@@ -519,6 +526,8 @@ var _looksCache = [];
 
 function wireImageGenSettings() {
   loadA1111Status();
+  loadImageConnectionConfig();
+  loadImagePerformanceConfig();
   loadLooksList();
   loadFaceidConfig();
   loadPoseControlConfig();
@@ -527,6 +536,51 @@ function wireImageGenSettings() {
   if (newLookBtn) {
     newLookBtn.onclick = function () { showLookEditor(null); };
   }
+}
+
+function loadImageConnectionConfig() {
+  var el = document.getElementById('imagegen-connection-form');
+  if (!el) return;
+  API.getConfig().then(function (cfg) {
+    el.innerHTML =
+      '<div class="settings-subsection"><h3>Connection and safety baseline</h3>' +
+      '<div class="form-group"><label class="form-label">A1111 URL</label><input class="form-input" id="ig-a1111-url" value="' + escapeHtml(cfg.a1111_url || 'http://127.0.0.1:7860') + '"><div class="form-hint">The direct A1111 service used for every image request.</div></div>' +
+      '<div class="form-group"><label class="form-label">Master negative prompt</label><textarea class="form-input" rows="3" id="ig-master-negative">' + escapeHtml(cfg.master_negative || '') + '</textarea><div class="form-hint">Anatomy and safety baseline only. Look-specific style negatives stay with the active Look.</div></div>' +
+      '<button type="button" class="btn btn-primary btn-sm" id="ig-save-connection">Save Connection</button></div>';
+    document.getElementById('ig-save-connection').onclick = function () {
+      var btn = document.getElementById('ig-save-connection');
+      setLoading(btn, true, 'Saving...');
+      API.setConfigs({
+        a1111_url: document.getElementById('ig-a1111-url').value.trim(),
+        master_negative: document.getElementById('ig-master-negative').value.trim(),
+      }).then(function () { showToast('Image connection saved.', 'success'); setLoading(btn, false); loadA1111Status(); })
+        .catch(function (e) { showToast('Save failed: ' + e.message, 'error'); setLoading(btn, false); });
+    };
+  }).catch(function (e) {
+    el.innerHTML = '<p class="text-muted">Could not load image connection settings: ' + escapeHtml(e.message) + '</p>';
+  });
+}
+
+function loadImagePerformanceConfig() {
+  var el = document.getElementById('imagegen-performance-form');
+  if (!el) return;
+  API.getConfig().then(function (cfg) {
+    var enabled = cfg.image_warmup_enabled === true || cfg.image_warmup_enabled === 'true' || cfg.image_warmup_enabled === 1 || cfg.image_warmup_enabled === '1';
+    el.innerHTML =
+      '<label class="settings-toggle-row"><span><strong>Preload A1111</strong><small>Warm the image service after Story Lab starts.</small></span>' +
+      '<input type="checkbox" id="ig-warmup-enabled"' + (enabled ? ' checked' : '') + '></label>' +
+      '<p class="form-hint">Current default is off. Changing this applies on the next Story Lab restart.</p>' +
+      '<button type="button" class="btn btn-primary btn-sm" id="ig-save-performance">Save Performance</button>';
+    document.getElementById('ig-save-performance').onclick = function () {
+      var btn = document.getElementById('ig-save-performance');
+      setLoading(btn, true, 'Saving...');
+      API.setConfig('image_warmup_enabled', document.getElementById('ig-warmup-enabled').checked ? 'true' : 'false')
+        .then(function () { showToast('Image performance saved. Restart Story Lab to apply preload changes.', 'success'); setLoading(btn, false); })
+        .catch(function (e) { showToast('Save failed: ' + e.message, 'error'); setLoading(btn, false); });
+    };
+  }).catch(function (e) {
+    el.innerHTML = '<p class="text-muted">Could not load image performance settings: ' + escapeHtml(e.message) + '</p>';
+  });
 }
 
 function loadA1111Status() {
@@ -1058,19 +1112,36 @@ function loadPoseControlConfig() {
   });
 }
 
-var _storyDynamicsWired = false;
-
 function wireStoryDynamicsSettings() {
   var el = document.getElementById('story-dynamics-settings');
   if (!el) return;
 
-  API.getConfig().then(function (cfg) {
+  Promise.all([API.getConfig(), fetch('http://localhost:11434/api/tags').then(function (r) { return r.json(); }).catch(function () { return null; })]).then(function (results) {
+    var cfg = results[0];
+    var ollama = results[1];
+    var models = ollama ? (ollama.models || []).map(function (m) { return m.name; }) : [];
     function boolChecked(key, def) {
       var v = cfg[key];
       if (v == null) return def !== false;
       return v === true || v === 'true' || v === 1 || v === '1';
     }
+    var savedSceneModel = cfg.scene_state_model || '';
+    var sceneOptions = '<option value="">Use built-in default (qwen2.5:7b-instruct)</option>';
+    if (savedSceneModel && models.indexOf(savedSceneModel) === -1) {
+      sceneOptions += '<option value="' + escapeHtml(savedSceneModel) + '" selected>Saved model unavailable: ' + escapeHtml(savedSceneModel) + '</option>';
+    }
+    sceneOptions += models.map(function (model) {
+      return '<option value="' + escapeHtml(model) + '"' + (model === savedSceneModel ? ' selected' : '') + '>' + escapeHtml(model) + '</option>';
+    }).join('');
+    var modelHint = ollama
+      ? 'Choose from the running Ollama catalog. The saved value is preserved if it is not currently installed.'
+      : 'Ollama is offline; the saved value is preserved and cannot be replaced until its catalog is available.';
     el.innerHTML =
+      '<div class="settings-subsection"><h3>Scene State</h3><p class="text-muted">After a narrator turn, a secondary model extracts structured mood, arousal, clothing, and scene changes. This work is queued so it does not hold up the reply.</p>' +
+      '<label class="settings-toggle-row"><span><strong>Enable scene-state extraction</strong><small>Turn it off to skip secondary extraction calls.</small></span><input type="checkbox" id="sd-scene-state-enabled"' + (boolChecked('scene_state_enabled', true) ? ' checked' : '') + '></label>' +
+      '<div class="form-group"><label class="form-label">Scene-state model</label><select class="form-input" id="sd-scene-state-model"' + (ollama ? '' : ' disabled') + '>' + sceneOptions + '</select><div class="form-hint">' + modelHint + '</div></div>' +
+      '<div class="form-group"><label class="form-label">Model residency</label><select class="form-input" id="sd-scene-state-keep-alive"><option value="0"' + (cfg.scene_state_keep_alive === '0' ? ' selected' : '') + '>Unload after each extraction (lowest VRAM)</option><option value="5m"' + (cfg.scene_state_keep_alive !== '0' ? ' selected' : '') + '>Keep loaded for 5 minutes (faster follow-up)</option></select></div></div>' +
+      '<div class="settings-subsection"><h3>Story behavior</h3>' +
       '<div class="form-group"><label class="toggle-label"><span>NSFW enabled</span><input type="checkbox" id="sd-nsfw-enabled"' + (boolChecked('nsfw_enabled', false) ? ' checked' : '') + '></label></div>' +
       '<div class="form-group"><label class="toggle-label"><span>Explicit mode</span><input type="checkbox" id="sd-explicit-mode"' + (boolChecked('explicit_mode', false) ? ' checked' : '') + '></label></div>' +
       '<div class="form-group"><label class="toggle-label"><span>Arousal decay enabled</span><input type="checkbox" id="sd-arousal-decay"' + (boolChecked('arousal_decay_enabled', true) ? ' checked' : '') + '></label></div>' +
@@ -1080,11 +1151,8 @@ function wireStoryDynamicsSettings() {
       '<div class="form-group"><label class="toggle-label"><span>Regen state snapshot</span><input type="checkbox" id="sd-regen-snapshot"' + (boolChecked('regen_state_snapshot_enabled', true) ? ' checked' : '') + '></label></div>' +
       '<div class="form-group"><label class="toggle-label"><span>Cast trigger chips in Play</span><input type="checkbox" id="sd-cast-chips"' + (boolChecked('cast_trigger_chips_enabled', true) ? ' checked' : '') + '></label></div>' +
       '<div class="form-group"><label class="toggle-label"><span>Scene heat readout in Play</span><input type="checkbox" id="sd-scene-heat"' + (boolChecked('scene_heat_readout_enabled', true) ? ' checked' : '') + '></label></div>' +
-      '<div class="form-group"><label class="form-label">SFW arousal ceiling (1-5)</label><input type="number" min="1" max="5" class="form-input" id="sd-sfw-ceiling" value="' + (cfg.sfw_arousal_ceiling != null ? cfg.sfw_arousal_ceiling : 3) + '"></div>' +
+      '<div class="form-group"><label class="form-label">SFW arousal ceiling (1-5)</label><input type="number" min="1" max="5" class="form-input" id="sd-sfw-ceiling" value="' + (cfg.sfw_arousal_ceiling != null ? cfg.sfw_arousal_ceiling : 3) + '"></div></div>' +
       '<button type="button" class="btn btn-primary btn-sm" id="sd-save-all">Save Story Dynamics</button>';
-
-    if (_storyDynamicsWired) return;
-    _storyDynamicsWired = true;
 
     var saveAll = document.getElementById('sd-save-all');
     if (saveAll) saveAll.onclick = function () {
@@ -1099,6 +1167,9 @@ function wireStoryDynamicsSettings() {
         cast_trigger_chips_enabled: document.getElementById('sd-cast-chips').checked ? 'true' : 'false',
         scene_heat_readout_enabled: document.getElementById('sd-scene-heat').checked ? 'true' : 'false',
         sfw_arousal_ceiling: String(document.getElementById('sd-sfw-ceiling').value || 3),
+        scene_state_enabled: document.getElementById('sd-scene-state-enabled').checked ? 'true' : 'false',
+        scene_state_model: document.getElementById('sd-scene-state-model').value,
+        scene_state_keep_alive: document.getElementById('sd-scene-state-keep-alive').value,
       }).then(function () { showToast('Story Dynamics saved', 'success'); }).catch(function (e) { showToast(e.message, 'error'); });
     };
   }).catch(function (e) {
@@ -1193,12 +1264,13 @@ function loadLlamacppConfig() {
   var container = document.getElementById('llamacpp-config-form');
   if (!container) return;
 
-  API.getLlamacppConfig()
-    .then(function (data) {
+  Promise.all([API.getLlamacppConfig(), API.getConfig()])
+    .then(function (results) {
+      var data = results[0];
+      var globalConfig = results[1];
       var cfg = data || {};
       var roles = [
         { key: 'narrator',   label: 'Narrator' },
-        { key: 'extractor',  label: 'Extractor' },
         { key: 'summarizer', label: 'Summarizer' },
         { key: 'picker',     label: 'Picker' },
         { key: 'tools',      label: 'Tools', ollamaOnly: true },
@@ -1272,7 +1344,15 @@ function loadLlamacppConfig() {
         '</div>';
       }).join('');
 
-      container.innerHTML = rows +
+      var legacyExtractor = cfg.extractor
+        ? '<div class="settings-callout settings-callout-warning"><strong>Legacy extractor setting preserved</strong><span>This saved llama.cpp role is not connected to scene-state extraction. It remains untouched; configure the actual scene-state model in Story Dynamics.</span></div>'
+        : '';
+      var narratorLimits =
+        '<div class="settings-subsection"><h3>Narrator limits</h3>' +
+        '<p class="text-muted">These apply regardless of whether narration uses Ollama or llama.cpp.</p>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div class="form-group"><label class="form-label">Output tokens</label><input type="number" min="64" class="form-input" id="model-narrator-max-tokens" value="' + escapeHtml(globalConfig.narrator_max_tokens || '1200') + '"></div>' +
+        '<div class="form-group"><label class="form-label">Input context tokens</label><input type="number" min="1024" class="form-input" id="model-narrator-context-tokens" value="' + escapeHtml(globalConfig.narrator_context_tokens || '8192') + '"></div></div></div>';
+      container.innerHTML = legacyExtractor + narratorLimits + rows +
         '<div style="display:flex;gap:8px;margin-top:4px">' +
           '<button class="btn btn-primary btn-sm" id="btn-save-llamacpp">Save</button>' +
           '<span id="llamacpp-save-status" style="font-size:12px;color:var(--text-muted);align-self:center"></span>' +
@@ -1344,7 +1424,9 @@ function loadLlamacppConfig() {
       var statusEl = document.getElementById('llamacpp-save-status');
       if (saveBtn) {
         saveBtn.onclick = function () {
-          var newCfg = {};
+          // Preserve unexposed legacy roles. Removing their controls must not
+          // silently erase a user's saved configuration.
+          var newCfg = { ...cfg };
           roles.forEach(function (r) {
             var ollamaSel    = container.querySelector('.ollama-model-select[data-role="' + r.key + '"]');
             var ollamaCustom = container.querySelector('.ollama-model-custom[data-role="' + r.key + '"]');
@@ -1361,7 +1443,13 @@ function loadLlamacppConfig() {
             newCfg[r.key] = { backend: backend, port: port, model_path: modelPath, ollama_model: ollamaModel };
           });
           saveBtn.disabled = true;
-          API.saveLlamacppConfig(newCfg)
+          Promise.all([
+            API.saveLlamacppConfig(newCfg),
+            API.setConfigs({
+              narrator_max_tokens: String(document.getElementById('model-narrator-max-tokens').value || 1200),
+              narrator_context_tokens: String(document.getElementById('model-narrator-context-tokens').value || 8192),
+            }),
+          ])
             .then(function () {
               if (statusEl) { statusEl.textContent = 'Saved!'; setTimeout(function () { statusEl.textContent = ''; }, 2000); }
             })

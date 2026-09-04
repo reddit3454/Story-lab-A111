@@ -1,7 +1,12 @@
 import { Router } from 'express';
 import db from '../db.js';
+import { getSettingsRegistry } from '../services/settings-registry.js';
 
 const router = Router();
+
+router.get('/registry', function (req, res) {
+  res.json({ settings: getSettingsRegistry() });
+});
 
 router.get('/', function (req, res) {
   const rows = db.prepare('SELECT key, value FROM global_config').all();
